@@ -2,6 +2,19 @@ import { logger } from '../utils/logger.js';
 
 export type ProgrammingModeState = 'off' | 'auto' | 'plan' | 'execute';
 
+export interface ProgrammingSnapshot {
+  state: ProgrammingModeState;
+  projectContext: string | null;
+  lastPlan: string | null;
+}
+
+const SCOPED_STATES: readonly ProgrammingModeState[] = ['auto', 'plan', 'execute'];
+
+/** A per-turn programming mode a client asked for, if it is a valid one. */
+export function scopedProgrammingState(value: unknown): ProgrammingModeState | null {
+  return typeof value === 'string' && (SCOPED_STATES as readonly string[]).includes(value) ? value as ProgrammingModeState : null;
+}
+
 /**
  * Shared implementation contract for EXECUTE and AUTO modes. Tools are the
  * ONLY way work happens: narration about future work is the single most
@@ -91,6 +104,17 @@ export class ProgrammingMode {
 
   setProjectContext(context: string): void {
     this.projectContext = context;
+  }
+
+  /** The whole mode as a value, so one session's mode can be swapped in for a turn. */
+  snapshot(): ProgrammingSnapshot {
+    return { state: this.state, projectContext: this.projectContext, lastPlan: this.lastPlan };
+  }
+
+  restore(snapshot: ProgrammingSnapshot): void {
+    this.state = snapshot.state;
+    this.projectContext = snapshot.projectContext;
+    this.lastPlan = snapshot.lastPlan;
   }
 
   getProjectContext(): string | null {

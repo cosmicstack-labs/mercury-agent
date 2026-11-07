@@ -698,7 +698,7 @@ export function ChatPage() {
             variant="ghost"
             size="icon"
             className="h-8 w-8 hidden md:inline-flex"
-            onClick={() => (window.location.href = "/settings")}
+            onClick={() => navigate("/settings")}
           >
             <Settings className="h-4 w-4" />
           </Button>

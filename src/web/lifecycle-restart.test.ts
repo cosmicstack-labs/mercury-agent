@@ -10,11 +10,12 @@ import lifecycle, { setRestartSpawner } from './api/lifecycle.js';
  * must offer the restart and the CLI must do it when the file changed.
  */
 describe('POST /api/restart', () => {
-  it('is loopback-only and hands off to a detached restart', async () => {
+  it('asks the owner from another device, and hands off to a detached restart here', async () => {
     let spawned = 0;
     setRestartSpawner(() => { spawned++; return true; });
     const remote = await lifecycle.request('http://127.0.0.1:6174/api/restart', { method: 'POST' }, { incoming: { socket: { remoteAddress: '10.0.0.7' } } });
-    expect(remote.status).toBe(403);
+    expect(remote.status).toBe(428);
+    expect(spawned).toBe(0);
     const local = await lifecycle.request('http://127.0.0.1:6174/api/restart', { method: 'POST' }, { incoming: { socket: { remoteAddress: '127.0.0.1' } } });
     expect(local.status).toBe(202);
     expect(spawned).toBe(1);

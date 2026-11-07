@@ -70,6 +70,8 @@ import { getPluginTools } from '../plugins/tool-bridge.js';
 import { createDispatchBotTool } from '../bots/tools/dispatch-bot.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import { logger } from '../utils/logger.js';
+import type { McpManager } from './mcp/manager.js';
+import type { McpServerStatus } from './mcp/types.js';
 
 export interface ChatCommandContext {
   toolNames: () => string[];
@@ -85,6 +87,7 @@ export interface ChatCommandContext {
   memoryGetSubconscious: (limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
   memoryIsShareLearning: () => boolean;
   memorySetShareLearning: (enabled: boolean) => void;
+  mcpStatus?: () => McpServerStatus[];
 }
 
 export class CapabilityRegistry {
@@ -101,6 +104,7 @@ export class CapabilityRegistry {
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
   private researchModeGetter: (() => boolean) | null = null;
+  private mcp?: McpManager;
 
   /**
    * Mercury Bots dispatch handler — set once the BotManager exists
@@ -309,6 +313,18 @@ export class CapabilityRegistry {
     logger.info('Interaction tools registered');
   }
 
+  attachMcp(manager: McpManager): void {
+    this.mcp = manager;
+  }
+
+  getMcpManager(): McpManager | undefined {
+    return this.mcp;
+  }
+
+  private allTools(): Record<string, Tool> {
+    return this.mcp ? { ...this.tools, ...this.mcp.getTools() } : this.tools;
+  }
+
   getTools(): Record<string, Tool> {
     if (this.toolsDisabled) return {};
     // Scheduled calls (when a calling channel plugin is running): owner only.
@@ -322,7 +338,7 @@ export class CapabilityRegistry {
     // Members on a channel that distinguishes roles (e.g. Telegram) must not be
     // able to install skills: `install_skill` is the escalation path from chat
     // access to arbitrary local execution and is documented as admin-only.
-    // Plugin tools are owner-installed code, so members don't get them either.
+    // Plugin and MCP tools are owner-installed, so members don't get them either.
     if (this.permissions.getCurrentSenderRole() === 'member') {
       const filtered: Record<string, Tool> = {};
       for (const [name, tool] of Object.entries(this.tools)) {
@@ -330,7 +346,8 @@ export class CapabilityRegistry {
       }
       return filtered;
     }
-    return this.withPluginTools(this.tools, false);
+    // MCP tools sit beside the built-ins (members never get them: above).
+    return this.withPluginTools(this.allTools(), false);
   }
 
   /**
@@ -368,7 +385,7 @@ export class CapabilityRegistry {
   }
 
   getToolNames(): string[] {
-    return Object.keys(this.tools);
+    return Object.keys(this.allTools());
   }
 
   getSkillContext(): string {

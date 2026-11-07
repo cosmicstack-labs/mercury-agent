@@ -5,10 +5,19 @@ description: "Mercury Agent release notes — what shipped, when, and why."
 image: /img/card.png
 ---
 
-This section tracks Mercury release notes by version.
+import ReleaseDownloads from '@site/src/components/Download/ReleaseDownloads';
 
-## Available release notes
+Every Mercury release ships the same version everywhere: Mercury Desktop for macOS, Windows and Linux, the server's standalone binaries, and the npm package. Installed copies update themselves: Mercury Desktop shows an Update button, and `mercury upgrade` updates a server (see [Updating Mercury](/docs/desktop/updating)).
 
+## Download
+
+<ReleaseDownloads />
+
+## Release notes
+
+- [**v1.5.0 — Mercury Desktop**](/docs/releases/1.5.0) — Mercury Desktop for macOS, Windows and Linux; remote access the owner controls; updates that roll back on their own; research you can watch; MCP servers; Bots 2.0.
+- [**v1.4.2 — Search that finds things**](/docs/releases/1.4.2) — Web search with no key and any model (Parallel, then DuckDuckGo, parsed exactly), a `Searched:` trail on every result, and a research prompt that asks only when you mean it.
+- [**v1.4.1 — Mercury learns how you work**](/docs/releases/1.4.1) — The Owner Model: beliefs with evidence about how you like to work, self-made skills, and keyless web search.
 - [**v1.4.0 — Pluggy Mercury**](/docs/releases/1.4.0) — The plugin system, WhatsApp chat and voice calls in both directions, and Optimus: Mercury uses your computer, by chat or out loud. Plus built-in web search, photos, PDFs and voice notes from chat.
 - [**v1.3.1 — Steady Mercury**](/docs/releases/1.3.1) — One runtime, instant attach, bots that do work and stay online, fleets with typed tasks and pipelines, Telegram control with buttons and files, Node 22 and a patched Ink 8 — plus the whole "Honest Mercury" line.
 - [**v1.3.0 — Mercury Bots**](/docs/releases/1.3.0) — Mercury becomes a fleet: persistent persona-scoped bots with private sandboxes and durable queues, lead bots that recruit their own crews, portable bundles, a web cockpit, and honest failure observability.

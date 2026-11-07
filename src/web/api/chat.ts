@@ -1,7 +1,18 @@
+import { trackStream } from '../../security/live-streams.js';
+import { isThisComputer, principalKey, principalOf } from '../middleware.js';
+import { requireOwner } from '../owner-gate.js';
+import { protectedReason } from '../../security/protected-paths.js';
 import { Hono } from 'hono';
+import { commandCatalog } from '../../core/commands/catalog.js';
+import { getPluginManager } from '../../plugins/manager.js';
+import { artifactStore } from '../../artifacts/store.js';
+import { favicons } from '../favicons.js';
+import { scopedProgrammingState } from '../../core/programming-mode.js';
+import { isInsideWorkspace } from './workspace-ide.js';
+import { storeInlineAttachments, attachmentRefs, resolveUploadRef, uploadMime } from './uploads.js';
 import type { WebChannel } from '../../channels/web.js';
 import type { ProgrammingMode, ProgrammingModeState } from '../../core/programming-mode.js';
-import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { join, extname, basename, relative, resolve } from 'node:path';
 import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
 import type { SessionRepository } from '../../sessions/index.js';
@@ -32,6 +43,9 @@ function toThread(session: ReturnType<SessionRepository['get']>, includeMessages
     shortId: session.shortId,
     alias: session.alias,
     title: session.title,
+    // A desktop voice call saved as a thread (voice-calls.ts).
+    voiceCall: typeof session.messages[0]?.metadata?.voiceCall === 'string',
+    ...(session.savedAt ? { savedAt: new Date(session.savedAt).toISOString() } : {}),
     createdAt: new Date(session.createdAt).toISOString(),
     updatedAt: new Date(session.updatedAt).toISOString(),
     messages: includeMessages ? session.messages.map((message) => ({
@@ -42,6 +56,12 @@ function toThread(session: ReturnType<SessionRepository['get']>, includeMessages
       timestamp: new Date(message.timestamp).toISOString(),
       kind: message.kind,
       sequence: message.sequence,
+      ...(typeof message.metadata?.voiceRole === 'string' ? { voice: message.metadata.voiceRole } : {}),
+      ...(Array.isArray(message.metadata?.artifacts) && message.metadata.artifacts.length ? { artifacts: message.metadata.artifacts } : {}),
+      ...(message.metadata?.research && typeof message.metadata.research === 'object' ? { research: message.metadata.research } : {}),
+      ...(Array.isArray(message.metadata?.attachments) && message.metadata.attachments.length > 0
+        ? { attachments: (message.metadata.attachments as Array<{ name: string; kind: string; mime?: string; ref: string }>).map((a) => ({ name: a.name, kind: a.kind, mime: a.mime, url: `/api/chat/uploads/${a.ref}` })) }
+        : {}),
     })) : [],
   };
 }
@@ -56,6 +76,33 @@ export function setModelSwitchCallback(fn: (provider: string, model?: string) =>
 
 export function setCurrentProviderCallback(fn: () => { name: string; model: string }): void {
   currentProviderFn = fn;
+}
+
+let stopFn: (() => Promise<string>) | null = null;
+let busyFn: ((sessionId: string) => boolean) | null = null;
+/** Whether a session has a turn running or queued (undo waits for it). */
+export function setSessionBusyLookup(fn: ((sessionId: string) => boolean) | null): void {
+  busyFn = fn;
+}
+type QueueState = { state: 'running' | 'queued' | 'none'; position?: number; busyWith?: string; busySessionId?: string };
+let queueControls: { state: (threadId: string) => QueueState; prioritize: (threadId: string) => number } | null = null;
+/** The agent's line of turns: where a chat stands, and moving one to the front ("do mine first"). */
+export function setQueueControls(controls: typeof queueControls): void {
+  queueControls = controls;
+}
+
+/** Research runs per chat: what's going on, "write the report now". */
+let researchControls: {
+  state: (sessionId: string) => Record<string, unknown>;
+  finish: (sessionId: string) => { ok: boolean; reason?: string };
+  off: (sessionId: string) => void;
+} | null = null;
+export function setResearchControls(controls: typeof researchControls): void {
+  researchControls = controls;
+}
+/** The same stop the terminal's Esc and `/stop` use: abort the running turn, cancel its work entry. */
+export function setStopCallback(fn: () => Promise<string>): void {
+  stopFn = fn;
 }
 
 let statusSnapshotFn: (() => Record<string, unknown>) | null = null;
@@ -107,6 +154,56 @@ const chat = new Hono();
 
 // ─── SSE Events ──────────────────────────────────────────────
 
+/** The conversation's latest plan checklist (update_plan), for a client opening the thread. */
+// The "/" picker: every slash command, with what it does (the terminal's list, the manual's words,
+// and the commands running plugins add). Sent as a message, a command runs exactly as typed.
+chat.get('/api/chat/commands', (c) => {
+  let plugins: Array<{ name: string; description: string; plugin: string }> = [];
+  try { plugins = getPluginManager().commandHelp(); } catch { /* plugins not started */ }
+  return c.json({ commands: commandCatalog(plugins) });
+});
+
+chat.get('/api/chat/plan', (c) => {
+  if (!webChannel) return c.json({ plan: null });
+  const id = c.req.query('sessionId');
+  return c.json({ plan: id ? webChannel.plans.get(id) : null });
+});
+
+/**
+ * Activity across every session (started, needs you, done, failed), for
+ * notifications. Prompts asked while this is open wait for the owner.
+ */
+chat.get('/api/chat/activity', (c) => {
+  if (!webChannel) return c.json({ error: 'Web channel not initialized' }, 503);
+  const ch = webChannel;
+  if (sessions) {
+    const repo = sessions;
+    ch.setSessionTitleLookup((id) => { try { return repo.get(id)?.title ?? undefined; } catch { return undefined; } });
+  }
+  const stream = new ReadableStream({
+    start(controller) {
+      const clientId = ch.addActivityClient(controller, isThisComputer(c));
+      const encoder = new TextEncoder();
+      const send = (data: string) => { try { controller.enqueue(encoder.encode(data)); } catch { /* closed */ } };
+      send(`event: connected\ndata: ${JSON.stringify({ id: clientId })}\n\n`);
+      const keepalive = setInterval(() => send(': keepalive\n\n'), 15000);
+      const cleanup = () => { clearInterval(keepalive); ch.removeActivityClient(clientId); untrack(); };
+      // Revoking the device (or signing the browser out) ends this stream at once.
+      const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
+      c.req.raw.signal.addEventListener('abort', cleanup);
+    },
+  });
+  return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' } });
+});
+
+/** Prompts still waiting for an answer in a session (opening it shows them). */
+chat.get('/api/chat/pending', (c) => {
+  if (!webChannel) return c.json({ prompts: [] });
+  const sessionId = c.req.query('sessionId') ?? '';
+  if (!sessionId) return c.json({ prompts: [] });
+  return c.json({ prompts: webChannel.pendingFor(sessionId).map((e) => ({ type: e.type, ...e.data })) });
+});
+
 chat.get('/api/chat/events', (c) => {
   if (!webChannel) {
     return c.json({ error: 'Web channel not initialized' }, 503);
@@ -134,10 +231,10 @@ chat.get('/api/chat/events', (c) => {
         send(`: keepalive\n\n`);
       }, 15000);
 
-      c.req.raw.signal.addEventListener('abort', () => {
-        clearInterval(keepalive);
-        webChannel?.removeSSEClient(clientId);
-      });
+      const cleanup = () => { clearInterval(keepalive); webChannel?.removeSSEClient(clientId); untrack(); };
+      // Revoking the device (or signing the browser out) ends this stream at once.
+      const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
+      c.req.raw.signal.addEventListener('abort', cleanup);
     },
     cancel() {},
   });
@@ -159,8 +256,21 @@ chat.post('/api/chat/send', async (c) => {
     return c.json({ error: 'Web channel not initialized' }, 503);
   }
 
-  const body = await c.req.json<{ content: string; sessionId?: string; threadId?: string }>();
-  if (!body.content?.trim()) {
+  const body = await c.req.json<{
+    content?: string;
+    sessionId?: string;
+    threadId?: string;
+    /** Base64 files: photos and PDFs become real attachments for this turn. */
+    attachments?: unknown;
+    /** Session-scoped coding: 'auto' | 'plan' | 'execute' for this turn only. */
+    programming?: unknown;
+    /** Folder the coding turn works in (an existing directory). */
+    cwd?: unknown;
+  }>();
+  const content = body.content?.trim() ?? '';
+  const upload = storeInlineAttachments(body.attachments);
+  if (!upload.ok) return c.json({ error: upload.error }, 400);
+  if (!content && upload.attachments.length === 0) {
     return c.json({ error: 'Message content required' }, 400);
   }
 
@@ -178,11 +288,48 @@ chat.post('/api/chat/send', async (c) => {
       }
     }
     session ??= sessions.getOrCreateBound('web', 'web:default');
-    webChannel.emitMessageInThread(body.content.trim(), session.id, session.id);
-    return c.json({ sent: true, sessionId: session.id });
+    // Models reject an empty text block, so a photo sent alone says what it is.
+    const text = content || `(Attached: ${upload.attachments.map(a => a.name).join(', ')})`;
+    const programming = scopedProgrammingState(body.programming);
+    let codeCwd: string | undefined;
+    if (programming && typeof body.cwd === 'string' && body.cwd.trim()) {
+      const resolvedCwd = resolve(body.cwd.trim());
+      if (!existsSync(resolvedCwd) || !statSync(resolvedCwd).isDirectory()) {
+        for (const a of upload.attachments) rmSync(a.path, { force: true });
+        return c.json({ error: `Not a folder: ${resolvedCwd}` }, 400);
+      }
+      codeCwd = resolvedCwd;
+    }
+    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, { ...(programming ? { programming, cwd: codeCwd } : {}), thisComputer: isThisComputer(c) });
+    return c.json({
+      sent: true,
+      sessionId: session.id,
+      ...(upload.attachments.length > 0 ? { attachments: attachmentRefs(upload.attachments).map((a) => ({ name: a.name, kind: a.kind, mime: a.mime, url: `/api/chat/uploads/${a.ref}` })) } : {}),
+    });
   } catch (err: any) {
+    // The message never reached the runtime: don't leave its files behind.
+    for (const a of upload.attachments) rmSync(a.path, { force: true });
     return c.json({ error: err.message }, 500);
   }
+});
+
+// ─── Uploads (files the owner sent, served back to the owner) ──
+
+chat.get('/api/chat/uploads/:month/:file', (c) => {
+  const path = resolveUploadRef(c.req.param('month'), c.req.param('file'));
+  if (!path) return c.json({ error: 'Not found' }, 404);
+  const bytes = readFileSync(path);
+  const mime = uploadMime(bytes);
+  if (!mime) return c.json({ error: 'Not found' }, 404);
+  return new Response(bytes, {
+    headers: {
+      'Content-Type': mime,
+      'Content-Length': String(bytes.length),
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, max-age=31536000, immutable',
+      'Content-Disposition': `inline; filename="${c.req.param('file').slice(37).replace(/["\\\r\n]/g, '_')}"`,
+    },
+  });
 });
 
 // ─── Settings ────────────────────────────────────────────────
@@ -198,6 +345,15 @@ chat.put('/api/chat/settings', async (c) => {
   const body = await c.req.json<Partial<ChatWebSettings>>();
   const current = webChannel.getSettings();
   const stored = loadSettings();
+  // Widening what Mercury may do, from another device, is the owner's call.
+  if (body.bypassPermissions === true && !current.bypassPermissions) {
+    const wait = requireOwner(c, { id: 'permissions.allow-all', title: 'Turn on Allow All (Mercury acts without asking)' });
+    if (wait) return wait;
+  }
+  if (typeof body.workspace === 'string' && body.workspace !== stored.workspace) {
+    const wait = requireOwner(c, { id: `workspace.root:${body.workspace}`, title: 'Change the workspace folder', detail: body.workspace });
+    if (wait) return wait;
+  }
   const next: ChatWebSettings = {
     bypassPermissions: body.bypassPermissions ?? current.bypassPermissions,
     restrictUser: body.restrictUser ?? current.restrictUser,
@@ -211,6 +367,17 @@ chat.put('/api/chat/settings', async (c) => {
 });
 
 // ─── Permission Resolution ───────────────────────────────────
+
+/** Stop button: interrupt whatever Mercury is doing right now. */
+chat.post('/api/chat/stop', async (c) => {
+  if (!stopFn) return c.json({ error: 'Stop is not available on this runtime' }, 503);
+  try {
+    const note = await stopFn();
+    return c.json({ ok: true, note });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
 
 chat.post('/api/chat/permission/:id', async (c) => {
   if (!webChannel) {
@@ -447,7 +614,7 @@ chat.get('/api/workspace/tree', (c) => {
   const targetDir = subPath ? resolve(rootDir, subPath) : rootDir;
 
   // Security: ensure target is within workspace
-  if (!targetDir.startsWith(rootDir)) {
+  if (!isInsideWorkspace(targetDir, rootDir)) {
     return c.json({ error: 'Path outside workspace' }, 403);
   }
 
@@ -501,9 +668,11 @@ chat.get('/api/workspace/file', (c) => {
   const fullPath = resolve(rootDir, filePath);
 
   // Security: ensure within workspace
-  if (!fullPath.startsWith(rootDir)) {
+  if (!isInsideWorkspace(fullPath, rootDir)) {
     return c.json({ error: 'Path outside workspace' }, 403);
   }
+  const off = protectedReason(fullPath, !isThisComputer(c));
+  if (off) return c.json({ error: off }, 403);
 
   if (!existsSync(fullPath)) {
     return c.json({ error: 'File not found' }, 404);
@@ -546,6 +715,9 @@ chat.put('/api/workspace/root', async (c) => {
   if (!existsSync(resolvedPath)) {
     return c.json({ error: 'Directory does not exist' }, 404);
   }
+  // The workspace bounds what the file endpoints reach: from another device, the owner decides where it is.
+  const wait = requireOwner(c, { id: `workspace.root:${resolvedPath}`, title: 'Change the workspace folder', detail: resolvedPath });
+  if (wait) return wait;
   const stat = statSync(resolvedPath);
   if (!stat.isDirectory()) {
     return c.json({ error: 'Path is not a directory' }, 400);
@@ -601,10 +773,106 @@ chat.post('/api/chat/threads/:id/delete', async (c) => {
     if (target.id !== id) return c.json({ error: 'Confirmation must use the exact session ID' }, 400);
     const syncPending = sessionSyncEnabledFn?.() === true;
     const deleted = syncPending ? sessions.markDeleted(target.id) : sessions.deletePermanently(target.id);
-    return c.json({ deleted: true, sessionId: deleted.id, syncPending });
+    // Its artifacts go with it (Mercury's copies; the owner's original files stay).
+    let artifactsRemoved = 0;
+    try { artifactsRemoved = artifactStore().removeThread(target.id); } catch { /* the hourly sweep catches it */ }
+    return c.json({ deleted: true, sessionId: deleted.id, syncPending, artifactsRemoved });
   } catch {
     return c.json({ deleted: false, error: 'Thread not found' }, 404);
   }
+});
+
+/** Save a thread to come back to later, or unsave it: { saved: boolean }. */
+// Where this chat's message stands: running, waiting in line (and behind what), or nothing.
+chat.get('/api/chat/threads/:id/queue', (c) => {
+  if (!queueControls) return c.json({ state: 'none' });
+  return c.json(queueControls.state(c.req.param('id')));
+});
+
+// "Do mine first": this chat's waiting messages go to the front of the line.
+chat.post('/api/chat/threads/:id/queue/first', (c) => {
+  if (!queueControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  return c.json({ moved: queueControls.prioritize(c.req.param('id')) });
+});
+
+// This chat's research: switched on for the next message, running (phase, sources…), or its last run.
+chat.get('/api/chat/threads/:id/research', (c) => {
+  if (!researchControls) return c.json({ armed: false, run: null });
+  return c.json(researchControls.state(c.req.param('id')));
+});
+
+// "Write the report now": stop searching and write the report from what was read.
+chat.post('/api/chat/threads/:id/research/finish', (c) => {
+  if (!researchControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  const r = researchControls.finish(c.req.param('id'));
+  return r.ok ? c.json({ ok: true }) : c.json({ ok: false, error: r.reason }, 409);
+});
+
+// Research off for this chat's next message (a run already going is stopped with Stop).
+chat.post('/api/chat/threads/:id/research/off', (c) => {
+  if (!researchControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  researchControls.off(c.req.param('id'));
+  return c.json({ ok: true });
+});
+
+// A site's icon for the source lists (fetched and cached by the runtime; the apps load nothing from third parties).
+chat.get('/api/chat/favicon', async (c) => {
+  const icon = await favicons().get(c.req.query('domain') ?? '');
+  if (!icon) return c.body(null, 204, { 'Cache-Control': 'private, max-age=86400' });
+  return new Response(new Uint8Array(icon.bytes), { status: 200, headers: {
+    'Content-Type': icon.mime,
+    'Cache-Control': 'private, max-age=604800',
+    // An SVG opened on its own can't run anything.
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+    'X-Content-Type-Options': 'nosniff',
+  } });
+});
+
+// The owner's answer to a research plan: { action: 'start' | 'cancel', questions?: string[] }.
+chat.post('/api/chat/research/plan/:id', async (c) => {
+  if (!webChannel) return c.json({ error: 'Web channel not initialized' }, 503);
+  const body: { action?: unknown; questions?: unknown } = await c.req.json<{ action?: unknown; questions?: unknown }>().catch(() => ({}));
+  if (body.action !== 'start' && body.action !== 'cancel') return c.json({ error: 'Send { action: "start" } or { action: "cancel" }.' }, 400);
+  const questions = Array.isArray(body.questions) ? body.questions.filter((q): q is string => typeof q === 'string').slice(0, 8) : undefined;
+  const ok = webChannel.answerResearchPlan(c.req.param('id'), body.action, questions);
+  return ok ? c.json({ ok: true }) : c.json({ ok: false, error: 'That plan was already answered or has expired.' }, 410);
+});
+
+chat.post('/api/chat/threads/:id/save', async (c) => {
+  const id = c.req.param('id');
+  if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+  const body: { saved?: unknown } = await c.req.json<{ saved?: unknown }>().catch(() => ({}));
+  if (typeof body.saved !== 'boolean') return c.json({ error: 'Send { saved: true } or { saved: false }.' }, 400);
+  try {
+    const session = sessions.setSaved(id, body.saved);
+    return c.json({ id: session.id, saved: !!session.savedAt, savedAt: session.savedAt ? new Date(session.savedAt).toISOString() : null });
+  } catch {
+    return c.json({ error: 'Thread not found' }, 404);
+  }
+});
+
+/**
+ * Undo: take back your last message and Mercury's reply to it, so you can
+ * change it. Only the last message you sent, and only once its turn has
+ * ended (stop it first). Returns what you wrote, to put back in the box.
+ */
+chat.post('/api/chat/threads/:id/undo', async (c) => {
+  const id = c.req.param('id');
+  if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+  // Which message the client means: its id, or (for a message the client
+  // showed before the runtime saved it) its text. Either must be the last one.
+  const body: { messageId?: string; content?: string } = await c.req.json<{ messageId?: string; content?: string }>().catch(() => ({}));
+  let session;
+  try { session = sessions.get(id); } catch { return c.json({ error: 'Thread not found' }, 404); }
+  if (busyFn?.(session.id)) return c.json({ error: 'Mercury is still working on this. Stop it first.', busy: true }, 409);
+  const last = [...session.messages].reverse().find((m) => m.role === 'user' && (m.kind ?? 'message') === 'message');
+  if (!last) return c.json({ error: 'There is nothing to undo.' }, 409);
+  const notLast = (body.messageId && body.messageId.toLowerCase() !== last.id)
+    || (typeof body.content === 'string' && body.content.trim() !== last.content.trim());
+  if (notLast) return c.json({ error: 'Only your last message can be undone.', notLast: true }, 409);
+  const removed = sessions.removeFrom(session.id, last.id);
+  const attachments = (last.metadata as { attachments?: unknown } | undefined)?.attachments;
+  return c.json({ ok: true, content: last.content, attachments: Array.isArray(attachments) ? attachments : [], removed: removed.length });
 });
 
 chat.post('/api/chat/threads/:id/messages', async (c) => {

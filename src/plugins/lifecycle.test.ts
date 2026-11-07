@@ -121,8 +121,10 @@ describe('web API', () => {
 
   it('only accepts changes from this machine', async () => {
     const dir = inProcessPlugin(src, { id: 'web-test' });
+    // From another device it waits for the owner's approval.
     const denied = await pluginRoutes.request('/api/plugins/install', post({ source: dir }), lan);
-    expect(denied.status).toBe(403);
+    expect(denied.status).toBe(428);
+    expect(((await denied.json()) as { approvalRequired: boolean }).approvalRequired).toBe(true);
     expect(readState().plugins['web-test']).toBeUndefined();
 
     const ok = await pluginRoutes.request('/api/plugins/install', post({ source: dir }), loopback);
@@ -133,8 +135,8 @@ describe('web API', () => {
     expect(list.status).toBe(200);
     expect(((await list.json()) as { items: Array<{ id: string }> }).items.map((i: { id: string }) => i.id)).toContain('web-test');
 
-    expect((await pluginRoutes.request('/api/plugins/web-test/disable', post({}), lan)).status).toBe(403);
-    expect((await pluginRoutes.request('/api/plugins/web-test', { method: 'DELETE' }, lan)).status).toBe(403);
+    expect((await pluginRoutes.request('/api/plugins/web-test/disable', post({}), lan)).status).toBe(428);
+    expect((await pluginRoutes.request('/api/plugins/web-test', { method: 'DELETE' }, lan)).status).toBe(428);
     expect((await pluginRoutes.request('/api/plugins/web-test', { method: 'DELETE' }, loopback)).status).toBe(200);
     expect(readState().plugins['web-test']).toBeUndefined();
   });

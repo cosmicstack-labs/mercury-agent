@@ -2,3 +2,10 @@
 # Vendored, patched ink must stay byte-identical to tarball + patch on every
 # OS (scripts/vendor-ink.cjs --check); never convert line endings.
 vendor/** -text
+
+# Signed files are checked byte for byte (UPDATES.md): Windows checkouts must
+# not turn their line endings into CRLF.
+website/static/updates/** -text
+website/static/desktop/** -text
+src/updates/fixtures/** -text
+apps/desktop/src-tauri/src/commands/testdata/** -text

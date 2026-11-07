@@ -11,6 +11,7 @@
  * contain "__", so the name alone identifies a plugin tool.
  */
 import { jsonSchema, tool, type Tool } from 'ai';
+import { isMcpToolName } from '../capabilities/mcp/naming.js';
 import type { PermissionManager } from '../capabilities/permissions.js';
 import { logger } from '../utils/logger.js';
 
@@ -101,13 +102,14 @@ export function pluginToolName(pluginId: string, name: string): string {
 
 /** True for any name shaped like a plugin tool, live or not. */
 export function isPluginToolName(name: string): boolean {
-  return TOOL_NAME_RE.test(name);
+  // `mcp__<server>__<tool>` has the same shape but is an MCP tool (ADR-029).
+  return !isMcpToolName(name) && TOOL_NAME_RE.test(name);
 }
 
 /** A bot may use a plugin tool only when its allow list names it, or the whole plugin ("<id>__*"). */
 export function pluginToolAllowed(name: string, allow: readonly string[]): boolean {
   const m = TOOL_NAME_RE.exec(name);
-  if (!m) return false;
+  if (!m || isMcpToolName(name)) return false;
   return allow.includes(name) || allow.includes(`${m[1]}__*`);
 }
 

@@ -1,5 +1,6 @@
 import { NavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import api from "@/lib/api";
 import { useThemeStore } from "@/stores/theme";
 import { ThemeToggle } from "./ThemeToggle";
 import {
@@ -16,6 +17,7 @@ import {
   Cpu,
   Bot,
   Puzzle,
+  Plug,
   Blocks,
   Shield,
   Clock,
@@ -64,6 +66,7 @@ const NAV_SECTIONS = [
     items: [
       { to: "/providers", icon: Cpu, label: "Providers" },
       { to: "/skills", icon: Puzzle, label: "Skills" },
+      { to: "/mcp", icon: Plug, label: "MCP" },
       { to: "/plugins", icon: Blocks, label: "Plugins" },
       { to: "/permissions", icon: Shield, label: "Permissions" },
       { to: "/schedules", icon: Clock, label: "Schedules" },
@@ -244,7 +247,7 @@ export function Sidebar({ open, onToggle }: SidebarProps) {
             {(() => {
               const btn = (
                 <button
-                  onClick={() => { window.location.href = "/api/auth/logout"; }}
+                  onClick={() => { void api.auth.signOut(); }}
                   className="p-2 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                 >
                   <LogOut size={18} />

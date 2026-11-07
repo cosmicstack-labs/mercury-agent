@@ -1,6 +1,6 @@
 name: Downloads badge
 
-# Refreshes .github/badges/downloads.json (npm + installer binary downloads),
+# Refreshes .github/badges/downloads.json (npm + installer binaries + desktop downloads),
 # read by the README's shields.io endpoint badge via raw.githubusercontent.com.
 on:
   schedule:

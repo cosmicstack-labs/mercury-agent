@@ -32,7 +32,12 @@ export function createScheduleTaskTool(scheduler: Scheduler, permissions: Permis
 
       const allowTools = [...new Set((allow_tools ?? []).filter((t) => isPluginToolName(t)))];
       const rejected = (allow_tools ?? []).filter((t) => !isPluginToolName(t));
-      if (rejected.length) return `allow_tools only takes plugin tools (like whatsapp__call_owner); not: ${rejected.join(', ')}.`;
+      if (rejected.length) {
+        const mcpNote = rejected.some((t) => t.startsWith('mcp__'))
+          ? ' MCP tools run unattended only when the owner lists them in that server\'s tools.autoApprove (mercury.yaml).'
+          : '';
+        return `allow_tools only takes plugin tools (like whatsapp__call_owner); not: ${rejected.join(', ')}.${mcpNote}`;
+      }
       if (allowTools.length && permissions.getCurrentSenderRole() === 'member') {
         return 'Only the owner can schedule tasks that act without asking (allow_tools).';
       }

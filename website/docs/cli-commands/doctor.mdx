@@ -31,3 +31,13 @@ This prints:
 - Daemon status
 - Spotify inline-art support status
 - Keybinding fallbacks (`/view`, `/ws exit`, etc.)
+
+## MCP Servers
+
+Use `--mcp` to connect to every enabled [MCP server](../integrations/mcp) and report its health:
+
+```bash
+mercury doctor --mcp
+```
+
+Each server is listed as connected (with its tool count and how many tools are allowed), failed (with the reason and the end of the server's stderr), or disabled. Configuration problems, literal secrets in `mercury.yaml`, and tools skipped because their schema can't be used are listed too. The command exits with status 1 if any server fails, so it can be used in scripts.

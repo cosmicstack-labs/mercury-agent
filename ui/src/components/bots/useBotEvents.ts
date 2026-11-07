@@ -1,10 +1,11 @@
 import { useEffect, useState, useRef } from "react";
+import { createEventStream, type EventStream } from "@/lib/sse";
 
 /**
- * Live fleet feed — one EventSource per mounted cockpit. Rides the same
+ * Live fleet feed — one event stream per mounted cockpit. Rides the same
  * in-process activity bus as the CLI's bot-thread live region, so what the
- * dashboard shows is what the bot is doing right now. EventSource reconnects
- * natively; components keep their periodic roster poll as the fallback.
+ * dashboard shows is what the bot is doing right now. The stream reconnects
+ * by itself; components keep their periodic roster poll as the fallback.
  */
 export interface BotEventState {
   /** botId → current activity label ("read_file …","fetch_url …"). */
@@ -20,10 +21,10 @@ export function useBotEvents(): BotEventState {
     lastDelivery: null,
     connected: false,
   });
-  const esRef = useRef<EventSource | null>(null);
+  const esRef = useRef<EventStream | null>(null);
 
   useEffect(() => {
-    const es = new EventSource(`${window.location.origin}/api/bots/events`);
+    const es = createEventStream("/api/bots/events");
     esRef.current = es;
 
     es.addEventListener("bot_activity", (e) => {

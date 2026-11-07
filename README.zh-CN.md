@@ -242,6 +242,7 @@ Mercury 优先使用默认提供方，失败时自动切换到其他提供方。
 | Anthropic | `claude-sonnet-4` | `ANTHROPIC_API_KEY` |
 | Grok (xAI) | `grok-4` | `GROK_API_KEY` |
 | Atlas Cloud | `qwen/qwen3.5-flash` | `ATLASCLOUD_API_KEY` |
+| Runcrate | `deepseek-ai/DeepSeek-V4.1-Flash` | `RUNCRATE_API_KEY` |
 | AI/ML API | `anthropic/claude-sonnet-4.6` | `AIMLAPI_API_KEY` |
 | MiMo（小米） | `mimo-v2.5-pro` | `MIMO_API_KEY` |
 | Ollama Cloud | `gpt-oss:120b` | `OLLAMA_CLOUD_API_KEY` |

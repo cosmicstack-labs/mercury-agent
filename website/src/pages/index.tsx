@@ -6,6 +6,8 @@ import Layout from '@theme/Layout';
 import Killipi from '@site/src/components/Killipi';
 import Terminal from '@site/src/components/Home/Terminal';
 import InstallCommand from '@site/src/components/Home/InstallCommand';
+import DesktopDownload from '@site/src/components/Download/DesktopDownload';
+import HeroInstall from '@site/src/components/Home/HeroInstall';
 import {
   SITE_URL, GITHUB_URL, NPM_URL, SKILLS_URL, RELEASE, SEO, HERO_SCRIPT, CHAPTERS,
   SURFACES, CLOUD, CHANNELS, PROVIDERS, COMPARE, NOT_YET, FAQ,
@@ -42,7 +44,7 @@ const JSON_LD = {
       operatingSystem: 'macOS, Linux, Windows, Android (Termux)',
       softwareVersion: RELEASE.version,
       license: 'https://opensource.org/licenses/MIT',
-      downloadUrl: `${GITHUB_URL}/releases/latest`,
+      downloadUrl: `${SITE_URL}/download`,
       installUrl: `${SITE_URL}/docs`,
       image: `${SITE_URL}/img/og/home.png`,
       offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
@@ -90,9 +92,9 @@ function Hero({ stars }: { stars: string | null }) {
         <p className="mx-hero__sub">
           Mercury learns how you work, remembers what matters, and gets things done while
           you’re away. It runs on your machine, asks before it acts, and works with any model,
-          from your terminal, browser, Telegram, Discord, Slack, or Signal.
+          from Mercury Desktop, your terminal, browser, Telegram, Discord, Slack, or Signal.
         </p>
-        <InstallCommand className="mx-hero__install" />
+        <HeroInstall />
         <div className="mx-hero__links">
           <Link to="/docs" className="mx-btn mx-btn--primary">Read the docs</Link>
           <a href={GITHUB_URL} className="mx-btn" target="_blank" rel="noopener noreferrer">
@@ -326,9 +328,17 @@ function FinalCta() {
     <section className="mx-final" id="install" aria-labelledby="install-title">
       <div className="mx-wrap mx-final__inner">
         <h2 id="install-title" className="mx-h2">Up and running <em>in about a minute.</em></h2>
-        <p className="mx-lead">Install, answer the setup wizard, then run <code>mercury up</code> to keep it running for good.</p>
-        <InstallCommand />
+        <p className="mx-lead">
+          Mercury Desktop installs Mercury on your computer and keeps it updated. On a server, install it from the
+          command line, answer the setup wizard, then run <code>mercury up</code> to keep it running for good.
+        </p>
+        <DesktopDownload />
+        <div className="mx-server-path">
+          <p className="mx-server-path__label">Or run Mercury on a server</p>
+          <InstallCommand className="mx-hero__install" />
+        </div>
         <div className="mx-final__links">
+          <Link to="/download">All downloads</Link>
           <Link to="/docs">Getting started</Link>
           <Link to="/docs/getting-started/platforms/macos">Platform guides</Link>
           <Link to={RELEASE.notes}>Release notes</Link>

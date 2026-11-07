@@ -36,7 +36,7 @@ import {
 } from '../../utils/config.js';
 import { MAX_STEPS } from '../agent.js';
 import path from 'node:path';
-import type { ChannelMessage, ChannelType } from '../../types/channel.js';
+import type { ChannelType } from '../../types/channel.js';
 import { createProvider, ProviderRegistry as ProviderRegistryImpl } from '../../providers/registry.js';
 import { ProgrammingMode } from '../programming-mode.js';
 import { logger } from '../../utils/logger.js';
@@ -50,6 +50,7 @@ import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../../spo
 import { getCloudTokenStore } from '../../cloud/token-store.js';
 import { publishStatus, updateCliProviderStatus } from '../provider-status.js';
 import { whatsNewText } from '../../utils/whats-new.js';
+import { formatMcpChatStatus } from '../../capabilities/mcp/admin.js';
 import { FORGET_THAT_RE, MEMORY_SUBCOMMAND_HELP, handleBeliefCommand } from './memory-commands.js';
 
 /**
@@ -162,7 +163,12 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     const runningVersion = channelType === 'cli' && channel instanceof CLIChannel
       ? (channel.getTuiState().version || 'dev')
       : 'dev';
-    await channel.send(whatsNewText(runningVersion), channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+    // The signed update manifest's notes for this version, when it has them.
+    const { readManifestCache, latestFor } = await import('../../updates/manifest.js');
+    const cached = readManifestCache().manifest;
+    const release = [latestFor(cached, 'server', 'stable'), latestFor(cached, 'server', 'dev')].find((r) => r && r.version === runningVersion.replace(/^v/, '') && r.notes);
+    const text = release?.notes ? `${release.notes}${release.notesUrl ? `\n\n${release.notesUrl}` : ''}` : whatsNewText(runningVersion);
+    await channel.send(text, channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
     return true;
   }
 
@@ -173,6 +179,12 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
       const runningVersion = channelType === 'cli' && channel instanceof CLIChannel
         ? (channel.getTuiState().version || 'dev')
         : 'dev';
+      const { readManifestCache, requiredFor } = await import('../../updates/manifest.js');
+      const required = requiredFor(readManifestCache().manifest, 'server', runningVersion);
+      if (required) {
+        await channel.send(`This update is required and can't be ignored: ${required.reason} Run \`mercury upgrade\` in your terminal; it goes back on its own if anything fails.`, channelId);
+        return true;
+      }
       const target = latestSeenUpdate(runningVersion);
       if (!target) {
         await channel.send('Nothing to ignore — no update was offered for this version.', channelId);
@@ -1022,6 +1034,11 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     return true;
   }
 
+  if (cmd === '/mcp' || cmd.startsWith('/mcp ')) {
+    await channel.send(formatMcpChatStatus(ctx.mcpStatus?.() ?? [], trimmed.slice('/mcp'.length).trim()), channelId);
+    return true;
+  }
+
   if (cmd === '/skills' || cmd.startsWith('/skills ')) {
     await agent.handleSkillsSlashCommand(trimmed, channel, channelId, ctx);
     return true;
@@ -1196,58 +1213,129 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     return true;
   }
 
+  if (cmd === '/server' || cmd.startsWith('/server ')) {
+    // Remote access is managed on the computer Mercury runs on: the terminal
+    // here, or Mercury Desktop / an attached terminal on this computer —
+    // never from a phone chat or a remote device.
+    const here = channelType === 'cli' || agent.currentMessage?.metadata?.thisComputer === true;
+    if (!here) {
+      await channel.send('`/server` works only on the computer Mercury runs on (its terminal, or Mercury Desktop there).', channelId);
+      return true;
+    }
+    const { runServerCommand } = await import('../../security/server-menu.js');
+    const { localServerOps } = await import('../../security/server-ops.js');
+    const ops = localServerOps({ cloudConnected: () => !!ctx.config().cloud?.enabled, by: channelType === 'cli' ? 'cli' : 'desktop' });
+    const args = trimmed.slice('/server'.length);
+    const prompt = channel as typeof channel & { presentChoicePrompt?: (q: string, o: Array<{ value: string; label: string }>, t?: string) => Promise<string> };
+    const say = async (text: string) => { await channel.send(text, channelId); };
+    if (channel instanceof CLIChannel) {
+      await channel.withMenu(async (select) => {
+        await runServerCommand(args, ops, {
+          choose: async (title, options) => (await select(title, options)) || null,
+          say,
+          // Shown in the menu, not the transcript.
+          secret: async (text) => { await select(text, [{ value: 'ok', label: "I've copied it" }]); },
+        });
+      });
+      return true;
+    }
+    await runServerCommand(args, ops, {
+      choose: async (title, options) => (typeof prompt.presentChoicePrompt === 'function' ? (await prompt.presentChoicePrompt(title, options, channelId)) || null : null),
+      say,
+      secret: async (text) => {
+        if (typeof prompt.presentChoicePrompt === 'function') await prompt.presentChoicePrompt(text, [{ value: 'ok', label: "I've copied it" }], channelId);
+        else await say(text);
+      },
+    });
+    return true;
+  }
+
   if (cmd.startsWith('/research')) {
     const rawArgs = trimmed.slice('/research'.length).trim();
+    const sub = rawArgs.toLowerCase();
+    const web = channel instanceof WebChannel ? channel : null;
+    // Research a message as a real user turn in this chat: the same session
+    // as the command (without it the turn, and its report, went to another one).
+    const asked = agent.currentMessage?.channelId === channelId ? agent.currentMessage : null;
+    const research = (content: string, opts: { topic?: string; planFirst?: boolean } = {}): void => {
+      agent.researchMode.setOn(opts.topic ?? content.slice(0, 160), { sessionId: channelId, planFirst: opts.planFirst });
+      web?.sendResearchArmed(true, channelId, { topic: opts.topic ?? content.slice(0, 160), planFirst: opts.planFirst });
+      agent.enqueueMessage({
+        id: `research-${Date.now().toString(36)}`,
+        channelId,
+        channelType: channelType as ChannelType,
+        senderId: 'user',
+        senderName: 'You',
+        content,
+        timestamp: Date.now(),
+        ...(asked?.sessionId ? { sessionId: asked.sessionId } : {}),
+        ...(asked?.metadata ? { metadata: { ...asked.metadata } } : {}),
+      });
+    };
 
-    if (!rawArgs || rawArgs.toLowerCase() === 'status') {
+    if (!rawArgs || sub === 'status') {
       await channel.send(agent.researchMode.getStatusText(), channelId);
       return true;
     }
 
-    if (rawArgs.toLowerCase() === 'on') {
-      agent.researchMode.setOn();
-      await channel.send(
-        'Research mode: **On**\nI will perform deep, multi-source web research and produce a full markdown research article. Long tasks are expected. Use `/research off` to exit.',
-        channelId,
-      );
+    if (sub === 'on' || sub === 'plan') {
+      agent.researchMode.setOn(undefined, { sessionId: channelId, planFirst: sub === 'plan' });
+      web?.sendResearchArmed(true, channelId, { planFirst: sub === 'plan' });
+      await channel.send(`Research: **On** for your next message here${sub === 'plan' ? ' (plan first)' : ''}. I'll search live sources, cross-check them and write a full report; then research switches off again. \`/research off\` cancels.`, channelId);
       return true;
     }
 
-    if (rawArgs.toLowerCase() === 'off') {
+    if (sub === 'off') {
       agent.researchMode.setOff();
-      await channel.send('Research mode: **Off**\nBack to normal conversation mode.', channelId);
+      web?.sendResearchArmed(false, channelId);
+      await channel.send('Research: **Off**. Back to normal conversation.', channelId);
       return true;
     }
 
-    if (rawArgs.toLowerCase() === 'toggle') {
-      const newState = agent.researchMode.toggle();
-      await channel.send(`Research mode: **${newState === 'on' ? 'On' : 'Off'}**`, channelId);
+    if (sub === 'toggle') {
+      const on = !agent.researchMode.armedForSession(channelId);
+      if (on) agent.researchMode.setOn(undefined, { sessionId: channelId });
+      else agent.researchMode.setOff();
+      web?.sendResearchArmed(on, channelId);
+      await channel.send(`Research: **${on ? 'On' : 'Off'}**${on ? ' for your next message here' : ''}`, channelId);
       return true;
     }
 
-    // Treat remaining args as a topic + enable research mode
-    agent.researchMode.setOn(rawArgs);
-    if (channel instanceof WebChannel) {
-      channel.sendHeartbeat(`Research mode: On. Topic: ${rawArgs}. I will gather live sources and produce a full research article.`, channelId);
-    } else {
-      await channel.send(
-        `Research mode: **On**\nTopic: ${rawArgs}\nI will gather live sources and produce a full research article. Use \`/research off\` to exit.`,
-        channelId,
-      );
+    // Pick up where the last run in this chat left off.
+    if (sub === 'continue' || sub === 'retry') {
+      const last = agent.researchMode.runFor(channelId);
+      if (!last) {
+        await channel.send('There is no earlier research in this chat to continue. Use `/research <topic>` to start one.', channelId);
+        return true;
+      }
+      const snap = last.snapshot();
+      if (sub === 'retry') {
+        const failed = last.failedSources().slice(0, 12);
+        if (!failed.length) {
+          await channel.send('Every source in the last research was read; there is nothing to retry.', channelId);
+          return true;
+        }
+        research(`Retry the sources that couldn't be read in the research on "${snap.topic}", then update the report with anything new. Try each once more; if one fails again, find another source for the same point.\n${failed.map((f) => `- ${f.url} (${f.reason ?? 'failed'})`).join('\n')}`, { topic: snap.topic });
+        return true;
+      }
+      const gaps = [
+        ...(snap.cut ? [`it stopped early because ${snap.cut}`] : []),
+        ...last.failedSources().slice(0, 8).map((f) => `${f.domain} couldn't be read (${f.reason ?? 'failed'})`),
+      ];
+      research(`Continue the research on "${snap.topic}". Build on the report already in this conversation: keep what it established, fill in what it doesn't cover, and write the full updated report.${gaps.length ? `\nKnown gaps:\n${gaps.map((g) => `- ${g}`).join('\n')}` : ''}`, { topic: snap.topic });
+      return true;
     }
-    // Enqueue the topic as a real user message so the agent immediately
-    // begins researching it, rather than only setting mode + topic and
-    // waiting for the user to repeat themselves.
-    const researchTopicMsg: ChannelMessage = {
-      id: `research-${Date.now().toString(36)}`,
-      channelId,
-      channelType: channelType as ChannelType,
-      senderId: 'user',
-      senderName: 'You',
-      content: rawArgs,
-      timestamp: Date.now(),
-    };
-    agent.enqueueMessage(researchTopicMsg);
+
+    // "/research plan <topic>": show the plan before starting.
+    const planned = /^plan\s+(.+)$/is.exec(rawArgs);
+    if (planned) {
+      research(planned[1].trim(), { planFirst: true });
+      return true;
+    }
+
+    // Anything else is the topic: research it now.
+    if (!web) await channel.send(`Research: **On**\nTopic: ${rawArgs}\nI'll gather live sources and write a full report.`, channelId);
+    research(rawArgs);
     return true;
   }
 

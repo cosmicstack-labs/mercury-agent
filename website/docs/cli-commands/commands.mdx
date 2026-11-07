@@ -15,12 +15,46 @@ title: Full Command Reference
 | `mercury status` | Show config, providers, daemon PID, and budget |
 | `mercury doctor` | Reconfigure settings — press Enter to keep current values |
 | `mercury doctor --platform` | Show cross-platform terminal/daemon compatibility diagnostics |
+| `mercury doctor --mcp` | Connect to every enabled MCP server and report its status |
+| `mercury doctor --security` | Check remote access and security: password, devices, file permissions, the tunnel |
 | `mercury setup` | Re-run the setup wizard (same as doctor) |
 | `mercury help` | Show the full manual (tools, commands, config paths) |
 | `mercury service install` | Install as system service (auto-start on boot) |
 | `mercury service uninstall` | Uninstall the system service |
 | `mercury service status` | Show system service status |
 | `mercury --verbose` | Start with debug logging on stderr |
+
+## Updating
+
+Mercury updates itself safely: it waits for running work, downloads the new version and checks it, backs up, installs, and checks the new version starts. If it doesn't, the old version and your settings come back on their own. See [Updating Mercury](../desktop/updating).
+
+| Command | Description |
+|---------|-------------|
+| `mercury upgrade` | Update to the latest version (rolls back on its own if the new one fails) |
+| `mercury upgrade --check` | Only show whether a newer version exists and what's in it |
+| `mercury upgrade --now` | Don't wait for running work to finish |
+| `mercury upgrade --force` | Reinstall even when already on the latest version |
+| `mercury update` | Is there a newer Mercury, and what's in it |
+| `mercury update check` | Ask again now instead of using the last check |
+
+## Remote access and security
+
+`mercury server` (and `/server` in a chat on this computer) controls who can reach this Mercury from other devices. See [Remote access & security](../desktop/remote-access).
+
+| Command | Description |
+|---------|-------------|
+| `mercury server` | Open the menu |
+| `mercury server status` | What can connect, and how |
+| `mercury server on` / `off` | Allow or refuse other devices |
+| `mercury server approve <code>` | Let a waiting device or action through (`deny <code>` refuses) |
+| `mercury server devices` | Paired devices; `revoke <id or name>`, `revoke-all` |
+| `mercury server token <name>` | Make a token for a device by hand (shown once) |
+| `mercury server allow-ip <ip or range>` | Allow only these addresses; `remove-ip`, `allow-any` |
+| `mercury server shell on` / `off` | The terminal for remote devices (each command still asks you) |
+| `mercury server expire <days>` / `never` | Sign out devices unused this long (default 30 days) |
+| `mercury server limit <n>` | The most devices that can be paired (default 10) |
+| `mercury server check` | The security check (same as `mercury doctor --security`) |
+| `mercury server log` | The security log |
 
 ## Skills registry
 
@@ -41,3 +75,21 @@ The `mercury skills` command tree talks to [skills.mercuryagent.sh](https://skil
 | `mercury skills doctor` | Check install root, registry connectivity, cache |
 
 Shared flags: `--json`, `--registry <url>`, `-q`, `-y`. Environment overrides: `MERCURY_SKILLS_REGISTRY`, `MERCURY_SKILLS_INSTALL_ROOT`.
+
+## MCP servers
+
+The `mercury mcp` commands manage the [MCP servers](../integrations/mcp) whose tools Mercury can use. Changes are saved to `~/.mercury/mercury.yaml` and the background daemon is restarted to apply them.
+
+| Command | Description |
+|---------|-------------|
+| `mercury mcp list` | Show configured servers, tool filters and env/header settings (secrets masked) |
+| `mercury mcp add <id> --stdio <command> [-- args...]` | Add a local server; shows the command and asks before saving |
+| `mercury mcp add <id> --http <url>` | Add a remote Streamable HTTP server |
+| `mercury mcp test <id>` | Connect once and list every tool as allowed, hidden or skipped |
+| `mercury mcp allow <id> <tools...>` | Show these tools to the agent (`'*'` for all) |
+| `mercury mcp disallow <id> <tools...>` | Hide these tools again |
+| `mercury mcp enable <id>` | Enable a server (asks before starting a stdio command) |
+| `mercury mcp disable <id>` | Disable a server without removing it |
+| `mercury mcp remove <id>` | Remove a server |
+
+`add` options: `--env KEY=VALUE`, `--header 'Name: value'`, `--cwd <dir>`, `--allow <tools>`, `--auto-approve <tools>`, `--allow-private`, `--disabled`, `-y`. Use `${env:NAME}` (in single quotes) for secrets kept in `~/.mercury/.env`.

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { logger } from '../utils/logger.js';
 import { isSqliteAvailable, openSqlite, type SqliteDatabase } from '../utils/sqlite-driver.js';
+import type { ChannelAttachment } from '../types/channel.js';
 import type { BotTrigger } from './types.js';
 
 export const QUEUE_DB_FILE = 'queue.db';
@@ -13,6 +14,11 @@ export interface DurableBotJob {
   trigger: BotTrigger;
   prompt: string;
   fromBot?: string;
+  /**
+   * Files on disk for this job (`web/api/uploads.ts` wrote them). Paths, not bytes:
+   * the queue survives a restart and the image is already stored.
+   */
+  attachments?: ChannelAttachment[];
   source?: { channelType: string; channelId: string };
   state: 'pending' | 'claimed' | 'dead';
   attempts: number;
@@ -89,8 +95,30 @@ export interface BotQueueBackend {
 export const LEASE_SECONDS = 60;
 const DLQ_CAP = 100;
 
-export function idempotencyKeyFor(botId: string, trigger: BotTrigger, prompt: string, fromBot?: string): string {
-  return createHash('sha256').update(`${botId}|${trigger}|${prompt}|${fromBot ?? ''}`).digest('hex').slice(0, 16);
+/**
+ * Two requests that differ only by their files are different jobs: the same caption
+ * ("what is this?") with two different photos must not collapse into one. Files are keyed
+ * by their bytes, not their path: every upload gets a fresh random name, so a path would
+ * never let a retried request dedupe.
+ */
+/** A file's content hash, or its path when it can't be read (the turn will skip it anyway). */
+function fileFingerprint(attachment: ChannelAttachment): string {
+  try {
+    return createHash('sha256').update(readFileSync(attachment.path)).digest('hex');
+  } catch {
+    return attachment.path;
+  }
+}
+
+export function idempotencyKeyFor(
+  botId: string,
+  trigger: BotTrigger,
+  prompt: string,
+  fromBot?: string,
+  attachments?: ChannelAttachment[],
+): string {
+  const files = (attachments ?? []).map(fileFingerprint).join(',');
+  return createHash('sha256').update(`${botId}|${trigger}|${prompt}|${fromBot ?? ''}|${files}`).digest('hex').slice(0, 16);
 }
 
 function normalizeJob(raw: any): DurableBotJob {
@@ -99,12 +127,18 @@ function normalizeJob(raw: any): DurableBotJob {
   if (typeof source === 'string') {
     try { source = JSON.parse(source); } catch { source = undefined; }
   }
+  let attachments = raw.attachments;
+  if (typeof attachments === 'string') {
+    try { attachments = JSON.parse(attachments); } catch { attachments = undefined; }
+  }
+  if (!Array.isArray(attachments) || attachments.length === 0) attachments = undefined;
   return {
     id: String(raw.id),
     botId: String(raw.botId ?? raw.bot_id),
     trigger: raw.trigger,
     prompt: raw.prompt ?? '',
     fromBot: raw.fromBot ?? raw.from_bot ?? undefined,
+    attachments,
     source,
     state: raw.state ?? 'pending',
     attempts: raw.attempts ?? 0,
@@ -266,7 +300,8 @@ export class SqliteQueueBackend implements BotQueueBackend {
         lease_expires_at INTEGER,
         idempotency_key TEXT NOT NULL,
         reason_code TEXT,
-        settled_at INTEGER
+        settled_at INTEGER,
+        attachments TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_bot_jobs_state ON bot_jobs (state, created_at);
       CREATE TABLE IF NOT EXISTS bot_mail (
@@ -293,6 +328,7 @@ export class SqliteQueueBackend implements BotQueueBackend {
     `);
     // Migration for queues created before run_after / bot_mail existed.
     try { this.db.exec('ALTER TABLE bot_jobs ADD COLUMN run_after INTEGER'); } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE bot_jobs ADD COLUMN attachments TEXT'); } catch { /* already present */ }
     this.dlqCap = dlqCap;
   }
 
@@ -305,12 +341,13 @@ export class SqliteQueueBackend implements BotQueueBackend {
     }
     const stored: DurableBotJob = { ...job, state: 'pending' };
     this.db.prepare(
-      `INSERT INTO bot_jobs (id, bot_id, trigger, prompt, from_bot, source, state, attempts, created_at, lease_expires_at, idempotency_key)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+      `INSERT INTO bot_jobs (id, bot_id, trigger, prompt, from_bot, source, state, attempts, created_at, lease_expires_at, idempotency_key, attachments)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
     ).run(
       stored.id, stored.botId, stored.trigger, stored.prompt,
       stored.fromBot ?? null, stored.source ? JSON.stringify(stored.source) : null,
       stored.attempts, stored.createdAt, stored.leaseExpiresAt ?? null, stored.idempotencyKey,
+      stored.attachments?.length ? JSON.stringify(stored.attachments) : null,
     );
     return { job: stored, duplicated: false };
   }

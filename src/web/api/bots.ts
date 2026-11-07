@@ -1,11 +1,17 @@
+import { requireOwner } from '../owner-gate.js';
+import { trackStream } from '../../security/live-streams.js';
+import { principalKey, principalOf } from '../middleware.js';
 import { Hono } from 'hono';
 import { openFolder, tildify } from '../../bots/open-folder.js';
 import type { Context } from 'hono';
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import type { BotManager } from '../../bots/bot-manager.js';
 import type { BotManifest } from '../../bots/types.js';
 import { PERMISSION_TIERS, tierPermissionsFile, isPermissionTier, type PermissionTier } from '../../bots/permission-tiers.js';
 import { buildBotBundle, importBotBundle } from '../../bots/bundle.js';
+import { isValidCronExpression } from '../../bots/store.js';
+import { decodeAvatarInput, detectImage } from '../../bots/avatar.js';
+import { storeInlineAttachments } from './uploads.js';
 
 const app = new Hono();
 
@@ -26,10 +32,74 @@ app.get('/api/bots', (c: any) => {
   if (!botManager) {
     return c.json({ bots: [], available: false });
   }
-  return c.json({ bots: botManager.getStatusSummaries(), queue: botManager.queue.counts(), available: true });
+  return c.json({ bots: botManager.getStatusSummaries(), queue: botManager.queue.counts(), available: true, unread: botManager.inbox.unread() });
+});
+
+// The owner's inbox (Bots 2.0): results, reported failures and runs that need
+// the owner, newest first. `?unread=1` for unread only, `?bot=<id>` for one bot.
+app.get('/api/bots/inbox', (c: Context) => {
+  if (!botManager) return c.json({ entries: [], unread: 0, available: false });
+  const limit = Math.max(1, Math.min(500, Number(c.req.query('limit')) || 100));
+  const botId = c.req.query('bot') || undefined;
+  const entries = botManager.inbox.list({ limit, botId, unreadOnly: c.req.query('unread') === '1' });
+  return c.json({ entries, unread: botManager.inbox.unread(botId), available: true });
+});
+
+// The persona builder, for the app's editors: rough instructions in, the
+// structured persona out. Nothing is saved; the owner reviews it first.
+app.post('/api/bots/persona-builder', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const body = (await c.req.json().catch(() => ({}))) as { text?: unknown; name?: unknown };
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  if (text.length < 10) return c.json({ error: 'Write a few words about what the bot should do first.' }, 400);
+  const persona = await botManager.buildPersona(text, typeof body.name === 'string' ? body.name.slice(0, 60) : 'Bot');
+  if (!persona) return c.json({ error: 'The persona builder isn\'t available right now (no model answered). Your text is unchanged.' }, 503);
+  return c.json({ persona });
+});
+
+// "Let Mercury decide": one bot or a fleet for this job, and the proposed crew. Nothing is created.
+app.post('/api/bots/plan', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const body = (await c.req.json().catch(() => ({}))) as { name?: unknown; description?: unknown; persona?: unknown; fleet?: unknown };
+  const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : '');
+  // fleet: true = the owner chose a fleet; only the crew is being designed.
+  const plan = await botManager.planShape({ name: str(body.name, 60) || 'Bot', description: str(body.description, 300), persona: str(body.persona, 8000), fleet: body.fleet === true });
+  return c.json({ plan, maxCrew: botManager.maxCrew() });
+});
+
+// Bots asking the owner mid-run: what's waiting, and the answer.
+app.get('/api/bots/approvals', (c: Context) => {
+  if (!botManager) return c.json({ approvals: [], available: false });
+  return c.json({ approvals: botManager.approvals.list(c.req.query('bot') || undefined), available: true });
+});
+
+app.post('/api/bots/approvals/:id', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const body = (await c.req.json().catch(() => ({}))) as { answer?: unknown };
+  if (body.answer !== 'yes' && body.answer !== 'always' && body.answer !== 'no') return c.json({ error: 'answer must be yes, always or no' }, 400);
+  if (!botManager.approvals.answer(c.req.param('id') ?? '', body.answer)) {
+    return c.json({ error: 'That question is no longer waiting (answered, timed out, or the run ended).' }, 409);
+  }
+  return c.json({ ok: true });
+});
+
+// Mark read: { ids: [...] } for some entries, {} for everything.
+app.post('/api/bots/inbox/read', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: unknown };
+  const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === 'string').slice(0, 1000) : undefined;
+  botManager.inbox.markRead(ids);
+  return c.json({ ok: true, unread: botManager.inbox.unread() });
 });
 
 // Onboard a bot
+/** Tiers that run commands or reach the whole home folder: from another device, the owner decides. */
+const POWERFUL_TIERS = new Set(['operator', 'full']);
+function gateTier(c: any, tier: string | undefined, botId: string): Response | null {
+  if (!tier || !POWERFUL_TIERS.has(tier)) return null;
+  return requireOwner(c, { id: `bots.tier:${botId}:${tier}`, title: `Give the bot “${botId}” ${tier === 'full' ? 'full access to this computer' : 'permission to run commands'}` });
+}
+
 app.post('/api/bots', async (c: any) => {
   if (!botManager) {
     return c.json({ error: 'Bots not available' }, 400);
@@ -42,6 +112,8 @@ app.post('/api/bots', async (c: any) => {
   if (body.tier !== undefined && !isPermissionTier(body.tier)) {
     return c.json({ error: `Unknown permission tier: ${body.tier}` }, 400);
   }
+  const tierWait = gateTier(c, body.tier, String(body.id));
+  if (tierWait) return tierWait;
   try {
     const manifest = botManager.store.create({
       id: body.id,
@@ -72,6 +144,17 @@ app.post('/api/bots', async (c: any) => {
 /** Open fleet-feed clients — roster mutations (add crew, promote, delete) push fresh snapshots. */
 const rosterSseClients = new Set<{ send: (event: string, data: unknown) => void }>();
 
+/**
+ * Subscribes a client to the fleet feed, and returns its unsubscribe.
+ *
+ * Exported so a test can stand where a browser tab stands: the point of the broadcast below is that
+ * *someone else's* screen updates, which no assertion on the PATCH response can show.
+ */
+export function registerRosterClient(client: { send: (event: string, data: unknown) => void }): () => void {
+  rosterSseClients.add(client);
+  return () => { rosterSseClients.delete(client); };
+}
+
 function broadcastRoster(): void {
   if (!botManager) return;
   for (const client of rosterSseClients) {
@@ -99,16 +182,25 @@ app.get('/api/bots/events', (c: any) => {
       rosterSseClients.add(client);
 
       const unsubscribe = bm.onBotActivity((ev) => client.send('bot_activity', ev));
+      // A new inbox entry: the desktop turns it into a notification.
+      const unsubscribeInbox = bm.inbox.onEntry((entry) => client.send('bot_inbox', entry));
+      // A bot asked, or its question was answered / timed out: the app shows or clears the buttons.
+      const unsubscribeApprovals = bm.approvals.onChange((e) => client.send('bot_approval', e));
 
       const keepalive = setInterval(() => {
         try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { clearInterval(keepalive); }
       }, 15000);
 
-      c.req.raw.signal?.addEventListener('abort', () => {
+      const cleanup = () => {
         clearInterval(keepalive);
         unsubscribe();
+        unsubscribeInbox();
+        unsubscribeApprovals();
         rosterSseClients.delete(client);
-      });
+        untrack();
+      };
+      const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
+      c.req.raw.signal?.addEventListener('abort', cleanup);
     },
     cancel() {},
   });
@@ -170,6 +262,9 @@ app.post('/api/bots/import', async (c: any) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
   const bundle = await c.req.json().catch(() => null) as any;
   if (!bundle) return c.json({ error: 'Invalid JSON body' }, 400);
+  // A bundle brings its own permissions and schedules.
+  const importWait = requireOwner(c, { id: 'bots.import', title: 'Import bots (with their own permissions and schedules)' });
+  if (importWait) return importWait;
   try {
     const report = importBotBundle(botManager.store, bundle, c.req.query('overwrite') === '1' ? { overwrite: true } : {});
     for (const created of report.created) botManager.invalidateRuntime(created);
@@ -205,12 +300,26 @@ app.patch('/api/bots/:id', async (c: any) => {
   const id = c.req.param('id');
   const patch = await c.req.json().catch(() => null) as Partial<BotManifest> | null;
   if (!patch) return c.json({ error: 'Invalid JSON body' }, 400);
+  if (patch.schedules !== undefined) {
+    const problem = scheduleProblem(patch.schedules);
+    if (problem) return c.json({ error: problem }, 400);
+  }
+  const previousRoutines = (botManager.store.get(id)?.schedules ?? []).map((r) => r.name);
   try {
     const updated = botManager.store.update(id, m => {
-      // Only config-editable fields; id/name identity fields are immutable here.
+      // The id is the identity and stays immutable: directories, crew links, journals, threads and
+      // avatars are all keyed by it. The name is a label the owner reads, so it is mutable — a bot
+      // created with a placeholder name was stuck with it forever, and editing bot.yaml behind the
+      // API's back (the only way until now) needs a daemon restart.
+      if (patch.name !== undefined) {
+        const name = typeof patch.name === 'string' ? patch.name.replace(/\s+/g, ' ').trim() : '';
+        if (!name) throw new Error('Bot name must not be empty');
+        m.name = name.slice(0, 60);
+      }
       if (patch.enabled !== undefined) m.enabled = patch.enabled;
       if (patch.description !== undefined) m.description = patch.description;
-      if (patch.model !== undefined) m.model = patch.model;
+      // null clears the choice: back to Mercury's default model.
+      if (patch.model !== undefined) { if (patch.model) m.model = patch.model; else delete m.model; }
       if (patch.tools !== undefined) m.tools = patch.tools;
       if (patch.memory !== undefined) m.memory = patch.memory;
       if (patch.comms !== undefined) m.comms = patch.comms;
@@ -219,6 +328,12 @@ app.patch('/api/bots/:id', async (c: any) => {
       if (patch.retention !== undefined) m.retention = patch.retention;
     });
     botManager.invalidateRuntime(id);
+    // Edited routines take effect now, not at the next restart.
+    if (patch.schedules !== undefined || patch.enabled !== undefined) botManager.syncRoutines(id, previousRoutines);
+    // A config edit is roster news: the name, the description, the model, the enabled flag and the
+    // autonomy limits all travel in the summaries. Without this, an open drawer kept the old name
+    // until some unrelated roster change happened — the edit looked like it had not been applied.
+    broadcastRoster();
     return c.json({ bot: updated });
   } catch (err: any) {
     return c.json({ error: err?.message ?? 'Failed to update bot' }, 400);
@@ -229,13 +344,41 @@ app.patch('/api/bots/:id', async (c: any) => {
 app.post('/api/bots/:id/message', async (c: any) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
   const id = c.req.param('id');
-  const body = await c.req.json().catch(() => null) as { message?: string; from?: string } | null;
-  if (!body?.message) return c.json({ error: 'message is required' }, 400);
-  const result = botManager.enqueue(id, { trigger: 'api', prompt: body.message, fromBot: body.from });
+  const body = await c.req.json().catch(() => null) as
+    { message?: string; from?: string; attachments?: unknown } | null;
+
+  // Bytes on the wire, written before the job exists: the queue stores paths, and a
+  // bot turn reads them exactly like a channel attachment.
+  const upload = storeInlineAttachments(body?.attachments);
+  if (!upload.ok) return c.json({ error: upload.error }, 400);
+
+  const message = body?.message?.trim() ?? '';
+  if (!message && upload.attachments.length === 0) {
+    for (const a of upload.attachments) rmSync(a.path, { force: true });
+    return c.json({ error: 'message is required' }, 400);
+  }
+
+  const result = botManager.enqueue(id, {
+    trigger: 'api',
+    prompt: message,
+    fromBot: body?.from,
+    attachments: upload.attachments.length > 0 ? upload.attachments : undefined,
+  });
   if (!result.accepted) {
+    // The turn will never run: its files must not stay in uploads.
+    for (const a of upload.attachments) rmSync(a.path, { force: true });
     return c.json({ accepted: false, reasonCode: result.reasonCode }, 409);
   }
-  return c.json({ accepted: true, jobId: result.jobId, status: 'accepted' }, 202);
+  if (result.duplicated) {
+    // A retry of a job already queued: that job holds its own copies of the files.
+    for (const a of upload.attachments) rmSync(a.path, { force: true });
+  }
+  return c.json({
+    accepted: true,
+    jobId: result.jobId,
+    status: 'accepted',
+    ...(upload.attachments.length > 0 ? { attachments: upload.attachments.map(a => ({ name: a.name, kind: a.kind })) } : {}),
+  }, 202);
 });
 
 // Inbox (pending bot-to-bot mail)
@@ -363,6 +506,8 @@ app.post('/api/bots/:id/crew', async (c: any) => {
   if (body.tier !== undefined && !isPermissionTier(body.tier)) {
     return c.json({ error: `Unknown permission tier: ${body.tier}` }, 400);
   }
+  const tierWait = gateTier(c, body.tier, String(body.id));
+  if (tierWait) return tierWait;
   const result = botManager.addCrew(id, { id: body.id, name: body.name, description: body.description, persona: body.persona });
   if (!result.ok) return c.json({ error: result.error }, 400);
   // A tier choice overrides the crew's verbatim lead inheritance (§2.5:
@@ -396,6 +541,62 @@ app.put('/api/bots/:id/persona', async (c: any) => {
   }
 });
 
+// Avatar (a bot's face) — bytes in, bytes out. Stored as one extension-less
+// file in the bot's profile dir, so the format is always the real one and
+// deleting the bot deletes its face. Clients that get no avatar draw a
+// monogram from the id; `hasAvatar` in the roster tells them which without a
+// probe per bot.
+app.get('/api/bots/:id/avatar', (c: any) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const id = c.req.param('id');
+  if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
+  const bytes = botManager.store.readAvatar(id);
+  if (!bytes) return c.json({ error: 'Bot has no avatar' }, 404);
+
+  const mime = detectImage(bytes);
+  if (!mime) {
+    // On disk but unreadable as an image: say so rather than serve a broken face.
+    return c.json({ error: 'Stored avatar is not a readable image' }, 500);
+  }
+  const etag = `W/"${bytes.length}-${Math.round(botManager.store.avatarMtimeMs(id))}"`;
+  if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
+  return c.body(new Uint8Array(bytes), 200, {
+    'Content-Type': mime,
+    'Content-Length': String(bytes.length),
+    'Cache-Control': 'private, max-age=0, must-revalidate',
+    // The bytes were sniffed as an image; the browser must not re-sniff them as HTML.
+    'X-Content-Type-Options': 'nosniff',
+    ETag: etag,
+  });
+});
+
+app.put('/api/bots/:id/avatar', async (c: any) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const id = c.req.param('id');
+  if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
+  const body = await c.req.json().catch(() => null);
+  const avatar = decodeAvatarInput(body);
+  if (!avatar.ok) return c.json({ error: avatar.error }, 400);
+  try {
+    botManager.store.writeAvatar(id, avatar.bytes);
+    // The roster carries `hasAvatar`, so every open dashboard learns the face
+    // changed without another request.
+    broadcastRoster();
+    return c.json({ ok: true, mime: avatar.mime, bytes: avatar.bytes.length });
+  } catch (err: any) {
+    return c.json({ error: err?.message ?? 'Could not store the avatar' }, 400);
+  }
+});
+
+app.delete('/api/bots/:id/avatar', (c: any) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const id = c.req.param('id');
+  if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
+  const removed = botManager.store.removeAvatar(id);
+  if (removed) broadcastRoster();
+  return c.json({ ok: true, removed });
+});
+
 // Permissions.yaml — the single source of truth (tool gate, path scopes,
 // shell lists). PUT with a tier applies the tier wholesale; PUT with a
 // full document is the "custom" path. Fleet inheritance: a crew bot shows
@@ -412,6 +613,10 @@ app.put('/api/bots/:id/permissions', async (c: any) => {
   const id = c.req.param('id');
   if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
   const body = await c.req.json().catch(() => null) as { tier?: string; permissions?: any } | null;
+  const permWait = body?.permissions !== undefined
+    ? requireOwner(c, { id: `bots.permissions:${c.req.param('id')}`, title: `Rewrite the permissions of the bot “${c.req.param('id')}”` })
+    : gateTier(c, body?.tier, c.req.param('id'));
+  if (permWait) return permWait;
   if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
   try {
     if (body.tier !== undefined) {
@@ -612,3 +817,18 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 export default app;
+
+/** What's wrong with an edited schedule list, or null. Each routine: a name, a valid cron, a prompt. */
+function scheduleProblem(schedules: unknown): string | null {
+  if (!Array.isArray(schedules)) return 'schedules must be a list';
+  const names = new Set<string>();
+  for (const r of schedules as Array<Record<string, unknown>>) {
+    const name = typeof r?.name === 'string' ? r.name.trim() : '';
+    if (!/^[a-z0-9][a-z0-9-]{0,40}$/i.test(name)) return `Routine name "${name}" must be letters, numbers and dashes`;
+    if (names.has(name)) return `Two routines are called "${name}"`;
+    names.add(name);
+    if (typeof r.cron !== 'string' || !isValidCronExpression(r.cron)) return `"${name}": "${String(r.cron)}" isn't a valid schedule`;
+    if (typeof r.prompt !== 'string' || !r.prompt.trim()) return `"${name}" needs instructions`;
+  }
+  return null;
+}

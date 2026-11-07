@@ -1,31 +1,21 @@
-# Release v1.4.2
+# Release v1.5.1
 
-## ☿ Mercury Agent v1.4.2
+## ☿ Mercury Agent v1.5.1
 
-Web search finds things again, with no key and with any model, and the research prompt now asks only when you actually want a research article.
+Reading aloud and voice typing now use the voice you chose, Gemini included, and the Optimus update button tells you what it did.
 
-### Web search
-- **Three sources that answer.** `web_search` asks [Parallel's public search](https://search.parallel.ai/mcp) first (keyless, built for agents, about a second, with excerpts and dates), then DuckDuckGo's html page, then its lite page. Bing's web feed, which had started returning unrelated pages, and the engines that refuse automated requests are gone.
-- **DuckDuckGo read exactly.** Both pages are parsed from their real markup: the title, the real address behind DuckDuckGo's redirect, and the snippet. Ads are dropped, a bot challenge is retried once, and a page Mercury can't read is reported instead of looking empty.
-- **News links open the article.** News comes from Parallel's article links, then Bing News with its redirects unwrapped to the publisher, then Google News and Hacker News.
-- **Never the model's own search.** Results come only from Mercury's search tools, so search works the same whichever model you use.
-- **You can see what happened.** Every result ends with a `Searched:` trail, such as `Parallel: timed out → DuckDuckGo: 8 results`, so "nothing found" and "every source was blocked" read differently.
-- The built-in `web-search` skill (1.3.0) describes the sources. An installed skill that scraped DuckDuckGo directly is replaced, and your copy is kept as `SKILL.md.replaced.bak`.
+### Speech
+- **Your voice choice counts everywhere.** Reading a reply aloud, voice typing and voice notes from Telegram or WhatsApp use the voice service chosen in Settings → Voice when it has a key. A fresh install with only a Gemini key no longer asks for an OpenAI key.
+- **Gemini speaks and listens.** Gemini reads replies aloud (about 4 seconds for a sentence) and transcribes what you say, with the same key Optimus uses. A Gemini model that's busy or retired falls through to the next one.
+- **The "needs a speech service" notice** points to Voice settings and names every option (Gemini, OpenAI, Deepgram, ElevenLabs) instead of an "Add OpenAI key" button.
 
-### Chat
-- **The research prompt asks only when you mean it.** It used to fire on words like "latest" or "explain", so instructions such as "convert the latest epub" got a research question. One short model call now decides; instructions, quick questions and today's news never get the prompt.
-- **Quick answer comes first**, so an accidental Enter never starts a long research run.
+### Mercury Desktop
+- **"Update Optimus" says what happened** on the microphone & permissions card: updated, no newer version yet, or why it failed. It used to spin for a second and show nothing.
 
-### Upgrade
+### Plugins
+- **Optimus 0.5.1 is in the catalog** (a plugin-only update, works with Mercury 1.3.9 and newer): the microphone picker, live voice-level test, off switch and permission checks on Mercury Desktop's Optimus page. Update it under Plugins → Optimus.
 
-**npm:**
-```
-npm install -g @cosmicstack/mercury-agent@1.4.2
-mercury restart
-```
-
-**Standalone binary:** `mercury upgrade`, or re-run the one-line installer from mercuryagent.sh.
-
-No config changes needed.
-
-**Full Changelog**: https://github.com/cosmicstack-labs/mercury-agent/compare/v1.4.1...v1.4.2
+### Install
+- **Desktop:** [mercuryagent.sh/download](https://mercuryagent.sh/download) · Mac: `curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh`
+- **Server / CLI:** `curl -fsSL https://mercuryagent.sh/install.sh | sh` · Windows: `irm https://mercuryagent.sh/install.ps1 | iex` · npm: `npm i -g @cosmicstack/mercury-agent`
+- **Already installed:** the Update button in Mercury Desktop, or `mercury upgrade`

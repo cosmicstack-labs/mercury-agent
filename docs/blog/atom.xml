@@ -2,12 +2,64 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://mercuryagent.sh/blog</id>
     <title>Mercury Blog</title>
-    <updated>2026-10-24T00:00:00.000Z</updated>
+    <updated>2026-11-03T00:00:00.000Z</updated>
     <generator>https://github.com/jpmonette/feed</generator>
     <link rel="alternate" href="https://mercuryagent.sh/blog"/>
     <subtitle>News, engineering notes and field reports from the team building Mercury.</subtitle>
     <icon>https://mercuryagent.sh/img/logo-light.png</icon>
     <rights>© 2026 Cosmic Stack</rights>
+    <entry>
+        <title type="html"><![CDATA[Mercury 1.5: Mercury Desktop]]></title>
+        <id>https://mercuryagent.sh/blog/mercury-1-5</id>
+        <link href="https://mercuryagent.sh/blog/mercury-1-5"/>
+        <updated>2026-11-03T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.]]></summary>
+        <author>
+            <name>Mercury Engineering</name>
+            <uri>https://github.com/cosmicstack-labs/mercury-agent</uri>
+        </author>
+        <category label="News" term="News"/>
+        <category label="Releases" term="Releases"/>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[A tour of Mercury Desktop: one app, every Mercury you run]]></title>
+        <id>https://mercuryagent.sh/blog/mercury-desktop-tour</id>
+        <link href="https://mercuryagent.sh/blog/mercury-desktop-tour"/>
+        <updated>2026-11-03T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.]]></summary>
+        <author>
+            <name>Mercury Engineering</name>
+            <uri>https://github.com/cosmicstack-labs/mercury-agent</uri>
+        </author>
+        <category label="Product" term="Product"/>
+        <category label="Releases" term="Releases"/>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[Your agent returned 200 OK. It may still have failed]]></title>
+        <id>https://mercuryagent.sh/blog/agent-observability-first-wrong-step</id>
+        <link href="https://mercuryagent.sh/blog/agent-observability-first-wrong-step"/>
+        <updated>2026-10-31T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[What to record in an AI agent run to find its first wrong step, and what Mercury records today. Based on OpenTelemetry's GenAI agent spans and a code review.]]></summary>
+        <author>
+            <name>Tashir Khan</name>
+            <uri>https://github.com/tashiriskhan</uri>
+        </author>
+        <category label="Engineering" term="Engineering"/>
+        <category label="Runtime" term="Runtime"/>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[Running an agent overnight: what breaks first]]></title>
+        <id>https://mercuryagent.sh/blog/running-an-agent-overnight</id>
+        <link href="https://mercuryagent.sh/blog/running-an-agent-overnight"/>
+        <updated>2026-10-27T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.]]></summary>
+        <author>
+            <name>Tashir Khan</name>
+            <uri>https://github.com/tashiriskhan</uri>
+        </author>
+        <category label="Runtime" term="Runtime"/>
+        <category label="Engineering" term="Engineering"/>
+    </entry>
     <entry>
         <title type="html"><![CDATA[How Optimus works: an agent that uses your computer]]></title>
         <id>https://mercuryagent.sh/blog/how-optimus-works</id>
@@ -42,7 +94,7 @@
         <updated>2026-10-20T00:00:00.000Z</updated>
         <summary type="html"><![CDATA[A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.]]></summary>
         <author>
-            <name>tashiriskhan</name>
+            <name>Tashir Khan</name>
             <uri>https://github.com/tashiriskhan</uri>
         </author>
         <category label="Engineering" term="Engineering"/>
@@ -55,7 +107,7 @@
         <updated>2026-10-17T00:00:00.000Z</updated>
         <summary type="html"><![CDATA[CERT-In says AI agents read live business records at Indian firms. Here is how least privilege, scoped access, approvals and audit logs should limit them.]]></summary>
         <author>
-            <name>tashiriskhan</name>
+            <name>Tashir Khan</name>
             <uri>https://github.com/tashiriskhan</uri>
         </author>
         <category label="Security" term="Security"/>

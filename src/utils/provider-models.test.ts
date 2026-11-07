@@ -96,6 +96,20 @@ describe('buildModelCatalog', () => {
     expect(catalog.models).toContain('another-chat-model');
   });
 
+  it('prefers the Runcrate DeepSeek V4.1 Flash model when available', () => {
+    const catalog = buildModelCatalog('runcrate', [
+      'moonshotai/Kimi-K2.6',
+      'deepseek-ai/DeepSeek-V4.1-Flash',
+      'zai-org/GLM-5.3-Flash',
+      'another-chat-model',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('deepseek-ai/DeepSeek-V4.1-Flash');
+    expect(catalog.models[0]).toBe('zai-org/GLM-5.3-Flash');
+    expect(catalog.models).toContain('moonshotai/Kimi-K2.6');
+    expect(catalog.models).toContain('another-chat-model');
+  });
+
   it('falls back to the current Ollama Cloud model when no preferred default is available', () => {
     const catalog = buildModelCatalog(
       'ollamaCloud',
@@ -178,5 +192,42 @@ describe('fetchProviderModelCatalog', () => {
     expect(catalog.recommendedModel).toBe('qwen/qwen3.5-flash');
     expect(catalog.models).toContain('another-chat-model');
     expect(catalog.models).not.toContain('black-forest-labs/flux-kontext-pro');
+  });
+
+  it('keeps only text-output Runcrate models and sends the key as a bearer token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [
+        { id: 'deepseek-ai/DeepSeek-V4.1-Flash', output_modalities: ['text'] },
+        { id: 'zai-org/GLM-5.3-Flash', output_modalities: ['text'] },
+        { id: 'Qwen/Qwen-Image', output_modalities: ['image'] },
+        { id: 'BAAI/bge-m3', output_modalities: ['embeddings'] },
+        { id: 'hexgrad/Kokoro-82M', output_modalities: ['audio'] },
+      ],
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const catalog = await fetchProviderModelCatalog('runcrate', {
+      name: 'runcrate',
+      apiKey: 'rc_live_test',
+      baseUrl: 'https://api.runcrate.ai/v1/',
+      model: 'deepseek-ai/DeepSeek-V4.1-Flash',
+      enabled: true,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.runcrate.ai/v1/models');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer rc_live_test' });
+    expect(catalog.recommendedModel).toBe('deepseek-ai/DeepSeek-V4.1-Flash');
+    expect(catalog.models).toEqual(['zai-org/GLM-5.3-Flash']);
+  });
+});
+
+describe('chat models only', () => {
+  it('drops rerankers, embedders and speech models from model lists', async () => {
+    const { isChatModelId, buildModelCatalog } = await import('./provider-models.js');
+    for (const m of ['nemotron-3.5-rerank-8b:free', 'text-embedding-3-small', 'gpt-4o-mini-tts', 'whisper-1', 'omni-moderation-latest']) expect(isChatModelId(m)).toBe(false);
+    for (const m of ['gpt-4o-mini', 'claude-sonnet-4.6', 'mercury-mini', 'deepseek-chat']) expect(isChatModelId(m)).toBe(true);
+    const c = buildModelCatalog('openaiCompat', ['a-chat', 'b-rerank-1', 'c-embed'], 'b-rerank-1');
+    expect([c.recommendedModel, ...c.models]).toEqual(['a-chat']);
   });
 });

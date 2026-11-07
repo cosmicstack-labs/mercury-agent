@@ -1,0 +1,77 @@
+---
+title: "v1.5.0 — Mercury Desktop"
+sidebar_label: "v1.5.0"
+description: "Mercury Desktop for macOS, Windows and Linux; remote access the owner controls; updates that roll back on their own; research you can watch; MCP servers; Bots 2.0."
+keywords: [mercury, mercury-agent, release, 1.5.0, mercury desktop, remote access, updates, research, mcp, bots]
+---
+
+import Head from '@docusaurus/Head';
+import ReleaseDownloads from '@site/src/components/Download/ReleaseDownloads';
+
+<Head>
+  <meta property="og:title" content="Mercury Agent v1.5.0 — Mercury Desktop" />
+  <meta property="og:description" content="Mercury Desktop for macOS, Windows and Linux · Remote access the owner controls · Updates that roll back on their own · Research you can watch · MCP servers" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://mercuryagent.sh/docs/releases/1.5.0" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Mercury Agent v1.5.0 — Mercury Desktop" />
+  <link rel="canonical" href="https://mercuryagent.sh/docs/releases/1.5.0" />
+</Head>
+
+# v1.5.0 — Mercury Desktop
+
+> **Mercury gets an app.**
+
+`1.5.0` ships **Mercury Desktop** for macOS (Apple Silicon and Intel), Windows and Linux, at the same version as the runtime. It installs Mercury on your computer without a terminal, or connects to Mercury on a server, and it keeps both up to date. [Download it](/download).
+
+## Mercury Desktop
+
+- **Install or connect.** The first screen finds a Mercury on this computer, installs one (the release is checked against its SHA-256 checksums and runs as a service), or connects to Mercury elsewhere. Several connections at once. See [Install & first run](/docs/desktop/mercury-desktop).
+- **Not code-signed yet.** A downloaded installer asks once before the first launch; the [download page](/download) has the steps. On a Mac, `curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh` installs it with no prompt (it checks the download's SHA-256 first). Updates are signed and checked before they install.
+
+## Remote access the owner controls
+
+- **Tunnels are remote.** Requests through Tailscale, Cloudflare or a proxy are no longer treated as coming from this computer, even when the tunnel runs on the same machine.
+- **New devices need your approval**, with a 5-character code you answer from Telegram, WhatsApp, the terminal or Mercury Desktop on this computer.
+- **Sensitive actions from a remote device ask you first:** the terminal (off for remote devices by default), Allow All, the workspace folder, powerful bots, plugins and skills from a URL, channel tokens, Cloud sign-in, restarts and the password.
+- **Device lifecycle:** devices unused for 30 days are signed out, 10 devices at most, a new address tells you, revoking cuts open connections.
+- **`/server`, `mercury server` and `mercury doctor --security`.** Plus a sign-in attempt limit, CSRF and DNS-rebinding protection, and a security log.
+
+See [Remote access & security](/docs/desktop/remote-access).
+
+## Updates that never leave you broken
+
+- **One signed update notice** says what's new, what's required and anything Mercury needs to tell you. An unsigned or older notice is ignored, and being offline never blocks anything.
+- **Server updates** wait for running work, download with checksums, back up, install, confirm the new version answers, and roll back on their own if it doesn't. `mercury upgrade` uses the same steps.
+- **Mercury Desktop** has a Chrome-style Update button, an updates panel for the app and every server, resumable signed downloads, **Check for updates** and **Update everything**.
+- **Required updates** get a full-screen notice that only a ticked checklist gets past, for a while.
+
+See [Updating Mercury](/docs/desktop/updating).
+
+## Research you can watch
+
+Research is one visible run: a plan you can edit, live progress, every source read or failed with the reason, and a report even when a run is cut short. Reports are saved to `~/mercury-artifacts/Research` and export as PDF or Word.
+
+## Files in one place
+
+What Mercury makes goes in `~/mercury-artifacts`, one folder per chat, instead of loose files in your home folder.
+
+## MCP servers
+
+Mercury can use tools from Model Context Protocol servers. Add one with `mercury mcp add`, allow the tools you want, and every MCP call asks first in Ask Me mode. See [MCP Servers](/docs/integrations/mcp).
+
+## Bots 2.0
+
+Every bot run ends by reporting, saying there was nothing new, or saying it failed. Results wait in an inbox until you read them. Waste is capped by rule: a minimum gap between routine runs, tools by group, and a routine that keeps failing switches itself off.
+
+## Upgrading
+
+```bash
+mercury upgrade
+```
+
+Or download [Mercury Desktop](/download) and choose **Use the Mercury here**: it offers to update an older Mercury first.
+
+## Download
+
+<ReleaseDownloads />

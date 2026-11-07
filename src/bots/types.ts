@@ -110,6 +110,14 @@ export interface BotManifest {
   id: string;
   name: string;
   description?: string;
+  /**
+   * The name of this bot's deliverables folder, decided once and then remembered.
+   *
+   * The folder used to be recomputed from `name` on every call, so renaming a bot silently moved
+   * its results: the next delivery landed in a fresh folder and the old one was orphaned. The name
+   * is a label the owner can change; this is the pointer that keeps the files where they are.
+   */
+  deliverablesFolder?: string;
   enabled: boolean;
   /** Persona file name inside the bot dir. Default 'persona.md'. */
   persona?: string;
@@ -217,8 +225,12 @@ export interface BotRunRecord {
   toolCalls?: number;
   /** Largest single-step prompt the provider saw. */
   peakInputTokens?: number;
-  /** What the tool trace proved: deliverable | action | delegated | message | none. */
+  /** What the run did: deliverable | action | delegated | message | quiet | failed | none. */
   outcome?: string;
+  /** How the bot closed the run (Bots 2.0): result | no_update | failure. */
+  report?: 'result' | 'no_update' | 'failure';
+  /** The bot said the job is finished, not just progress. */
+  complete?: boolean;
   deliverables?: string[];
   /** The reply claimed delivery/execution with no matching tool call. */
   claimedWithoutAction?: boolean;
@@ -246,4 +258,14 @@ export interface BotStatusSummary {
   crewWorking?: number;
   /** Earliest automatic resume time of a paused routine, when any is paused. */
   routinePausedUntil?: number;
+  /** The bot has a custom avatar (`GET /api/bots/:id/avatar`); clients draw a monogram otherwise. */
+  hasAvatar?: boolean;
+  /** Unread inbox entries from this bot (Bots 2.0). */
+  unread?: number;
+  /** Its permission tier, or 'custom' for a hand-edited permissions.yaml. */
+  tier?: string;
+  /** Stopped by the owner (durable until Start). */
+  stopped?: boolean;
+  /** One-line description, for lists. */
+  description?: string;
 }

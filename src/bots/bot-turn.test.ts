@@ -14,7 +14,7 @@ vi.mock('ai', async (importOriginal) => {
 });
 
 import { streamText } from 'ai';
-import { runBotTurn, classifyFailure, type BotActivityEvent, type BotTurnInput } from './bot-turn.js';
+import { runBotTurn, classifyFailure, turnCaption, type BotActivityEvent, type BotTurnInput } from './bot-turn.js';
 import { MAX_AUTOMATIC_CONTINUATIONS } from '../core/execution-limits.js';
 
 const mockedStreamText = vi.mocked(streamText);
@@ -427,5 +427,28 @@ describe('shared-folder write budget', () => {
     // Relative paths resolve against the private workspace, not the shared folder.
     const r = await tools.write_file.execute!({ path: 'draft.md', content: 'x' }, {} as never);
     expect(String(r)).toBe('Wrote draft.md');
+  });
+});
+
+describe('turnCaption — files without a caption', () => {
+  const img = { kind: 'image' as const, path: '/tmp/a.png', mime: 'image/png', name: 'a.png' };
+
+  it('keeps a real prompt untouched', () => {
+    expect(turnCaption('  describe this  ', [img])).toBe('describe this');
+  });
+
+  it('names the files when there is no text at all', () => {
+    // An empty text block is rejected by providers: the photo says what it is.
+    expect(turnCaption('', [img])).toBe('(Attached: a.png)');
+    expect(turnCaption('   ', [img, { ...img, name: 'b.pdf', kind: 'document' as const }]))
+      .toBe('(Attached: a.png, b.pdf)');
+  });
+
+  it('falls back to "file" when a name is missing, never to an empty string', () => {
+    expect(turnCaption('', [{ kind: 'image', path: '/tmp/x.webp' }])).toBe('(Attached: file)');
+  });
+
+  it('stays empty with neither text nor files', () => {
+    expect(turnCaption('', [])).toBe('');
   });
 });

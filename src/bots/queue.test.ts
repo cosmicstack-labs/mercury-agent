@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -134,6 +134,26 @@ describe('BotQueue backends (JSON-file + SQLite semantics)', () => {
         backend.retry('backoff', 1, Date.now() + 60_000); // in retry backoff
         const pending = backend.pendingJobs('researcher');
         expect(pending.map(j => j.id)).toEqual(['h1', 'backoff']); // backoff included: explicit resume overrides it
+      });
+
+      it('keeps a job’s files across a restart, and dedupes on them too', () => {
+        const file = { kind: 'image' as const, path: '/uploads/2026-10/a-dot.png', mime: 'image/png', name: 'dot.png' };
+        const backend = mkBackend(name, root);
+        backend.enqueue(job('a1', { prompt: 'what is this?', attachments: [file] }));
+
+        // Durable: a fresh handle on the same db still sees the file list.
+        const resumed = mkBackend(name, root).rehydratable();
+        expect(resumed[0].attachments).toEqual([file]);
+
+        // Same caption, different photo = different job.
+        const other = mkBackend(name, root).enqueue(job('a2', {
+          prompt: 'what is this?',
+          attachments: [{ ...file, path: '/uploads/2026-10/b-other.png', name: 'other.png' }],
+          idempotencyKey: idempotencyKeyFor('researcher', 'chat', 'what is this?', undefined, [
+            { ...file, path: '/uploads/2026-10/b-other.png', name: 'other.png' },
+          ]),
+        }));
+        expect(other.duplicated).toBe(false);
       });
 
       it('settle dead moves the job to the DLQ with the reason', () => {
@@ -352,5 +372,31 @@ describe('BotManager durable queue integration', () => {
       backend.heartbeatLease('hb1', 0); // heartbeat to an instant-expiry lease → swept again
       expect(backend.rehydratable()).toHaveLength(1);
     }
+  });
+});
+
+describe('idempotencyKeyFor with files', () => {
+  let dir = '';
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'mercury-idem-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  const upload = (name: string, bytes: string) => {
+    const path = join(dir, name);
+    writeFileSync(path, bytes);
+    return { kind: 'image' as const, path, mime: 'image/png', name: 'photo.png' };
+  };
+
+  it('keys a retried upload on its bytes, not its fresh random path', () => {
+    const first = upload('1111-photo.png', 'same pixels');
+    const retry = upload('2222-photo.png', 'same pixels');
+    expect(idempotencyKeyFor('bot', 'api', 'what is this?', undefined, [retry]))
+      .toBe(idempotencyKeyFor('bot', 'api', 'what is this?', undefined, [first]));
+  });
+
+  it('still tells two different photos apart', () => {
+    const a = upload('a-photo.png', 'cat');
+    const b = upload('b-photo.png', 'dog');
+    expect(idempotencyKeyFor('bot', 'api', 'what is this?', undefined, [a]))
+      .not.toBe(idempotencyKeyFor('bot', 'api', 'what is this?', undefined, [b]));
   });
 });

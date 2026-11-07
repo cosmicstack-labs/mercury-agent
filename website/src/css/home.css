@@ -52,7 +52,7 @@
 
 .mx-home main { overflow-x: clip; }
 .mx-wrap { max-width: var(--mx-w); margin: 0 auto; padding: 0 24px; }
-.mx-home a:not(.mx-btn):not(.mx-cloud-row):not(.mx-pill) { color: var(--mx-accent); }
+.mx-home a:not(.mx-btn):not(.mx-cloud-row):not(.mx-pill):not(.mx-platforms__item) { color: var(--mx-accent); }
 .mx-home code, [data-theme] .mx-home code {
   font-family: var(--mx-mono);
   font-size: 0.88em;
@@ -340,8 +340,42 @@
 .mx-final .mx-lead { margin-bottom: 40px; }
 .mx-final__links { display: flex; gap: 28px; flex-wrap: wrap; justify-content: center; margin-top: 36px; font-size: 0.92rem; }
 
+/* ---------- Mercury Desktop download ---------- */
+.mx-dl { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 34px; }
+.mx-dl__main { height: 52px; padding: 0 26px; font-size: 1.02rem; }
+.mx-dl__meta { margin: 0; font-size: 0.86rem; color: var(--mx-ink-3); text-align: center; }
+.mx-dl__mobile { max-width: 34rem; margin: 0 auto; font-size: 0.98rem; color: var(--mx-ink-2); text-align: center; line-height: 1.6; }
+.mx-server-path { margin-top: 40px; }
+.mx-server-path__label { font-family: var(--mx-mono); font-size: 0.74rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--mx-ink-3); text-align: center; margin: 0 0 4px; }
+.mx-server-path .mx-install.mx-hero__install { margin-top: 10px; }
+
+.mx-dlp { padding-top: 72px; }
+.mx-dlp .mx-head { margin-bottom: 40px; }
+.mx-dlp__notice { padding: 14px 18px; border: 1px solid var(--mx-line-2); border-radius: 12px; background: var(--mx-accent-wash); color: var(--mx-ink); margin: 0 0 24px; }
+.mx-dlp__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.mx-dlp__os { border: 1px solid var(--mx-line); border-radius: 16px; background: var(--mx-surface); padding: 22px 22px 18px; }
+.mx-dlp__os.is-mine { border-color: var(--mx-accent); box-shadow: 0 0 0 1px var(--mx-accent); }
+.mx-dlp__os-title { display: flex; align-items: center; gap: 10px; font-size: 1.15rem; color: var(--mx-ink); margin: 0 0 14px; }
+.mx-dlp__mine { font-family: var(--mx-mono); font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--mx-accent); }
+.mx-dlp__list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.mx-dlp__file { display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; border: 1px solid var(--mx-line); border-radius: 10px; text-decoration: none !important; transition: border-color .2s, background .2s; }
+.mx-dlp__file:hover { border-color: var(--mx-ink-3); background: var(--mx-bg-alt); }
+.mx-dlp__what { color: var(--mx-ink); font-weight: 500; }
+.mx-dlp__detail { font-size: 0.84rem; color: var(--mx-ink-3); }
+.mx-dlp__none { font-size: 0.9rem; color: var(--mx-ink-3); margin: 0; }
+.mx-dlp__first, .mx-dlp__server { margin-top: 64px; }
+.mx-dlp__first > p, .mx-dlp__server > p { max-width: 46rem; color: var(--mx-ink-2); line-height: 1.65; }
+.mx-dlp__steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+.mx-dlp__steps > div { border: 1px solid var(--mx-line); border-radius: 16px; padding: 18px 20px; background: var(--mx-surface); }
+.mx-dlp__steps h3 { font-size: 1rem; color: var(--mx-ink); margin: 0 0 8px; }
+.mx-dlp__steps ol { padding-left: 1.1rem; margin: 0; font-size: 0.92rem; line-height: 1.6; color: var(--mx-ink-2); }
+.mx-dlp__steps li + li { margin-top: 6px; }
+.mx-dlp__alt { font-size: 0.84rem; color: var(--mx-ink-3); margin: 10px 0 0; }
+.mx-dlp__server .mx-install { margin: 18px 0 0; }
+
 /* ---------- responsive ---------- */
 @media (max-width: 996px) {
+  .mx-dlp__grid, .mx-dlp__steps { grid-template-columns: 1fr; }
   .mx-split, .mx-chapter { grid-template-columns: 1fr; gap: 40px; }
   .mx-chapter--flip .mx-chapter__copy { order: 0; }
   .mx-notyet { grid-template-columns: 1fr; }
@@ -378,3 +412,65 @@
   .mx-term__cursor { animation: none; }
   .mx-btn, .mx-surface-tab { transition: none; }
 }
+
+/* ── Hero install card: Desktop app | Server / CLI ── */
+.mx-hero-install {
+  width: 100%; max-width: 660px; margin: 34px auto 0; text-align: left;
+  border: 1px solid var(--mx-line-2); border-radius: 16px; background: var(--mx-surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 32px -18px rgba(0, 0, 0, 0.25);
+}
+.mx-hero-install__head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 12px 10px 10px; border-bottom: 1px solid var(--mx-line);
+}
+.mx-hero-install__tabs { display: flex; gap: 4px; }
+.mx-hero-install__tab {
+  appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+  padding: 6px 12px; border-radius: 9px; font: inherit; font-size: 0.9rem; font-weight: 500; color: var(--mx-ink-3);
+}
+.mx-hero-install__tab:hover { color: var(--mx-ink); }
+.mx-hero-install__tab.is-active { color: var(--mx-ink); background: var(--mx-bg-alt); border-color: var(--mx-line); }
+.mx-hero-install__version { margin: 0; font-size: 0.82rem; color: var(--mx-ink-3); display: flex; align-items: center; gap: 8px; }
+.mx-hero-install__badge {
+  font-family: var(--mx-mono); font-size: 0.76rem; padding: 2px 7px; border-radius: 999px;
+  color: var(--mx-accent); background: var(--mx-accent-wash); border: 1px solid var(--mx-line);
+}
+.mx-hero-install__body { padding: 18px 18px 16px; }
+.mx-hero-install__body .mx-dl { margin-top: 0; }
+.mx-hero-install__body .mx-install { max-width: none; }
+.mx-hero-install__lead { margin: 0 0 12px; font-size: 0.92rem; color: var(--mx-ink-2); }
+.mx-hero-install__note { margin: 14px 0 0; font-size: 0.8rem; color: var(--mx-ink-3); text-align: center; }
+.mx-hero-install__body .mx-install + .mx-hero-install__note { text-align: left; }
+
+/* Every platform, one click each. */
+.mx-platforms { list-style: none; margin: 16px 0 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.mx-platforms__item {
+  display: flex; align-items: center; gap: 9px; height: 100%; padding: 9px 10px;
+  border: 1px solid var(--mx-line); border-radius: 10px; text-decoration: none; color: var(--mx-ink);
+  transition: border-color .15s, background .15s;
+}
+.mx-platforms__item:hover { color: var(--mx-ink); text-decoration: none; }
+.mx-platforms__item:hover { border-color: var(--mx-line-2); background: var(--mx-bg-alt); }
+.mx-platforms__icon { display: inline-flex; color: var(--mx-ink-2); }
+.mx-platforms__text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.mx-platforms__os { font-size: 0.86rem; font-weight: 600; }
+.mx-platforms__what { font-size: 0.74rem; color: var(--mx-ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 640px) {
+  .mx-hero-install { border-radius: 14px; }
+  .mx-hero-install__head { justify-content: center; }
+  .mx-platforms { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* The recommended Mac install (Terminal one-liner). */
+.mx-macinstall { max-width: none; margin: 0 0 4px; }
+.mx-macinstall__title { margin: 0 0 8px; font-size: 0.82rem; font-weight: 600; color: var(--mx-accent); text-transform: uppercase; letter-spacing: 0.04em; }
+.mx-hero-install__or, .mx-dlp__or { margin: 16px 0 10px; font-size: 0.82rem; color: var(--mx-ink-3); text-align: center; }
+.mx-dlp__or { text-align: left; }
+.mx-dlp__mac { margin-bottom: 4px; }
+
+/* On a Mac the Terminal install leads; the .dmg is a small secondary button. */
+.mx-dl--compact { gap: 8px; }
+.mx-dl__small { height: 38px; padding: 0 16px; font-size: 0.88rem; font-weight: 500; color: var(--mx-ink-2); background: transparent; border: 1px solid var(--mx-line-2); }
+.mx-dl__small:hover { color: var(--mx-ink); border-color: var(--mx-ink-3); }
+.mx-dl--compact .mx-dl__meta { font-size: 0.8rem; }

@@ -1,11 +1,15 @@
 import { Hono } from 'hono';
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, execSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
-import { join, resolve, relative, extname, basename } from 'node:path';
+import { join, resolve, relative, extname, basename, isAbsolute } from 'node:path';
 import { getMercuryHome, loadConfig } from '../../utils/config.js';
 import { generateText } from 'ai';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { resolveShell } from '../../utils/platform.js';
+import { protectedReason, realInside } from '../../security/protected-paths.js';
+import { isThisComputer } from '../middleware.js';
+import { requireOwner } from '../owner-gate.js';
+import { readRemoteSettings } from '../../security/remote-settings.js';
 
 let providerRegistry: ProviderRegistry | undefined;
 
@@ -13,31 +17,65 @@ export function setIDEProviders(pr: ProviderRegistry): void {
   providerRegistry = pr;
 }
 
-const CHAT_SETTINGS_FILE = join(getMercuryHome(), 'web-chat-settings.json');
+/** Resolved per call so MERCURY_HOME (tests, profiles) is honoured after import. */
+const chatSettingsFile = (): string => join(getMercuryHome(), 'web-chat-settings.json');
 
 function getWorkspaceRoot(): string {
   try {
-    if (existsSync(CHAT_SETTINGS_FILE)) {
-      const raw = JSON.parse(readFileSync(CHAT_SETTINGS_FILE, 'utf8'));
+    const file = chatSettingsFile();
+    if (existsSync(file)) {
+      const raw = JSON.parse(readFileSync(file, 'utf8'));
       if (raw.workspace) return raw.workspace;
     }
   } catch {}
   return process.cwd();
 }
 
-function git(args: string, cwd?: string): string {
-  return execSync(`git ${args}`, {
+/**
+ * Run git WITHOUT a shell: arguments are passed as an array, so request
+ * input (file names, branch names, commit messages) is never parsed as
+ * shell syntax. This used to be `execSync(\`git ${args}\`)` with request
+ * fields interpolated — a file name like `$(cmd)` ran `cmd`.
+ */
+export function git(args: readonly string[], cwd?: string): string {
+  return execFileSync('git', [...args], {
     cwd: cwd || getWorkspaceRoot(),
     encoding: 'utf8',
     timeout: 15000,
     maxBuffer: 5 * 1024 * 1024,
+    windowsHide: true,
+    // Capture stderr: inheriting it printed "fatal: not a git repository"
+    // into the daemon log on every poll of a non-git workspace.
+    stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
 }
 
-function isInsideWorkspace(filePath: string): boolean {
-  const root = getWorkspaceRoot();
-  const resolved = resolve(root, filePath);
-  return resolved.startsWith(root);
+/**
+ * True when the path resolves inside the workspace (not merely shares its
+ * prefix), after following symlinks: a link in the workspace pointing at
+ * ~/.ssh is outside it.
+ */
+export function isInsideWorkspace(filePath: string, root: string = getWorkspaceRoot()): boolean {
+  const rel = relative(resolve(root), resolve(root, filePath));
+  if (!(rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)))) return false;
+  return realInside(resolve(root, filePath), root);
+}
+
+/**
+ * A ref or remote name a client may name. Never an option (`-x`, `--upload-pack=…`),
+ * never shell or revision syntax; git's own check-ref-format rules do the rest.
+ */
+export function isSafeRefName(name: unknown): name is string {
+  return typeof name === 'string'
+    && name.length > 0
+    && name.length <= 200
+    && !name.startsWith('-')
+    && /^[A-Za-z0-9._/@+-]+$/.test(name)
+    && !name.includes('..')
+    && !name.includes('@{')
+    && !name.endsWith('.lock')
+    && !name.endsWith('/')
+    && !name.endsWith('.');
 }
 
 const ide = new Hono();
@@ -50,7 +88,7 @@ const ide = new Hono();
 ide.get('/api/git/status', (c) => {
   try {
     const cwd = getWorkspaceRoot();
-    const porcelain = git('status --porcelain -b', cwd);
+    const porcelain = git(['status', '--porcelain', '-b'], cwd);
     const lines = porcelain.split('\n').filter(Boolean);
 
     let branch = '';
@@ -112,7 +150,7 @@ function mapStatus(ch: string): string {
 ide.get('/api/git/branches', (c) => {
   try {
     const cwd = getWorkspaceRoot();
-    const raw = git('branch -a --format="%(refname:short) %(HEAD) %(upstream:short)"', cwd);
+    const raw = git(['branch', '-a', '--format=%(refname:short) %(HEAD) %(upstream:short)'], cwd);
     const branches = raw.split('\n').filter(Boolean).map(line => {
       const parts = line.split(' ');
       const name = parts[0];
@@ -131,9 +169,9 @@ ide.post('/api/git/checkout', async (c) => {
   try {
     const body = await c.req.json<{ branch: string; create?: boolean }>();
     if (!body.branch) return c.json({ error: 'branch is required' }, 400);
+    if (!isSafeRefName(body.branch)) return c.json({ error: 'Invalid branch name' }, 400);
     const cwd = getWorkspaceRoot();
-    const flag = body.create ? '-b ' : '';
-    const result = git(`checkout ${flag}${body.branch}`, cwd);
+    const result = git(body.create ? ['checkout', '-b', body.branch] : ['checkout', body.branch, '--'], cwd);
     return c.json({ success: true, message: result || `Switched to ${body.branch}` });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -146,9 +184,10 @@ ide.get('/api/git/diff', (c) => {
     const cwd = getWorkspaceRoot();
     const staged = c.req.query('staged') === 'true';
     const filePath = c.req.query('file');
-    let cmd = staged ? 'diff --cached' : 'diff';
-    if (filePath) cmd += ` -- ${filePath}`;
-    const diff = git(cmd, cwd);
+    if (filePath && !isInsideWorkspace(filePath, cwd)) return c.json({ error: 'File outside workspace' }, 403);
+    const args = staged ? ['diff', '--cached'] : ['diff'];
+    if (filePath) args.push('--', filePath);
+    const diff = git(args, cwd);
     return c.json({ diff });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -159,8 +198,9 @@ ide.get('/api/git/diff', (c) => {
 ide.get('/api/git/log', (c) => {
   try {
     const cwd = getWorkspaceRoot();
-    const count = Math.min(parseInt(c.req.query('count') || '20', 10), 100);
-    const raw = git(`log --oneline --format="%H||%h||%an||%ae||%ar||%s" -${count}`, cwd);
+    const parsed = parseInt(c.req.query('count') || '20', 10);
+    const count = Number.isFinite(parsed) ? Math.max(1, Math.min(parsed, 100)) : 20;
+    const raw = git(['log', '--format=%H||%h||%an||%ae||%ar||%s', `-n${count}`], cwd);
     const commits = raw.split('\n').filter(Boolean).map(line => {
       const [hash, short, author, email, date, ...msgParts] = line.split('||');
       return { hash, short, author, email, date, message: msgParts.join('||') };
@@ -178,9 +218,9 @@ ide.post('/api/git/stage', async (c) => {
     if (!body.files?.length) return c.json({ error: 'files array required' }, 400);
     const cwd = getWorkspaceRoot();
     for (const f of body.files) {
-      if (!isInsideWorkspace(f)) return c.json({ error: `File outside workspace: ${f}` }, 403);
+      if (typeof f !== 'string' || !isInsideWorkspace(f, cwd)) return c.json({ error: `File outside workspace: ${f}` }, 403);
     }
-    git(`add ${body.files.map(f => `"${f}"`).join(' ')}`, cwd);
+    git(['add', '--', ...body.files], cwd);
     return c.json({ success: true });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -193,7 +233,10 @@ ide.post('/api/git/unstage', async (c) => {
     const body = await c.req.json<{ files: string[] }>();
     if (!body.files?.length) return c.json({ error: 'files array required' }, 400);
     const cwd = getWorkspaceRoot();
-    git(`reset HEAD ${body.files.map(f => `"${f}"`).join(' ')}`, cwd);
+    for (const f of body.files) {
+      if (typeof f !== 'string' || !isInsideWorkspace(f, cwd)) return c.json({ error: `File outside workspace: ${f}` }, 403);
+    }
+    git(['reset', 'HEAD', '--', ...body.files], cwd);
     return c.json({ success: true });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -207,7 +250,7 @@ ide.post('/api/git/commit', async (c) => {
     if (!body.message?.trim()) return c.json({ error: 'message is required' }, 400);
     const cwd = getWorkspaceRoot();
     const fullMessage = `${body.message.trim()}\n\nCo-authored-by: Mercury <mercury@cosmicstack.org>`;
-    const result = git(`commit -m "${fullMessage.replace(/"/g, '\\"')}"`, cwd);
+    const result = git(['commit', '-m', fullMessage], cwd);
     return c.json({ success: true, message: result });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -220,10 +263,13 @@ ide.post('/api/git/push', async (c) => {
     const body = await c.req.json<{ remote?: string; branch?: string; setUpstream?: boolean }>();
     const cwd = getWorkspaceRoot();
     const remote = body.remote || 'origin';
-    let cmd = `push ${remote}`;
-    if (body.branch) cmd += ` ${body.branch}`;
-    if (body.setUpstream) cmd += ' -u';
-    const result = git(cmd, cwd);
+    if (!isSafeRefName(remote)) return c.json({ error: 'Invalid remote name' }, 400);
+    if (body.branch !== undefined && body.branch !== '' && !isSafeRefName(body.branch)) return c.json({ error: 'Invalid branch name' }, 400);
+    const args = ['push'];
+    if (body.setUpstream) args.push('-u');
+    args.push(remote);
+    if (body.branch) args.push(body.branch);
+    const result = git(args, cwd);
     return c.json({ success: true, message: result || 'Pushed successfully' });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -234,7 +280,7 @@ ide.post('/api/git/push', async (c) => {
 ide.post('/api/git/pull', async (c) => {
   try {
     const cwd = getWorkspaceRoot();
-    const result = git('pull', cwd);
+    const result = git(['pull'], cwd);
     return c.json({ success: true, message: result || 'Already up to date.' });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -251,9 +297,11 @@ ide.put('/api/workspace/file', async (c) => {
     if (!body.path) return c.json({ error: 'path is required' }, 400);
     const root = getWorkspaceRoot();
     const fullPath = resolve(root, body.path);
-    if (!fullPath.startsWith(root)) {
+    if (!isInsideWorkspace(fullPath, root)) {
       return c.json({ error: 'Path outside workspace' }, 403);
     }
+    const off = protectedReason(fullPath, !isThisComputer(c));
+    if (off) return c.json({ error: off }, 403);
     writeFileSync(fullPath, body.content, 'utf8');
     return c.json({ success: true, path: body.path });
   } catch (err: any) {
@@ -269,10 +317,19 @@ ide.post('/api/terminal/exec', async (c) => {
   const body = await c.req.json<{ command: string; cwd?: string }>();
   try {
     if (!body.command?.trim()) return c.json({ error: 'command is required' }, 400);
+    // A shell from another device: off unless the owner turned it on (/server),
+    // and then every command waits for the owner's yes.
+    if (!isThisComputer(c)) {
+      if (!readRemoteSettings().allowShell) {
+        return c.json({ error: 'The terminal is off for remote devices. The owner can turn it on with /server on the computer Mercury runs on.', remoteShellOff: true }, 403);
+      }
+      const wait = requireOwner(c, { id: `terminal.exec:${body.command.trim().slice(0, 200)}`, title: 'Run a shell command', detail: body.command.trim().slice(0, 300) });
+      if (wait) return wait;
+    }
 
     const root = getWorkspaceRoot();
     const cwd = body.cwd ? resolve(root, body.cwd) : root;
-    if (!cwd.startsWith(root)) {
+    if (!isInsideWorkspace(cwd, root)) {
       return c.json({ error: 'cwd outside workspace' }, 403);
     }
 
@@ -308,12 +365,12 @@ ide.get('/api/workspace/info', (c) => {
   let remoteUrl = '';
 
   try {
-    branch = git('rev-parse --abbrev-ref HEAD', cwd);
+    branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
     isGit = true;
   } catch {}
 
   try {
-    remoteUrl = git('remote get-url origin', cwd);
+    remoteUrl = git(['remote', 'get-url', 'origin'], cwd);
   } catch {}
 
   // Detect project type
@@ -355,10 +412,10 @@ ide.post('/api/git/generate-commit-message', async (c) => {
     // Get staged diff
     let diff = '';
     try {
-      diff = git('diff --cached --stat', cwd);
+      diff = git(['diff', '--cached', '--stat'], cwd);
       if (!diff.trim()) {
         // Fallback to unstaged diff if nothing staged
-        diff = git('diff --stat', cwd);
+        diff = git(['diff', '--stat'], cwd);
       }
     } catch {}
 
@@ -369,9 +426,9 @@ ide.post('/api/git/generate-commit-message', async (c) => {
     // Also get the detailed diff (limited)
     let detailedDiff = '';
     try {
-      detailedDiff = git('diff --cached', cwd);
+      detailedDiff = git(['diff', '--cached'], cwd);
       if (!detailedDiff.trim()) {
-        detailedDiff = git('diff', cwd);
+        detailedDiff = git(['diff'], cwd);
       }
     } catch {}
 

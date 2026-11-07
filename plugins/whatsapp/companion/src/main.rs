@@ -107,14 +107,102 @@ fn db_path(dir: &Path) -> PathBuf {
     dir.join("whatsapp.db")
 }
 
-/// The user part of a phone-number JID ("15551234567@s.whatsapp.net" → "15551234567").
+/// The phone number of a phone-number JID ("15551234567@s.whatsapp.net" →
+/// "15551234567"; `@hosted` business numbers too). None for a LID, a group
+/// or anything else: those say nothing about the number by themselves.
 pub fn phone_of(jid: &Jid) -> Option<String> {
-    let s = jid.to_string();
-    let (user, server) = s.split_once('@')?;
-    if server != "s.whatsapp.net" {
+    if !jid.server.is_pn_family() {
         return None;
     }
-    Some(user.split(':').next().unwrap_or(user).to_string())
+    let user = jid.user.split(':').next().unwrap_or(&jid.user);
+    (!user.is_empty()).then(|| user.to_string())
+}
+
+/// The phone number behind a sender, however WhatsApp addressed them.
+///
+/// WhatsApp increasingly addresses people by LID (`…@lid`), a private id
+/// that is not their number. Mercury allows the owner and members by
+/// number, so a LID has to be turned back into one, or their messages are
+/// ignored as if a stranger sent them (issue #247). In order: the JID
+/// itself, the alternate JID WhatsApp sometimes sends alongside, the
+/// LID↔number mapping this device has learned, and, when that's unknown,
+/// one lookup with WhatsApp (which stores the pair for next time).
+pub async fn resolve_phone(client: &Client, jid: &Jid, alt: Option<&Jid>) -> Option<String> {
+    if let Some(phone) = phone_of(jid).or_else(|| alt.and_then(phone_of)) {
+        return Some(phone);
+    }
+    if !jid.server.is_lid_family() {
+        return None;
+    }
+    let known = |entry: Option<whatsapp_rust::lid_pn_cache::LidPnEntry>| entry.map(|e| e.phone_number.to_string()).filter(|p| !p.is_empty());
+    if let Some(phone) = known(client.get_lid_pn_entry(jid).await.ok().flatten()) {
+        return Some(phone);
+    }
+    // One lookup per unknown LID per window: a stranger writing again and
+    // again mustn't turn this device into a stream of lookups (WhatsApp
+    // watches for that), and the answer won't change within minutes.
+    if !lookup_due(&jid.user, std::time::Instant::now()) {
+        return None;
+    }
+    if let Err(e) = client.contacts().is_on_whatsapp(&[jid.to_non_ad()]).await {
+        log(format!("couldn't look up a sender's number (LID {}): {e}", masked(&jid.user)));
+    }
+    let phone = known(client.get_lid_pn_entry(jid).await.ok().flatten());
+    if phone.is_none() {
+        log(format!("a sender's number is unknown (LID {}): Mercury will treat them as unknown", masked(&jid.user)));
+    }
+    phone
+}
+
+/// How long an unknown LID waits before WhatsApp is asked about it again.
+const LOOKUP_EVERY: Duration = Duration::from_secs(600);
+
+/// Whether this LID may be looked up now (and, if so, note that it was).
+fn lookup_due(lid: &str, now: std::time::Instant) -> bool {
+    static LAST: std::sync::OnceLock<std::sync::Mutex<HashMap<String, std::time::Instant>>> = std::sync::OnceLock::new();
+    let mut last = LAST.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if last.get(lid).is_some_and(|t| now.duration_since(*t) < LOOKUP_EVERY) {
+        return false;
+    }
+    if last.len() >= 1000 {
+        last.retain(|_, t| now.duration_since(*t) < LOOKUP_EVERY);
+    }
+    last.insert(lid.to_string(), now);
+    true
+}
+
+/// The last four characters, for logs: enough to tell people apart, not to identify them.
+pub fn masked(id: &str) -> String {
+    let tail: String = id.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("…{tail}")
+}
+
+/// Learn the LIDs of the owner and members once connected, so their first
+/// message already resolves to their number (WhatsApp may address them by
+/// LID before this device has seen them).
+async fn learn_allowed_people(client: Arc<Client>) {
+    let s = voice::settings();
+    let mut numbers: Vec<String> = Vec::new();
+    for key in ["owner", "members"] {
+        let raw = s.get(key).and_then(Value::as_str).unwrap_or("");
+        for part in raw.split(|c: char| c == ',' || c.is_whitespace()) {
+            let digits: String = part.chars().filter(char::is_ascii_digit).collect();
+            if digits.len() >= 6 && !numbers.contains(&digits) {
+                numbers.push(digits);
+            }
+        }
+    }
+    if numbers.is_empty() {
+        return;
+    }
+    let jids: Vec<Jid> = numbers.iter().filter_map(|n| format!("{n}@s.whatsapp.net").parse().ok()).collect();
+    match client.contacts().is_on_whatsapp(&jids).await {
+        Ok(found) => {
+            let with_lid = found.iter().filter(|r| r.lid.is_some()).count();
+            log(format!("looked up {} allowed number(s): {} on WhatsApp, {} with a LID", jids.len(), found.iter().filter(|r| r.is_registered).count(), with_lid));
+        }
+        Err(e) => log(format!("couldn't look up the allowed numbers yet: {e}")),
+    }
 }
 
 #[tokio::main]
@@ -444,6 +532,7 @@ async fn start_bot(st: Arc<State>, phone: Option<String>) -> anyhow::Result<()> 
             let st = st_conn.clone();
             async move {
                 let account = client.pn().and_then(|j| phone_of(&j));
+                tokio::spawn(learn_allowed_people(client.clone()));
                 *st.client.lock().await = Some(client);
                 st.out.status("connected", json!({ "account": account }));
             }
@@ -496,7 +585,7 @@ async fn on_message(st: Arc<State>, out: Out, ctx: MessageContext) {
         return;
     }
     let chat = src.chat.to_string();
-    let sender_phone = phone_of(&src.sender).or_else(|| src.sender_alt.as_ref().and_then(phone_of));
+    let sender_phone = resolve_phone(&ctx.client, &src.sender, src.sender_alt.as_ref()).await;
     let mut text = ctx.message.text_content().map(str::to_string).unwrap_or_default();
     let mut attachments = Vec::new();
 
@@ -555,5 +644,46 @@ async fn save(dir: &Path, kind: &str, id: &str, ext: &str, bytes: Result<Vec<u8>
         }
         Ok(_) => log("skipped an attachment over 50 MB"),
         Err(e) => log(format!("attachment download failed: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn jid(s: &str) -> Jid {
+        s.parse().expect("jid")
+    }
+
+    #[test]
+    fn a_phone_number_jid_gives_its_number() {
+        assert_eq!(phone_of(&jid("15551234567@s.whatsapp.net")).as_deref(), Some("15551234567"));
+        assert_eq!(phone_of(&jid("15551234567:12@s.whatsapp.net")).as_deref(), Some("15551234567"));
+        // Business numbers hosted by Meta are phone numbers too.
+        assert_eq!(phone_of(&jid("15551234567@hosted")).as_deref(), Some("15551234567"));
+    }
+
+    #[test]
+    fn a_lid_or_a_group_is_not_a_phone_number() {
+        // A LID's digits look like a number but aren't one: treating them as
+        // the sender's number is what made Mercury ignore the owner (#247).
+        assert_eq!(phone_of(&jid("100000012345678@lid")), None);
+        assert_eq!(phone_of(&jid("100000012345678@hosted.lid")), None);
+        assert_eq!(phone_of(&jid("120363000000000000@g.us")), None);
+    }
+
+    #[test]
+    fn an_unknown_lid_is_looked_up_at_most_once_per_window() {
+        let t0 = std::time::Instant::now();
+        assert!(lookup_due("test-lid-1", t0));
+        assert!(!lookup_due("test-lid-1", t0 + Duration::from_secs(60)));
+        assert!(lookup_due("test-lid-2", t0), "another sender has its own window");
+        assert!(lookup_due("test-lid-1", t0 + LOOKUP_EVERY + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn logs_show_only_the_last_four() {
+        assert_eq!(masked("100000012345678"), "…5678");
+        assert_eq!(masked("12"), "…12");
     }
 }

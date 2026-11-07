@@ -2,7 +2,7 @@
 
 > A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.
 
-Published 2026-10-20 by tashiriskhan. Tags: engineering, news.
+Published 2026-10-20 by Tashir Khan. Tags: engineering, news.
 Canonical: https://mercuryagent.sh/blog/ai-coding-verification-bottleneck
 
 Coding agents are producing substantially more code. Whether that translates into more finished software is less clear.

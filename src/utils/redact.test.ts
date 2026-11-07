@@ -3,9 +3,18 @@ import { describe, expect, it } from 'vitest';
 // Secret-shaped fixtures are assembled at runtime: contiguous literals in
 // this file would trip GitHub push protection's secret scanner.
 const join = (...parts: string[]) => parts.join('');
-import { redactSecrets, redactDeep } from './redact.js';
+import { redactSecrets, redactDeep, registerSecretValue, userFacingAiError } from './redact.js';
 
 describe('secret redaction', () => {
+  it('masks registered secret values wherever they appear', () => {
+    const secret = join('plain-registered-', 'value-0042');
+    expect(redactSecrets(`token is ${secret}.`)).toBe(`token is ${secret}.`);
+    registerSecretValue(secret);
+    expect(redactSecrets(`token is ${secret}, again ${secret}`)).toBe('token is ****, again ****');
+    registerSecretValue('short');
+    expect(redactSecrets('a short word')).toBe('a short word');
+  });
+
   it('masks API keys while keeping a recognizable prefix/suffix', () => {
     const out = redactSecrets(join('export OPENAI_API_KEY=sk-proj-', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', '1234567890abcd'));
     expect(out).not.toContain('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
@@ -38,5 +47,21 @@ describe('secret redaction', () => {
     expect(out.message).not.toContain('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
     expect((out.meta as any).responseBody).not.toContain(join('sk-', 'abcdefghijklmnopqrstuvwx'));
     expect(err.message).toContain(join('sk-ant-', 'ABC')); // original untouched
+  });
+});
+
+describe('user-facing AI errors', () => {
+  it('names a spent token budget instead of falling back to the generic line', () => {
+    // The exact shape the daemon builds when isOverBudget() refuses a turn.
+    const refusal = new Error(
+      "I've exceeded my daily token budget (Token budget: 9,907,679 / 500,000,000 used (2%), 490,092,321 remaining).",
+    );
+    const message = userFacingAiError(refusal);
+    expect(message).toMatch(/daily token budget/);
+    expect(message).not.toMatch(/could not complete this request/);
+  });
+
+  it('keeps a provider quota error as a provider problem', () => {
+    expect(userFacingAiError(new Error('429 quota exceeded for this project'))).toMatch(/temporarily busy/);
   });
 });

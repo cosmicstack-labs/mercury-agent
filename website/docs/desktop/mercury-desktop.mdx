@@ -1,0 +1,114 @@
+---
+id: mercury-desktop
+title: "Mercury Desktop"
+sidebar_label: "Install & first run"
+description: "Install Mercury Desktop on macOS, Windows or Linux, open it the first time, and run Mercury on this computer or connect to one elsewhere."
+keywords: [mercury desktop, download, install, macos, windows, linux, tauri, remote, devices]
+---
+
+# Mercury Desktop
+
+Mercury Desktop is the app for Mercury. It can install Mercury on your computer for you, or connect to a Mercury you already run on a server, a home machine or Mercury Cloud. One app can hold several connections at once.
+
+It runs on macOS (Apple Silicon and Intel, macOS 11 or newer), Windows 10 and 11 (x64) and Linux (x64).
+
+## Download
+
+### On a Mac: one command (recommended)
+
+The [macOS guide](./macos) has every step and every fix in one page.
+
+Paste this into Terminal:
+
+```bash
+curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh
+```
+
+It picks the build for your Mac (Apple Silicon or Intel), downloads it from the GitHub release, checks its SHA-256 against the one GitHub recorded and checks its code signature, puts Mercury in **Applications** and opens it. If anything doesn't match, it installs nothing. Run it again any time to reinstall; a running Mercury Desktop is closed first, while Mercury itself keeps running. [Read the script](https://mercuryagent.sh/install-desktop.sh) before you run it if you like.
+
+Installed this way, Mercury opens on the first try with no security prompt: macOS only asks about apps a browser downloaded, and the app isn't signed with an Apple Developer ID yet.
+
+Options: `MERCURY_VERSION=1.5.0` installs a specific version, `MERCURY_APP_DIR=~/Applications` installs somewhere else, and `MERCURY_NO_OPEN=1` doesn't open it afterwards.
+
+### Every platform
+
+Get it from the [download page](/download). It picks the right build for your computer. Every build is also on [GitHub Releases](https://github.com/cosmicstack-labs/mercury-agent/releases).
+
+| Computer | File |
+|---|---|
+| Mac with Apple Silicon (M1 and newer) | `Mercury_<version>_aarch64.dmg` |
+| Mac with an Intel chip | `Mercury_<version>_x64.dmg` |
+| Windows | `Mercury_<version>_x64-setup.exe` (or the `.msi` for managed installs) |
+| Linux | `Mercury_<version>_amd64.AppImage`, `.deb` or `.rpm` |
+
+## Opening it the first time
+
+Mercury Desktop 1.5.0 isn't code-signed with an Apple or Windows certificate yet, so your computer asks once before it opens it. Signing is coming in a later release. Updates are different: every update is signed with Mercury's update key and checked before it installs (see [Updating Mercury](/docs/desktop/updating)).
+
+### macOS
+
+Installed with the Terminal command above? There's nothing to do. With the `.dmg`:
+
+1. Open the `.dmg` and drag **Mercury** to **Applications**.
+2. Open Mercury. macOS says "Apple could not verify Mercury is free of malware". Click **Done**.
+3. Open **System Settings → Privacy & Security**. Under **Security**, click **Open Anyway** next to Mercury, then confirm with your password.
+
+On older macOS versions you can right-click Mercury in Applications and choose **Open** instead.
+
+If macOS says Mercury "is damaged and can't be opened", clear the download flag and open it again:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Mercury.app
+```
+
+### Windows
+
+1. Run `Mercury_<version>_x64-setup.exe`.
+2. If Microsoft Defender SmartScreen shows "Windows protected your PC", click **More info**, then **Run anyway**.
+
+### Linux
+
+```bash
+# AppImage: any distribution
+chmod +x Mercury_*_amd64.AppImage
+./Mercury_*_amd64.AppImage
+
+# Debian / Ubuntu
+sudo apt install ./Mercury_*_amd64.deb
+
+# Fedora / openSUSE
+sudo dnf install ./Mercury-*.x86_64.rpm
+```
+
+## First run: where should Mercury run?
+
+The first screen checks this computer for a running Mercury and offers three ways in.
+
+- **Use the Mercury here.** Mercury is already installed on this computer. If it's running, the app connects. If it's stopped, **Start Mercury** starts it. If it's too old for the app, **Update Mercury** updates it first.
+- **Install Mercury here.** The app downloads the Mercury release for your computer, checks its SHA-256 against the release's `checksums.txt`, installs it to `~/.mercury/bin` and runs it as a service. You don't need a terminal. Then it walks you through choosing a model.
+- **Connect elsewhere.** Mercury runs on another machine: a server, a home computer, a phone on Termux, or Mercury Cloud.
+
+On this computer the app signs in with Mercury's local attach token, so there is nothing to type.
+
+## Connecting to a Mercury elsewhere
+
+You need the address the other Mercury is reachable at, usually through a tunnel such as Tailscale or Cloudflare Tunnel (Mercury itself only listens on `127.0.0.1`). Then choose one of two ways to sign in:
+
+- **Sign in** with that Mercury's dashboard username and password. The owner of that Mercury has to approve this device. The app shows "Waiting for the owner to approve this device" and a 5-character code. The owner approves it from Telegram or WhatsApp (`approve K7Q2M`), from `/server` or `mercury server approve K7Q2M` on that computer, or in Mercury Desktop on that computer. Nobody answering within 10 minutes means no.
+- **Device token.** The owner makes a token on that computer with `/server token <name>` (or `mercury devices add "<name>"`) and gives it to you. It starts with `mdt_` and is shown once.
+
+The app keeps each connection's credentials in your system keychain. Removing a connection in **Settings → Connections** also revokes its token on that Mercury.
+
+See [Remote access & security](/docs/desktop/remote-access) for what an approved device can and can't do, and how the owner controls it.
+
+## Several servers
+
+Add as many connections as you like and switch between them from the top bar. The app checks every connection for updates, not just the one you're using, and shows each in its updates panel (see [Updating Mercury](/docs/desktop/updating)).
+
+## What else is in the app
+
+- **Chat and Code.** Conversations, and a coding workspace per project.
+- **Research.** A research bar with live progress, sources read and failed with reasons, and a report you can export as PDF or Word.
+- **Bots.** Create and run bots, and read their results in one inbox.
+- **Notifications** when a reply, a research run or a bot needs you.
+- **Settings → About** shows the app's and every server's version and has **Check for updates**.

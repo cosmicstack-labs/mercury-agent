@@ -40,3 +40,27 @@ describe('proposeCrew (fleet auto-onboarding)', () => {
     expect(await proposeCrew('CEO', '', '', throwing)).toHaveLength(0);
   });
 });
+describe('planBotShape — "let Mercury decide"', () => {
+  const answer = (text: string) => ({ generateText: async () => ({ text }) }) as never;
+  const input = { name: 'Newsroom', description: 'Researches, writes and checks articles', persona: 'Find stories, write them, check facts.' };
+
+  it('a fleet comes back with its crew, ids cleaned and capped', async () => {
+    const { planBotShape } = await import('./fleet-onboarding.js');
+    const crew = Array.from({ length: 7 }, (_, i) => ({ id: `Bad Id ${i}`, name: `Specialist ${i}`, description: 'x', persona: 'A focused specialist who reports back to the lead clearly.' }));
+    const plan = await planBotShape(input, answer(JSON.stringify({ shape: 'fleet', reason: 'Three separate stages.', crew })));
+    expect(plan.shape).toBe('fleet');
+    expect(plan.reason).toBe('Three separate stages.');
+    expect(plan.crew).toHaveLength(5);
+    for (const c of plan.crew) expect(c.id).toMatch(/^[a-z0-9][a-z0-9-]*$/);
+  });
+
+  it('solo when the model says so, when a "fleet" has fewer than two crew, or when the answer is unusable', async () => {
+    const { planBotShape } = await import('./fleet-onboarding.js');
+    expect((await planBotShape(input, answer('{"shape":"solo","reason":"One focused job.","crew":[]}')))).toEqual({ shape: 'solo', reason: 'One focused job.', crew: [] });
+    const one = await planBotShape(input, answer(JSON.stringify({ shape: 'fleet', reason: 'x', crew: [{ id: 'a', name: 'A', description: '', persona: 'A specialist with a long enough persona.' }] })));
+    expect(one.shape).toBe('solo');
+    expect((await planBotShape(input, answer('I think a fleet would be lovely'))).shape).toBe('solo');
+    const failing = { generateText: async () => { throw new Error('no provider'); } } as never;
+    expect((await planBotShape(input, failing)).shape).toBe('solo');
+  });
+});

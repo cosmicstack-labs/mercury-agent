@@ -1,0 +1,215 @@
+---
+id: mcp
+title: MCP Servers
+---
+
+Mercury is a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) client. Connect it to MCP servers — local programs or remote endpoints — and their tools become available to the agent next to Mercury's built-in tools: your issue tracker, a database, internal company tools, a browser, anything that ships as an MCP server.
+
+You stay in control. A server's tools are hidden until you allow them, every call asks you first in **Ask Me** mode, and **Allow All does not cover MCP tools** — only tools you name in `autoApprove` run without a prompt.
+
+:::info[What is supported]
+
+MCP **tools** over **stdio** (a local command Mercury starts) and **Streamable HTTP** (a remote URL), with static headers for authentication. MCP resources, prompts, sampling, OAuth sign-in and legacy SSE servers are not supported yet. Mercury Bots do not get MCP tools.
+
+:::
+
+## Quick start
+
+### 1. Keep secrets in `.env`
+
+Put tokens in `~/.mercury/.env`, never in `mercury.yaml`:
+
+```bash
+# ~/.mercury/.env
+DOCS_MCP_TOKEN=your-token-here
+```
+
+Configuration refers to them as `${env:DOCS_MCP_TOKEN}`. Mercury resolves the reference only when it connects, so the value is never written back into `mercury.yaml`.
+
+### 2. Add a server
+
+A local **stdio** server — Mercury shows you the exact command and asks before saving:
+
+```bash
+mercury mcp add files --stdio npx -- -y @modelcontextprotocol/server-filesystem ~/Documents
+```
+
+A remote **HTTP** server with a bearer token:
+
+```bash
+mercury mcp add docs --http https://mcp.example.com/mcp --header 'Authorization: Bearer ${env:DOCS_MCP_TOKEN}'
+```
+
+Use single quotes around `${env:…}` so your shell doesn't expand it. `add` connects once to test the server and lists its tools before saving.
+
+### 3. Allow the tools you want
+
+Nothing is enabled until you say so:
+
+```bash
+mercury mcp test files                       # see every tool the server offers
+mercury mcp allow files list_directory search_files
+```
+
+Allowed tools appear to the agent as `mcp__files__list_directory`, `mcp__files__search_files`, and so on. If the daemon is running, Mercury restarts it to apply the change.
+
+### 4. Use them
+
+Ask Mercury something that needs the tool. In Ask Me mode you'll see:
+
+```
+MCP tool call
+Server: files
+Tool:   list_directory
+Arguments:
+{
+  "path": "/Users/you/Documents"
+}
+```
+
+Answer **Yes** (this call), **Always** (this tool, in this chat, until Mercury restarts) or **No**.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `mercury mcp list` | Configured servers, their tool filters, and env/header settings (secrets masked) |
+| `mercury mcp add <id> --stdio <command> [-- args...]` | Add a local server |
+| `mercury mcp add <id> --http <url>` | Add a remote Streamable HTTP server |
+| `mercury mcp test <id>` | Connect once and list every tool as allowed, hidden or skipped |
+| `mercury mcp allow <id> <tools...>` | Show these tools to the agent (`'*'` for all) |
+| `mercury mcp disallow <id> <tools...>` | Hide these tools again |
+| `mercury mcp enable <id>` / `disable <id>` | Turn a server on or off without removing it |
+| `mercury mcp remove <id>` | Remove a server |
+| `mercury doctor --mcp` | Connect to every enabled server and report its health |
+
+Options for `add`:
+
+| Option | Applies to | Meaning |
+|--------|-----------|---------|
+| `--env KEY=VALUE` | stdio | Environment variable for the server process (repeatable). Use `${env:NAME}` for secrets. |
+| `--cwd <dir>` | stdio | Working directory for the server process |
+| `--header 'Name: value'` | http | HTTP header (repeatable). Use `${env:NAME}` for secrets. |
+| `--allow-private` | http | Allow a private or loopback address (see [Security](#security)) |
+| `--allow a,b` | both | Tools to show to the agent (`'*'` for all) |
+| `--auto-approve a,b` | both | Tools that run without asking — also in scheduled runs |
+| `--disabled` | both | Save without enabling |
+| `-y, --yes` | both | Skip confirmations |
+
+In any chat, `/mcp` shows each server's status and `/mcp tools <server>` lists its tools. These are read-only: servers can only be added or enabled from the terminal. The web dashboard has a read-only **MCP** page with the same information.
+
+## Configuration reference
+
+Servers live under `mcp.servers` in `~/.mercury/mercury.yaml`. The `mercury mcp` commands edit this for you; you can also edit it by hand and restart Mercury.
+
+```yaml
+mcp:
+  servers:
+    files:
+      transport: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/Documents"]
+      tools:
+        allow: [list_directory, search_files]
+    docs:
+      transport: http
+      url: https://mcp.example.com/mcp
+      headers:
+        Authorization: "Bearer ${env:DOCS_MCP_TOKEN}"
+      tools:
+        allow: ["*"]
+        deny: [delete_page]
+        autoApprove: [search]
+      enabled: true
+```
+
+| Field | Transport | Description |
+|-------|-----------|-------------|
+| server id (the key) | both | Lowercase letters, digits and `-`, starting with a letter, up to 24 characters |
+| `transport` | both | `stdio` or `http` |
+| `command`, `args` | stdio | The program to start and its arguments. `${env:NAME}` works in `args`. |
+| `env` | stdio | Extra environment variables for the server process. `${env:NAME}` works here. |
+| `cwd` | stdio | Working directory |
+| `url` | http | The server's Streamable HTTP endpoint (`http` or `https`) |
+| `headers` | http | Static request headers. `${env:NAME}` works here. |
+| `allowPrivate` | http | `true` to allow private, loopback and `.local`/`.internal` addresses |
+| `enabled` | both | `false` to keep the server configured but not connected |
+| `timeoutMs` | both | Per-call timeout (default 60000) |
+| `tools.allow` | both | Tool names the agent may see; `"*"` means all. **Default: none.** |
+| `tools.deny` | both | Tool names that are always hidden; wins over `allow` |
+| `tools.autoApprove` | both | Exact tool names that run without asking (no wildcards) |
+
+An invalid server entry is skipped with a warning in the log and in `mercury doctor --mcp`; the rest still load. A missing `${env:NAME}` variable marks that server as failed with `env NAME is not set`.
+
+## How Mercury runs servers
+
+- **When.** Enabled servers connect in the background when Mercury starts. A slow or broken server never delays startup or blocks other tools. Servers reconnect with backoff (1s doubling to 5 minutes, up to 10 attempts) if a connection drops.
+- **Where.** The process that runs the agent owns the connections — normally the background daemon. The attach terminal, and `mercury code` while the daemon runs, do not start servers themselves.
+- **Tool changes.** If a server announces that its tool list changed (`tools/list_changed`), Mercury refreshes it. New tools are hidden unless your `allow` list covers them, and run without asking only if their exact name is in `autoApprove`.
+- **Tool names.** Tools are exposed as `mcp__<server>__<tool>`. Characters outside `A-Z a-z 0-9 _ -` become `_`, and names are capped at 64 characters (some model providers reject longer names); a shortened or clashing name gets a short hash suffix. `mercury mcp test` shows the exact names.
+- **Unusable tools.** A tool whose input schema can't be passed to the model (not an object, larger than 16 KB, or referencing a remote `$ref`) is skipped and reported with the reason. Descriptions inside a schema are shortened to 300 characters, since the model reads them on every turn.
+- **Results.** Text is passed to the model, capped at 32 KB per call. Images and audio are replaced by a short placeholder such as `[image/png, 12.3 KB — not shown]`. An error result from the server reaches the agent as `Error: …`.
+
+## Permissions
+
+MCP tools have their own rules, separate from the shell and file tools:
+
+| Situation | What happens |
+|-----------|--------------|
+| Tool not in `allow` (or in `deny`) | The agent can't see it |
+| Ask Me mode | You're asked before every call, with server, tool and arguments (shown whole up to 4,000 characters; longer ones show the start and the end) |
+| You answer **Always** | That tool runs without asking in that chat until Mercury restarts |
+| **Allow All** mode | You're **still asked** — Allow All never covers MCP tools |
+| Tool in `autoApprove` | Runs without asking, in chats and in unattended runs |
+| Scheduled tasks and sub-agents | They ask on the chat they came from, like a normal call; nothing is approved for them. A run with no one to ask (fail-closed, internal) only runs `autoApprove` tools |
+| Plan mode | MCP tools are not available |
+| Telegram/Signal members (non-admins) | MCP tools are not available |
+| Mercury Bots | MCP tools are not available |
+
+`autoApprove` takes exact tool names only, so a tool a server adds later can never slip in through a wildcard. Hints that a server sends about its own tools (such as "read-only") never change these rules.
+
+## Security
+
+MCP servers are third-party code and third-party text. Mercury treats them that way:
+
+- **Untrusted text.** Tool descriptions and results come from the server and can contain prompt-injection attempts ("ignore your instructions and…"). They reach the model like any web page would, and they can never change permissions. Only allow tools from servers you trust, and prefer Ask Me for anything that writes or sends.
+- **Process isolation.** A stdio server does **not** inherit Mercury's environment, so your model provider API keys and other `.env` values never reach it. It gets only a minimal set of variables (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER` on macOS/Linux; `APPDATA`, `COMSPEC`, `HOMEDRIVE`, `HOMEPATH`, `LOCALAPPDATA`, `PATH`, `PATHEXT`, `PROCESSOR_ARCHITECTURE`, `PROGRAMDATA`, `PROGRAMFILES`, `PROGRAMFILES(X86)`, `PROGRAMW6432`, `SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `USERNAME`, `USERPROFILE`, `WINDIR` on Windows) plus the `env` you configure for it.
+- **Network.** HTTP servers go through Mercury's SSRF protection: private, loopback and `.local`/`.internal` addresses are refused unless you set `allowPrivate: true` for that server, and redirects to other origins are not followed. `allowPrivate` opens loopback and your LAN only: link-local addresses such as the cloud metadata service (`169.254.169.254`) stay blocked.
+- **Secrets.** Values you reference with `${env:NAME}` are resolved at connect time and masked as `****` wherever they could surface — logs, tool results, server stderr, `mercury mcp list`, `/mcp`, `mercury doctor --mcp`, the dashboard and `/api/mcp`. A literal token typed into `mercury.yaml` triggers a warning, and so does handing a server one of Mercury's own keys (for example `${env:ANTHROPIC_API_KEY}`): that server would see it.
+- **Owner-only setup.** Adding or enabling a server is done from the terminal; the agent has no MCP tool for it. When the agent uses its file tools (`write_file`, `edit_file`, `create_file`, `delete_file`) on `mercury.yaml`, `permissions.yaml` or `.env`, Mercury always asks first — even under Allow All — and refuses in unattended runs. Shell commands that change MCP setup (`mercury mcp add`, `enable`, `allow`… or anything that names `mercury.yaml`) also always ask, even under Allow All, and are refused in unattended runs. Other shell edits to `permissions.yaml` or `.env` follow your permission mode.
+
+## Checking health
+
+```bash
+mercury mcp test <id>     # one server, with its tool list and stderr on failure
+mercury doctor --mcp      # every enabled server; exits 1 if any fails
+```
+
+```
+  MCP servers
+  ✓ files: connected, 14 tools, 2 allowed — npx
+  ✗ docs: failed — env DOCS_MCP_TOKEN is not set — https://mcp.example.com
+  - old: disabled — uvx
+```
+
+In chat, `/mcp` shows the live status of the running Mercury; the dashboard's **MCP** page shows the same.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `env NAME is not set` | Add `NAME=…` to `~/.mercury/.env` and restart Mercury |
+| `Blocked: … is a private/internal address` | The server is on your machine or network. Set `allowPrivate: true` (or add it with `--allow-private`) if you trust it |
+| `Connection closed` right after start | The command failed. `mercury mcp test <id>` prints the server's stderr — often a missing package, a wrong path, or a missing token |
+| `connect timed out after 15000 ms` | The server didn't answer the MCP handshake. Check it speaks MCP over stdio (not HTTP), or that the URL is the MCP endpoint |
+| `HTTP 401` / `403` | Check the token in `.env` and the header name the server expects |
+| Tool missing for the agent | It isn't in `tools.allow` — `mercury mcp test <id>` shows hidden and skipped tools |
+| `skipped: input schema …` | The server's schema for that tool can't be sent to the model; nothing to configure |
+| `MCP tool … needs approval` in a scheduled task | Add the tool to `tools.autoApprove` if it should run unattended |
+| Command works in your shell but not in the daemon | The background service runs with a fixed `PATH`. Use the full path to the program (for example `/opt/homebrew/bin/uvx`) |
+
+## Platform notes
+
+- **Windows.** Commands such as `npx` that are `.cmd` shims work as `command: npx`.
+- **Standalone binaries.** MCP is built into the standalone binaries (verified on the Windows binary; macOS and Linux run the same bundled code). Stdio servers still need their own runtime installed — Node.js for `npx`, Python for `uvx`.
+- **Termux.** MCP is untested on Termux. Install Mercury with npm there; stdio servers that only need Node.js are expected to work.

@@ -1,7 +1,8 @@
 //! Microphone and speaker for listening mode (cpal, every OS).
 //!
 //! The voice links speak 16 kHz mono PCM16 in 60 ms frames (like a phone
-//! call). Here the default input is mixed to mono and resampled to that, and
+//! call). Here the owner's microphone (devices.rs: their pick, or the system
+//! default) is mixed to mono and resampled to that, and
 //! link audio is resampled to the default output's rate and played.
 //!
 //! Without headphones the mic would hear Mercury's own voice; `Output`
@@ -9,7 +10,7 @@
 //! Mercury talks.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,8 @@ pub struct Output {
     start: Instant,
     /// Milliseconds since `start` when the speaker last played sound.
     last_sound: AtomicU64,
+    /// Loudest sample played since the last `take_level` (f32 bits), for the app's call circles.
+    peak: AtomicU32,
 }
 
 impl Output {
@@ -99,10 +102,19 @@ impl Output {
         }
     }
 
+    /// How loud the speaker was since the last call (0-1), then start over.
+    pub fn take_level(&self) -> f32 {
+        f32::from_bits(self.peak.swap(0, Ordering::Relaxed))
+    }
+
     fn next(&self) -> f32 {
         let s = self.queue.lock().unwrap().pop_front();
         match s {
             Some(v) => {
+                let a = v.abs();
+                if a > f32::from_bits(self.peak.load(Ordering::Relaxed)) {
+                    self.peak.store(a.to_bits(), Ordering::Relaxed);
+                }
                 // Only real sound (speech, chimes) counts: the quiet thinking tick doesn't mute the mic.
                 if v.abs() > 0.06 {
                     self.last_sound.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
@@ -138,7 +150,7 @@ impl Audio {
     }
 }
 
-/// Open the default microphone and speaker. The streams live on their own
+/// Open the owner's microphone and the default speaker. The streams live on their own
 /// thread (they aren't Send on every OS) until the returned `Audio` is dropped.
 pub fn open() -> Result<Audio, String> {
     let (mic_tx, mic_rx) = mpsc::unbounded_channel::<Vec<i16>>();
@@ -150,7 +162,10 @@ pub fn open() -> Result<Audio, String> {
         .spawn(move || {
             let host = cpal::default_host();
             let started = (|| -> Result<(cpal::Stream, cpal::Stream, Arc<Output>, String), String> {
-                let input = host.default_input_device().ok_or("no microphone found")?;
+                let (input, note) = crate::devices::input_device()?;
+                if let Some(n) = note {
+                    crate::core::log(n);
+                }
                 let output = host.default_output_device().ok_or("no speaker found")?;
                 let in_cfg = input.default_input_config().map_err(|e| format!("microphone: {e}"))?;
                 let out_cfg = output.default_output_config().map_err(|e| format!("speaker: {e}"))?;
@@ -159,6 +174,7 @@ pub fn open() -> Result<Audio, String> {
                     rate: out_cfg.sample_rate().0,
                     start: Instant::now(),
                     last_sound: AtomicU64::new(0),
+                    peak: AtomicU32::new(0),
                 });
                 let in_stream = build_input(&input, &in_cfg, mic_tx)?;
                 let out_stream = build_output(&output, &out_cfg, out.clone())?;

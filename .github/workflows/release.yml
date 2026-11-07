@@ -1,0 +1,269 @@
+name: Release
+
+# One tag, everything shipped: push `vX.Y.Z` (the version in package.json and
+# apps/desktop) and this builds, then publishes, in an order that never leaves
+# a half release in public:
+#
+#   1. server   — every standalone binary + web.tar.gz + checksums into a DRAFT
+#                 GitHub release (notes from RELEASE.md);
+#   2. desktop  — Mercury Desktop for macOS (arm64, x64), Windows and Linux,
+#                 plus the updater's latest.json, into the same draft;
+#   3. publish  — only when 1 and 2 succeeded: the release goes public, npm
+#                 publishes the package;
+#   4. website  — downloads page, desktop/latest.json and the signed update
+#                 manifest point at the release; docs/ is rebuilt and pushed to
+#                 main (GitHub Pages serves main:/docs).
+#
+# A failure before 3 leaves only a draft (delete it, fix, push the tag again).
+# Secrets: NPM_TOKEN, TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
+# Desktop builds are not code-signed yet (macOS ad-hoc); see UPDATES.md.
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build, e.g. v1.5.0'
+        required: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  checks:
+    name: Typecheck, tests, package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: node scripts/verify-package.cjs
+
+  server:
+    name: Server binaries (draft release)
+    needs: checks
+    # Built on a Mac, as releases always were: Bun signs the macOS binaries
+    # there (Apple Silicon refuses unsigned ones) and cross-compiles the rest.
+    runs-on: macos-14
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release_id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: The tag, package.json and the desktop agree
+        id: v
+        run: |
+          v="${TAG#v}"
+          for f in package.json apps/desktop/package.json apps/desktop/src-tauri/tauri.conf.json; do
+            have=$(node -p "require('./$f').version")
+            [ "$have" = "$v" ] || { echo "::error::$f says $have, the tag says $v"; exit 1; }
+          done
+          grep -q "^version = \"$v\"" apps/desktop/src-tauri/Cargo.toml || { echo "::error::Cargo.toml is not $v"; exit 1; }
+          grep -q "^# Release v$v" RELEASE.md || { echo "::error::RELEASE.md is not the notes for v$v"; exit 1; }
+          if npm view "@cosmicstack/mercury-agent@$v" version >/dev/null 2>&1; then echo "::warning::$v is already on npm; the npm step will skip it"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Build every standalone binary
+        run: node scripts/build-bin.cjs --all
+      - run: node scripts/verify-standalone-release.cjs "release/v${{ steps.v.outputs.version }}"
+      - name: Draft the GitHub release
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${{ steps.v.outputs.version }}"
+          dir="release/v$v"
+          # A re-run replaces an earlier draft of the same tag; never a published release.
+          if gh release view "v$v" --json isDraft -q .isDraft 2>/dev/null | grep -q false; then
+            echo "::error::v$v is already published"; exit 1
+          fi
+          gh release delete "v$v" --yes 2>/dev/null || true
+          tail -n +3 RELEASE.md > notes.md
+          files=$(find "$dir" -maxdepth 1 -type f \( -name 'mercury-*' -o -name 'web.tar.gz' -o -name 'checksums.txt' \) | sort)
+          gh release create "v$v" --draft --verify-tag --title "Mercury v$v" --notes-file notes.md $files
+          id=$(gh api "repos/${{ github.repository }}/releases" --jq ".[] | select(.tag_name==\"v$v\") | .id" | head -1)
+          [ -n "$id" ] || { echo "::error::draft not found"; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  desktop:
+    name: Desktop (${{ matrix.label }})
+    needs: server
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: macos-14, label: macOS Apple Silicon, args: '--target aarch64-apple-darwin', rust: aarch64-apple-darwin }
+          - { os: macos-14, label: macOS Intel, args: '--target x86_64-apple-darwin', rust: x86_64-apple-darwin }
+          - { os: ubuntu-22.04, label: Linux x64, args: '', rust: '' }
+          - { os: windows-latest, label: Windows x64, args: '', rust: '' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            apps/desktop/package-lock.json
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config rpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: npm ci --no-audit --no-fund
+        working-directory: ui
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/desktop
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # A fresh computer gets the runtime from this same release.
+          MERCURY_RUNTIME_TAG: v${{ needs.server.outputs.version }}
+        with:
+          projectPath: apps/desktop
+          releaseId: ${{ needs.server.outputs.release_id }}
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
+
+  publish:
+    name: Publish (release + npm)
+    needs: [server, desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: The draft holds the server and every desktop download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${{ needs.server.outputs.version }}"
+          names=$(gh api "repos/${{ github.repository }}/releases/${{ needs.server.outputs.release_id }}" --jq '.assets[].name')
+          echo "$names"
+          for re in '^checksums\.txt$' '^web\.tar\.gz$' '^mercury-macos-arm64$' '^mercury-linux-x64$' '^mercury-win-x64\.exe$' \
+                    '^latest\.json$' '_aarch64\.dmg$' '_x64\.dmg$' '_x64-setup\.exe$' '_amd64\.AppImage$' '_amd64\.deb$'; do
+            echo "$names" | grep -Eq "$re" || { echo "::error::the release has no asset matching $re"; exit 1; }
+          done
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      # npm first: its token is the credential most likely to have expired,
+      # and a failure here still leaves nothing public.
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # Already there (published by hand after a failed run): carry on.
+        run: |
+          v="${{ needs.server.outputs.version }}"
+          if npm view "@cosmicstack/mercury-agent@$v" version >/dev/null 2>&1; then
+            echo "$v is already on npm"
+          else
+            npm publish --access public --provenance
+          fi
+      - name: Make the release public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "v${{ needs.server.outputs.version }}" --draft=false --latest
+
+  website:
+    name: Website (downloads, updates, docs)
+    needs: [server, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            website/package-lock.json
+            apps/desktop/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/desktop
+      - run: npm ci --no-audit --no-fund
+        working-directory: website
+      # A patch release (x.y.Z, Z > 0) changes only what installed apps read:
+      # the update manifest and the desktop update feed. The download page,
+      # hero and docs stay as they are (a fresh install updates itself).
+      - name: Patch or feature release?
+        id: kind
+        run: |
+          v="${{ needs.server.outputs.version }}"
+          if [ "${v##*.}" != "0" ]; then echo "feeds_only=true" >> "$GITHUB_OUTPUT"; else echo "feeds_only=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Point the site and the update manifest at the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          git show "${TAG}:RELEASE.md" > /tmp/RELEASE.md
+          node scripts/release-site.mjs "${{ needs.server.outputs.version }}" --notes /tmp/RELEASE.md ${{ steps.kind.outputs.feeds_only == 'true' && '--feeds-only' || '' }}
+      - name: Patch release — copy only the update feeds into the live site
+        if: steps.kind.outputs.feeds_only == 'true'
+        run: |
+          mkdir -p docs/updates docs/desktop
+          cp website/static/updates/manifest.json website/static/updates/manifest.json.sig docs/updates/
+          cp website/static/desktop/latest.json docs/desktop/
+      - name: Feature release — rebuild the site (docs/)
+        if: steps.kind.outputs.feeds_only != 'true'
+        working-directory: website
+        run: npm run build:prod
+      - name: Keep the hand-written files docs/ also holds, drop stale built assets
+        if: steps.kind.outputs.feeds_only != 'true'
+        run: |
+          git ls-files -d docs | grep -v '^docs/assets/' | xargs -r git checkout --
+      - name: Push to main
+        run: |
+          git config user.name "mercury-release[bot]"
+          git config user.email "mercury@cosmicstack.org"
+          git add -A website/static/desktop website/static/updates website/src/data docs
+          git commit -m "release: v${{ needs.server.outputs.version }} on mercuryagent.sh (downloads, updates, docs)" || { echo "nothing to publish"; exit 0; }
+          git push origin HEAD:main

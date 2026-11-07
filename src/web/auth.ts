@@ -1,7 +1,7 @@
-import { compareSync, hashSync, genSaltSync } from 'bcryptjs';
+import { compare, compareSync, hashSync, genSaltSync } from 'bcryptjs';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getMercuryHome, loadConfig } from '../utils/config.js';
 
 const SESSION_COOKIE = 'mercury_session';
@@ -59,6 +59,15 @@ export function writeAttachToken(): void {
     // Best-effort: without the token file, attach clients cannot connect,
     // but the runtime itself is unaffected.
   }
+}
+
+/** Constant-time check of a presented attach token. */
+export function attachTokenMatches(presented: string): boolean {
+  const expected = readAttachToken();
+  if (!expected) return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export function readAttachToken(): string | null {
@@ -127,15 +136,36 @@ export function setWebPassword(password: string): void {
   saveWebAuth(auth);
 }
 
+// A hash to compare against when the username is wrong, so a wrong name
+// takes as long as a wrong password (no "this user exists" timing signal).
+const DUMMY_HASH = hashSync('mercury-dummy-password', 10);
+
 export function authenticate(username: string, password: string): boolean {
   const auth = loadWebAuth();
   if (!auth) return false;
-  if (username !== auth.username) return false;
   try {
-    return compareSync(password, auth.password_hash);
+    const ok = compareSync(password, username === auth.username ? auth.password_hash : DUMMY_HASH);
+    return ok && username === auth.username;
   } catch {
     return false;
   }
+}
+
+/** The same check without blocking the server while bcrypt runs (sign-in endpoints). */
+export async function authenticateAsync(username: string, password: string): Promise<boolean> {
+  const auth = loadWebAuth();
+  if (!auth) return false;
+  try {
+    const ok = await compare(password, username === auth.username ? auth.password_hash : DUMMY_HASH);
+    return ok && username === auth.username;
+  } catch {
+    return false;
+  }
+}
+
+/** The username to sign in with (for the CLI's security screen). */
+export function webUsername(): string | null {
+  return loadWebAuth()?.username ?? null;
 }
 
 export function changePassword(currentPassword: string, newPassword: string): boolean {
@@ -162,12 +192,22 @@ export function createSessionToken(): string {
 }
 
 interface SessionEntry {
-  token: string;
   expiresAt: number;
 }
 
+/**
+ * Live browser sessions, by a SHA-256 of the token (the token itself is only
+ * in the browser's cookie): a copied sessions file can't be replayed.
+ */
 const sessions: Map<string, SessionEntry> = new Map();
 const SESSION_FILE = 'web-sessions.json';
+
+const sessionHash = (token: string): string => createHash('sha256').update(token, 'utf8').digest('hex');
+
+/** A short, non-secret key for a session (to find its open streams). */
+export function sessionKey(token: string): string {
+  return sessionHash(token).slice(0, 16);
+}
 
 function getSessionFilePath(): string {
   return join(getMercuryHome(), SESSION_FILE);
@@ -177,8 +217,8 @@ function persistSessions(): void {
   try {
     const dir = getMercuryHome();
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const entries = Object.fromEntries(sessions);
-    writeCredentialFile(getSessionFilePath(), JSON.stringify(entries, null, 2));
+    const entries = Object.fromEntries([...sessions].map(([hash, e]) => [hash, { expiresAt: e.expiresAt }]));
+    writeCredentialFile(getSessionFilePath(), JSON.stringify({ version: 2, sessions: entries }, null, 2));
   } catch {}
 }
 
@@ -186,14 +226,16 @@ function restoreSessions(): void {
   try {
     const path = getSessionFilePath();
     if (!existsSync(path)) return;
-    const raw = readFileSync(path, 'utf-8');
-    const data = JSON.parse(raw) as Record<string, SessionEntry>;
+    const raw = JSON.parse(readFileSync(path, 'utf-8')) as { version?: number; sessions?: Record<string, SessionEntry> } & Record<string, unknown>;
     const now = Date.now();
-    for (const [key, entry] of Object.entries(data)) {
-      if (entry.expiresAt > now) {
-        sessions.set(key, entry);
-      }
+    // Version 1 kept the raw token as the key: hash it on the way in.
+    const v2 = raw.version === 2 && raw.sessions && typeof raw.sessions === 'object';
+    const entries = (v2 ? raw.sessions : raw) as Record<string, SessionEntry>;
+    for (const [key, entry] of Object.entries(entries)) {
+      if (!entry || typeof entry.expiresAt !== 'number' || entry.expiresAt <= now) continue;
+      sessions.set(v2 ? key : sessionHash(key), { expiresAt: entry.expiresAt });
     }
+    if (!v2) persistSessions();
   } catch {}
 }
 
@@ -202,27 +244,43 @@ restoreSessions();
 
 export function createSession(): string {
   const token = createSessionToken();
-  sessions.set(token, {
-    token,
-    expiresAt: Date.now() + SESSION_MAX_AGE * 1000,
-  });
+  sessions.set(sessionHash(token), { expiresAt: Date.now() + SESSION_MAX_AGE * 1000 });
   persistSessions();
   return token;
 }
 
 export function validateSession(token: string): boolean {
-  const entry = sessions.get(token);
+  const hash = sessionHash(token);
+  const entry = sessions.get(hash);
   if (!entry) return false;
   if (Date.now() > entry.expiresAt) {
-    sessions.delete(token);
+    sessions.delete(hash);
     return false;
   }
   return true;
 }
 
 export function destroySession(token: string): void {
-  sessions.delete(token);
+  sessions.delete(sessionHash(token));
   persistSessions();
+}
+
+/** Sign every browser out (a password change), except `keep`; returns the keys of the sessions ended. */
+export function destroyAllSessions(keep?: string): string[] {
+  const keepHash = keep ? sessionHash(keep) : null;
+  const ended: string[] = [];
+  for (const hash of [...sessions.keys()]) {
+    if (hash === keepHash) continue;
+    sessions.delete(hash);
+    ended.push(hash.slice(0, 16));
+  }
+  persistSessions();
+  return ended;
+}
+
+export function sessionCount(): number {
+  const now = Date.now();
+  return [...sessions.values()].filter((e) => e.expiresAt > now).length;
 }
 
 export function getSessionCookieName(): string {

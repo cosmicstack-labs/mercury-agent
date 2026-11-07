@@ -2,11 +2,16 @@
 
 > Mercury is an open-source, soul-driven AI agent that runs on your own machine. It reaches you from the terminal, Telegram, Discord, Slack, Signal and a local web dashboard, keeps a local long-term memory, asks before it acts through a permission system, stays inside a daily token budget, and keeps running as a background service. It ships Mercury Code (a coding environment) and Mercury Bots (persistent specialist agents).
 
+Desktop app: Mercury Desktop for macOS (Apple Silicon and Intel), Windows and Linux at https://mercuryagent.sh/download. It installs Mercury on the computer or connects to one elsewhere, and keeps both updated.
+
 Install: `curl -fsSL https://mercuryagent.sh/install.sh | sh` (macOS/Linux), `irm https://mercuryagent.sh/install.ps1 | iex` (Windows), or `npm i -g @cosmicstack/mercury-agent` on Node.js 22+. Source: https://github.com/cosmicstack-labs/mercury-agent (MIT).
 
 ## Docs
 
 - [Getting started](https://mercuryagent.sh/docs): install, first run, channels
+- [Mercury Desktop](https://mercuryagent.sh/docs/desktop/mercury-desktop): install the app, first run, connecting to a remote Mercury
+- [Updating Mercury](https://mercuryagent.sh/docs/desktop/updating): desktop and server updates, rollback, required updates
+- [Remote access & security](https://mercuryagent.sh/docs/desktop/remote-access): owner approvals, device tokens, /server
 - [CLI commands](https://mercuryagent.sh/docs/cli-commands/cli-commands): every `mercury` command
 - [Permissions model](https://mercuryagent.sh/docs/reference/permissions): scopes, approvals, blocklist
 - [Second Brain memory](https://mercuryagent.sh/docs/reference/second-brain): how memory is extracted and recalled
@@ -16,6 +21,10 @@ Install: `curl -fsSL https://mercuryagent.sh/install.sh | sh` (macOS/Linux), `ir
 
 ## Blog
 
+- [Mercury 1.5: Mercury Desktop](https://mercuryagent.sh/blog/mercury-1-5.md) (2026-11-03): Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.
+- [A tour of Mercury Desktop: one app, every Mercury you run](https://mercuryagent.sh/blog/mercury-desktop-tour.md) (2026-11-03): What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.
+- [Your agent returned 200 OK. It may still have failed](https://mercuryagent.sh/blog/agent-observability-first-wrong-step.md) (2026-10-31): What to record in an AI agent run to find its first wrong step, and what Mercury records today. Based on OpenTelemetry's GenAI agent spans and a code review.
+- [Running an agent overnight: what breaks first](https://mercuryagent.sh/blog/running-an-agent-overnight.md) (2026-10-27): We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.
 - [How Optimus works: an agent that uses your computer](https://mercuryagent.sh/blog/how-optimus-works.md) (2026-10-24): Inside Optimus, the Mercury plugin that sees your screen, moves the mouse and types: its processes, how it looks and acts, voice control, and the safety rails.
 - [Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk](https://mercuryagent.sh/blog/mercury-1-4.md) (2026-10-23): Mercury 1.4 adds isolated plugins and two official ones: WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.
 - [The new bottleneck in AI coding isn't code generation. It's verification.](https://mercuryagent.sh/blog/ai-coding-verification-bottleneck.md) (2026-10-20): A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.

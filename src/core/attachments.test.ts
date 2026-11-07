@@ -56,3 +56,30 @@ describe('chat attachments for the model', () => {
     expect(modelReadsPdf('openai', 'gpt-3.5-turbo')).toBe(false);
   });
 });
+
+describe('a declared capability beats the name-based guess', () => {
+  it('a self-hosted model the owner declared as seeing images gets the pixels', () => {
+    // The name says nothing (no "vl", no vendor): only the declaration can know.
+    expect(modelSeesImages('openaiCompat', 'qwen3.8-flash-next')).toBe(false);
+    expect(modelSeesImages('openaiCompat', 'qwen3.8-flash-next', true)).toBe(true);
+
+    const out = withAttachments(history, msg([{ kind: 'image', path: img }]), 'openaiCompat', 'qwen3.8-flash-next', true);
+    const parts = out[2].content as unknown as Array<{ type: string }>;
+    expect(parts.some(p => p.type === 'image')).toBe(true);
+  });
+
+  it('a declaration of false is honoured even for a model whose name matches', () => {
+    expect(modelSeesImages('openai', 'gpt-4.1-mini')).toBe(true);
+    expect(modelSeesImages('openai', 'gpt-4.1-mini', false)).toBe(false);
+
+    const out = withAttachments(history, msg([{ kind: 'image', path: img }]), 'openai', 'gpt-4.1-mini', false);
+    const parts = out[2].content as unknown as Array<{ type: string; text?: string }>;
+    expect(parts.some(p => p.type === 'image')).toBe(false);
+    expect(JSON.stringify(parts)).toContain("can't view images");
+  });
+
+  it('no declaration keeps the old behaviour', () => {
+    expect(modelSeesImages('deepseek', 'deepseek-flash')).toBe(false);
+    expect(modelSeesImages('anthropic', 'claude-sonnet-4-5')).toBe(true);
+  });
+});

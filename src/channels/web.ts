@@ -1,8 +1,10 @@
 import { BaseChannel } from './base.js';
-import type { ChannelMessage } from '../types/channel.js';
+import { normalizePlan, PlanStore } from '../core/plan.js';
+import type { ChannelMessage, ChannelAttachment } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import { userFacingAiError } from '../utils/redact.js';
+import { stepFailure, type ResearchSnapshot } from '../core/research-run.js';
 
 type CloudEventHandler = (event: ChatEvent) => boolean;
 
@@ -11,13 +13,16 @@ type PendingInteractionKind = 'permission' | 'continue' | 'mode' | 'choice';
 interface PendingInteraction {
   kind: PendingInteractionKind;
   targetId?: string;
+  /** The session it was asked in, and the event that asked it (replayed when a screen opens that session). */
+  sessionId?: string;
+  event?: ChatEvent;
   allowedValues: Set<string>;
   resolve: (value: string) => void;
   timer: ReturnType<typeof setTimeout>;
 }
 
 export interface ChatEvent {
-  type: 'thinking' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched';
+  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
   data?: Record<string, unknown>;
 }
 
@@ -51,6 +56,11 @@ class SSEClient {
 export class WebChannel extends BaseChannel {
   readonly type = 'web' as const;
   private sseClients: Map<string, SSEClient> = new Map();
+  /** Screens that want a summary of every session (started, needs you, done): notifications. */
+  private activityClients: Map<string, SSEClient> = new Map();
+  private turnStarts = new Map<string, number>();
+  /** Session titles for activity events (set by the web server). */
+  private titleOf: ((sessionId: string) => string | undefined) | null = null;
   private pendingInteractions = new Map<string, PendingInteraction>();
   private agentName: string;
   private stepCounter: Map<string, number> = new Map();
@@ -76,6 +86,11 @@ export class WebChannel extends BaseChannel {
       client.close();
     }
     this.sseClients.clear();
+    for (const [id, plan] of this.researchPlans) {
+      clearTimeout(plan.timer);
+      plan.resolve({ action: 'cancel', questions: plan.questions });
+      this.researchPlans.delete(id);
+    }
     for (const [id, interaction] of this.pendingInteractions) {
       clearTimeout(interaction.timer);
       interaction.resolve(interaction.kind === 'mode' ? 'ask-me' : interaction.kind === 'choice' ? '' : 'no');
@@ -92,6 +107,148 @@ export class WebChannel extends BaseChannel {
 
   removeSSEClient(id: string): void {
     this.sseClients.delete(id);
+  }
+
+  addActivityClient(controller: ReadableStreamDefaultController, thisComputer = false): string {
+    const id = `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    this.activityClients.set(id, new SSEClient(controller, id));
+    if (thisComputer) this.localActivityClients.add(id);
+    return id;
+  }
+
+  /** Activity screens on this computer: the only ones that get security questions (they can answer them). */
+  private localActivityClients = new Set<string>();
+
+  /** A security question for the owner (owner-approvals), to Mercury Desktop on this computer only. */
+  sendOwnerApproval(a: { id: string; code: string; kind: string; title: string; detail?: string; who: string; ip?: string; expiresAt: number; status: string }, change: 'new' | 'decided'): void {
+    const out: ChatEvent = { type: 'owner_approval', data: { change, id: a.id, code: a.code, kind: a.kind, title: a.title, detail: a.detail, who: a.who, ip: a.ip, expiresAt: a.expiresAt, status: a.status } };
+    for (const id of this.localActivityClients) this.activityClients.get(id)?.send(out);
+  }
+
+  removeActivityClient(id: string): void {
+    this.activityClients.delete(id);
+    this.localActivityClients.delete(id);
+  }
+
+  setSessionTitleLookup(fn: (sessionId: string) => string | undefined): void {
+    this.titleOf = fn;
+  }
+
+  /** Prompts still waiting in a session, as the events that asked them. */
+  pendingFor(sessionId: string): ChatEvent[] {
+    const prompts = [...this.pendingInteractions.values()].filter((i) => i.sessionId === sessionId && i.event).map((i) => i.event!);
+    const plans = [...this.researchPlans.values()].filter((p) => p.sessionId === sessionId).map((p) => p.event);
+    return [...prompts, ...plans];
+  }
+
+  /** Research plans waiting for the owner's Start (see askResearchPlan). */
+  private researchPlans = new Map<string, { sessionId?: string; event: ChatEvent; resolve: (a: { action: 'start' | 'cancel'; questions: string[] }) => void; timer: ReturnType<typeof setTimeout>; questions: string[] }>();
+
+  /**
+   * Show a research plan the owner can edit, and wait for Start or Cancel.
+   * Nobody answering in `timeoutMs` starts the plan as proposed: they asked
+   * for the research, the plan was only a chance to steer it.
+   */
+  askResearchPlan(runId: string, topic: string, questions: string[], targetId: string | undefined, timeoutMs: number): Promise<{ action: 'start' | 'cancel'; questions: string[]; timedOut?: boolean }> {
+    const id = `rplan_${runId}`;
+    const event: ChatEvent = { type: 'research_plan', data: { id, runId, topic, questions, targetId, expiresAt: Date.now() + timeoutMs } };
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (!this.researchPlans.delete(id)) return;
+        this.broadcast({ type: 'research_plan_resolved', data: { id, action: 'start', targetId } });
+        resolve({ action: 'start', questions, timedOut: true });
+      }, timeoutMs);
+      timer.unref?.();
+      this.researchPlans.set(id, { sessionId: targetId, event, resolve, timer, questions });
+      this.broadcast(event);
+    });
+  }
+
+  /** The owner's answer to a research plan. False when it's gone (answered, timed out). */
+  answerResearchPlan(id: string, action: 'start' | 'cancel', questions?: string[]): boolean {
+    const p = this.researchPlans.get(id);
+    if (!p) return false;
+    this.researchPlans.delete(id);
+    clearTimeout(p.timer);
+    const kept = (questions ?? p.questions).map((q) => String(q).trim()).filter(Boolean).slice(0, 8);
+    p.resolve({ action, questions: kept.length ? kept : p.questions });
+    this.broadcast({ type: 'research_plan_resolved', data: { id, action, targetId: p.sessionId } });
+    return true;
+  }
+
+  /** A research run as it stands: phase, counts, sources and how each went. */
+  sendResearch(snapshot: ResearchSnapshot, targetId?: string): void {
+    this.broadcast({ type: 'research', data: { ...snapshot, targetId } });
+  }
+
+  /** Research switched on (or off) for a chat's next message. */
+  sendResearchArmed(armed: boolean, targetId: string | undefined, info: { topic?: string | null; planFirst?: boolean } = {}): void {
+    this.broadcast({ type: 'research', data: { state: armed ? 'armed' : 'off', topic: info.topic ?? null, planFirst: !!info.planFirst, targetId } });
+  }
+
+  /**
+   * A line about the turn that is not its answer: "the provider stalled,
+   * retrying". Sent as text_done it ended the turn on screen while the work
+   * went on.
+   */
+  sendNotice(message: string, targetId?: string, level: 'info' | 'warning' = 'info'): void {
+    this.broadcast({ type: 'notice', data: { message, level, targetId } });
+  }
+
+  /**
+   * One line per session event that a person would want to hear about:
+   * a turn started, Mercury needs an answer, a turn finished or failed.
+   * Cloud-relayed sessions belong to their remote screen, so they're left out.
+   */
+  private emitActivity(event: ChatEvent, targetId: string | undefined): void {
+    if (!targetId) return;
+    if (this.cloudEventHandlers.has(targetId)) return;
+    const d = event.data ?? {};
+    const now = Date.now();
+    let data: Record<string, unknown> | null = null;
+    switch (event.type) {
+      case 'thinking':
+        if (!this.turnStarts.has(targetId)) { this.turnStarts.set(targetId, now); data = { kind: 'started' }; }
+        break;
+      case 'permission_request':
+      case 'permission_continue':
+      case 'choice_prompt':
+        data = { kind: 'needs_you', id: d.id, prompt: String(d.prompt ?? d.question ?? '').slice(0, 300) };
+        break;
+      case 'research_plan':
+        data = { kind: 'needs_you', id: d.id, prompt: `Research plan ready: ${String(d.topic ?? '').slice(0, 200)}` };
+        break;
+      case 'research':
+        // A finished (or cut-short) research run: the notification can say what came of it.
+        if (d.state === 'done' || d.state === 'partial' || d.state === 'stopped' || d.state === 'failed') {
+          data = { kind: 'research', state: d.state, topic: String(d.topic ?? '').slice(0, 200), read: d.read, cited: d.cited, failed: d.failed, report: (d.report as { name?: string } | undefined)?.name };
+        }
+        break;
+      case 'permission_resolved':
+      case 'choice_resolved':
+      case 'research_plan_resolved':
+        data = { kind: 'resolved', id: d.id };
+        break;
+      case 'text_done': {
+        const started = this.turnStarts.get(targetId);
+        this.turnStarts.delete(targetId);
+        const text = String(d.fullText ?? '');
+        const ms = typeof d.elapsedMs === 'number' ? d.elapsedMs : started ? now - started : 0;
+        data = { kind: /^⏹/.test(text.trim()) ? 'stopped' : 'done', ms, preview: text.replace(/\s+/g, ' ').trim().slice(0, 200) };
+        break;
+      }
+      case 'error': {
+        const started = this.turnStarts.get(targetId);
+        this.turnStarts.delete(targetId);
+        data = { kind: 'failed', ms: started ? now - started : 0, message: String(d.message ?? '').slice(0, 200) };
+        break;
+      }
+    }
+    if (!data || this.activityClients.size === 0) return;
+    let title: string | undefined;
+    try { title = this.titleOf?.(targetId); } catch { title = undefined; }
+    const out: ChatEvent = { type: 'activity', data: { ...data, sessionId: targetId, title, at: now } };
+    for (const [, client] of this.activityClients) client.send(out);
   }
 
   /**
@@ -111,6 +268,16 @@ export class WebChannel extends BaseChannel {
    * attached terminal kept streaming the old id: replies to the new session
    * never reached it, and it showed "Thinking" forever.
    */
+  /**
+   * This chat's message is waiting: Mercury runs one turn at a time, and
+   * another one (`busySessionId`, doing `busyWith`) is ahead of it. Sent when it
+   * joins the line and whenever the line moves; the turn's own events follow
+   * when it starts.
+   */
+  sendQueued(targetId: string, data: { position: number; busyWith?: string; busySessionId?: string }): void {
+    this.broadcast({ type: 'queued', data: { targetId, ...data } });
+  }
+
   sendSessionSwitched(targetId: string, session: { id: string; shortId: string; alias: string; title: string }): void {
     this.broadcast({ type: 'session_switched', data: { targetId, id: session.id, shortId: session.shortId, alias: session.alias, title: session.title } });
   }
@@ -137,6 +304,7 @@ export class WebChannel extends BaseChannel {
       if (targetId && client.sessionId !== targetId) continue;
       client.send(event);
     }
+    this.emitActivity(event, targetId);
     return delivered;
   }
 
@@ -164,6 +332,8 @@ export class WebChannel extends BaseChannel {
     this.pendingInteractions.delete(id);
     clearTimeout(interaction.timer);
     interaction.resolve(value);
+    // Every screen (and the notification feed) learns it was answered.
+    this.broadcast({ type: interaction.kind === 'choice' ? 'choice_resolved' : 'permission_resolved', data: { id, status: 'answered', targetId: interaction.sessionId } });
     return true;
   }
 
@@ -173,8 +343,12 @@ export class WebChannel extends BaseChannel {
     values: string[],
     targetId: string | undefined,
     fallback: string,
+    event?: ChatEvent,
   ): Promise<string> {
     const boundTargetId = targetId && this.cloudEventHandlers.has(targetId) ? targetId : undefined;
+    // The same two minutes whether or not the session is on screen: the agent waits while
+    // a prompt is open, so a longer wait would hold up every other conversation.
+    const waitMs = 120_000;
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         const interaction = this.pendingInteractions.get(id);
@@ -182,13 +356,15 @@ export class WebChannel extends BaseChannel {
         this.pendingInteractions.delete(id);
         this.broadcast({
           type: interaction.kind === 'choice' ? 'choice_resolved' : 'permission_resolved',
-          data: { id, status: 'expired', targetId: interaction.targetId },
+          data: { id, status: 'expired', targetId: interaction.sessionId ?? interaction.targetId },
         });
         resolve(fallback);
-      }, 120_000);
+      }, waitMs);
       this.pendingInteractions.set(id, {
         kind,
         targetId: boundTargetId,
+        sessionId: targetId,
+        event,
         allowedValues: new Set(values),
         resolve,
         timer,
@@ -205,6 +381,11 @@ export class WebChannel extends BaseChannel {
   private hasInteractiveTarget(targetId?: string): boolean {
     if (!targetId) return this.sseClients.size > 0;
     if (this.cloudEventHandlers.has(targetId)) return true;
+    // A screen listening for notifications can answer once the owner opens the session.
+    return this.isWatched(targetId) || this.activityClients.size > 0;
+  }
+
+  private isWatched(targetId: string): boolean {
     return [...this.sseClients.values()].some((client) => client.sessionId === targetId);
   }
 
@@ -241,23 +422,25 @@ export class WebChannel extends BaseChannel {
     if (this.isPermissionBypassed(_targetId)) return 'yes';
     if (!this.hasInteractiveTarget(_targetId)) return 'no';
     const id = `perm_${randomUUID()}`;
-    this.broadcast({
+    const event: ChatEvent = {
       type: 'permission_request',
       data: { id, prompt, options: ['yes', 'always', 'no'], targetId: _targetId },
-    });
-
-    return this.waitForInteraction(id, 'permission', ['yes', 'always', 'no'], _targetId, 'no');
+    };
+    const pending = this.waitForInteraction(id, 'permission', ['yes', 'always', 'no'], _targetId, 'no', event);
+    this.broadcast(event);
+    return pending;
   }
 
   async askToContinue(question: string, _targetId?: string): Promise<boolean> {
     if (!this.hasInteractiveTarget(_targetId)) return false;
     const id = `loop_${randomUUID()}`;
-    this.broadcast({
+    const event: ChatEvent = {
       type: 'permission_continue',
       data: { id, question, options: ['yes', 'no'], targetId: _targetId },
-    });
-
-    return this.waitForInteraction(id, 'continue', ['yes', 'no'], _targetId, 'no').then((value) => value === 'yes');
+    };
+    const pending = this.waitForInteraction(id, 'continue', ['yes', 'no'], _targetId, 'no', event);
+    this.broadcast(event);
+    return pending.then((value) => value === 'yes');
   }
 
   askPermissionMode(): Promise<'allow-all' | 'ask-me'> {
@@ -274,12 +457,13 @@ export class WebChannel extends BaseChannel {
   async presentChoicePrompt(question: string, options: Array<{ value: string; label: string }>, targetId?: string): Promise<string> {
     if (!this.hasInteractiveTarget(targetId)) return '';
     const id = `choice_${randomUUID()}`;
-    this.broadcast({
+    const event: ChatEvent = {
       type: 'choice_prompt',
       data: { id, question, options, targetId },
-    });
-
-    return this.waitForInteraction(id, 'choice', options.map((option) => option.value), targetId, '');
+    };
+    const pending = this.waitForInteraction(id, 'choice', options.map((option) => option.value), targetId, '', event);
+    this.broadcast(event);
+    return pending;
   }
 
   sendToolFeedback(toolName: string, args: Record<string, unknown>, targetId?: string): void {
@@ -297,13 +481,61 @@ export class WebChannel extends BaseChannel {
     });
   }
 
+  /**
+   * The model's reasoning as it streams, for clients that show the thought
+   * process live. Deltas are batched (≤ 8 events/s per target); null closes
+   * the reasoning block when the answer starts.
+   */
+  private reasoningBuf = new Map<string, { text: string; timer: ReturnType<typeof setTimeout> | null }>();
+
+  sendReasoning(delta: string | null, targetId?: string): void {
+    const key = targetId || 'default';
+    const entry = this.reasoningBuf.get(key) ?? { text: '', timer: null };
+    const flush = () => {
+      const e = this.reasoningBuf.get(key);
+      if (!e) return;
+      if (e.timer) clearTimeout(e.timer);
+      e.timer = null;
+      if (e.text) this.broadcast({ type: 'reasoning', data: { text: e.text, targetId } });
+      e.text = '';
+    };
+    if (delta === null) {
+      this.reasoningBuf.set(key, entry);
+      flush();
+      this.broadcast({ type: 'reasoning', data: { done: true, targetId } });
+      this.reasoningBuf.delete(key);
+      return;
+    }
+    entry.text += delta;
+    this.reasoningBuf.set(key, entry);
+    if (!entry.timer) entry.timer = setTimeout(flush, 125);
+  }
+
+  /** The latest plan per conversation (see core/plan.ts). */
+  plans = new PlanStore();
+
+  /** The model updated its plan checklist: keep it with the conversation and show it live. */
+  sendPlan(steps: unknown, targetId?: string): void {
+    const normalized = normalizePlan(steps);
+    if (normalized.length === 0) return;
+    const plan = targetId ? this.plans.set(targetId, normalized) : { steps: normalized, updatedAt: Date.now() };
+    this.broadcast({ type: 'plan', data: { steps: plan.steps, updatedAt: plan.updatedAt, targetId } });
+  }
+
+  /** Artifacts this turn made (images, PDFs, reports…), for the conversation's live view. */
+  sendArtifacts(items: unknown[], targetId?: string): void {
+    if (!items.length) return;
+    this.broadcast({ type: 'artifacts', data: { items, targetId } });
+  }
+
   sendStepDone(toolName: string, result: unknown, targetId?: string): void {
-    const summary = typeof result === 'string'
-      ? result.slice(0, 200)
-      : String(result).slice(0, 200);
+    const text = typeof result === 'string' ? result : String(result);
+    const summary = text.slice(0, 200);
+    // Whether it failed, decided here: "HTTP 403 …" and "timed out" are text, not errors.
+    const reason = stepFailure(toolName, text);
     this.broadcast({
       type: 'step_done',
-      data: { tool: toolName, summary, targetId },
+      data: { tool: toolName, summary, failed: reason !== null, ...(reason ? { reason } : {}), targetId },
     });
   }
 
@@ -344,7 +576,11 @@ export class WebChannel extends BaseChannel {
     this.emitMessageInThread(content, 'web:default');
   }
 
-  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string): void {
+  /**
+   * `attachments` are files already on disk (see `web/api/uploads.ts`); them being
+   * present is what lets the runtime hand a photo to a vision model instead of a path.
+   */
+  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[], scope?: { programming?: string; cwd?: string; thisComputer?: boolean }): void {
     if (this.restrictUser) {
       throw new Error('Web user is restricted. Disable restrict mode to continue.');
     }
@@ -362,6 +598,13 @@ export class WebChannel extends BaseChannel {
         ...(requestId ? { requestId } : {}),
         ...(externalConversationId ? { externalConversationId } : {}),
         ...(messageId ? { canonicalMessageId: messageId } : {}),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        // Session-scoped coding (Mercury Desktop's Code surface): the mode and
+        // folder apply to this turn only; the agent restores the rest after.
+        ...(scope?.programming ? { programming: scope.programming } : {}),
+        ...(scope?.cwd ? { programmingCwd: scope.cwd } : {}),
+        // Sent from this computer (Mercury Desktop or an attached terminal here): /server is allowed.
+        ...(scope?.thisComputer ? { thisComputer: true } : {}),
       },
     };
     this.emit(msg);

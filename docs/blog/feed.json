@@ -5,6 +5,70 @@
     "description": "News, engineering notes and field reports from the team building Mercury.",
     "items": [
         {
+            "id": "https://mercuryagent.sh/blog/mercury-1-5",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/mercury-1-5",
+            "title": "Mercury 1.5: Mercury Desktop",
+            "summary": "Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.",
+            "date_modified": "2026-11-03T00:00:00.000Z",
+            "author": {
+                "name": "Mercury Engineering",
+                "url": "https://github.com/cosmicstack-labs/mercury-agent"
+            },
+            "tags": [
+                "News",
+                "Releases"
+            ]
+        },
+        {
+            "id": "https://mercuryagent.sh/blog/mercury-desktop-tour",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/mercury-desktop-tour",
+            "title": "A tour of Mercury Desktop: one app, every Mercury you run",
+            "summary": "What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.",
+            "date_modified": "2026-11-03T00:00:00.000Z",
+            "author": {
+                "name": "Mercury Engineering",
+                "url": "https://github.com/cosmicstack-labs/mercury-agent"
+            },
+            "tags": [
+                "Product",
+                "Releases"
+            ]
+        },
+        {
+            "id": "https://mercuryagent.sh/blog/agent-observability-first-wrong-step",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/agent-observability-first-wrong-step",
+            "title": "Your agent returned 200 OK. It may still have failed",
+            "summary": "What to record in an AI agent run to find its first wrong step, and what Mercury records today. Based on OpenTelemetry's GenAI agent spans and a code review.",
+            "date_modified": "2026-10-31T00:00:00.000Z",
+            "author": {
+                "name": "Tashir Khan",
+                "url": "https://github.com/tashiriskhan"
+            },
+            "tags": [
+                "Engineering",
+                "Runtime"
+            ]
+        },
+        {
+            "id": "https://mercuryagent.sh/blog/running-an-agent-overnight",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/running-an-agent-overnight",
+            "title": "Running an agent overnight: what breaks first",
+            "summary": "We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.",
+            "date_modified": "2026-10-27T00:00:00.000Z",
+            "author": {
+                "name": "Tashir Khan",
+                "url": "https://github.com/tashiriskhan"
+            },
+            "tags": [
+                "Runtime",
+                "Engineering"
+            ]
+        },
+        {
             "id": "https://mercuryagent.sh/blog/how-optimus-works",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/how-optimus-works",
@@ -45,7 +109,7 @@
             "summary": "A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.",
             "date_modified": "2026-10-20T00:00:00.000Z",
             "author": {
-                "name": "tashiriskhan",
+                "name": "Tashir Khan",
                 "url": "https://github.com/tashiriskhan"
             },
             "tags": [
@@ -61,7 +125,7 @@
             "summary": "CERT-In says AI agents read live business records at Indian firms. Here is how least privilege, scoped access, approvals and audit logs should limit them.",
             "date_modified": "2026-10-17T00:00:00.000Z",
             "author": {
-                "name": "tashiriskhan",
+                "name": "Tashir Khan",
                 "url": "https://github.com/tashiriskhan"
             },
             "tags": [

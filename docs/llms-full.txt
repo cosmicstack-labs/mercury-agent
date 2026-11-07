@@ -1,3 +1,331 @@
+# Mercury 1.5: Mercury Desktop
+
+> Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.
+
+Published 2026-11-03 by Mercury Engineering. Tags: news, releases.
+Canonical: https://mercuryagent.sh/blog/mercury-1-5
+
+Mercury 1.5.0 is out, and with it Mercury Desktop: an app for macOS (Apple Silicon and Intel), Windows and Linux. It installs Mercury on your computer without a terminal, or connects to a Mercury you already run on a server. The same release changes how other devices reach your Mercury, and how both the app and the runtime update themselves.
+
+[Download Mercury Desktop](/download), or read the [release notes](/docs/releases/1.5.0).
+
+## The app
+
+The first screen looks for Mercury on your computer. If it finds one, it connects. If it doesn't, **Install Mercury here** downloads the release for your machine, checks it against the release's SHA-256 checksums, and runs it as a service. **Connect elsewhere** adds a Mercury on another machine, and you can keep several connections and switch between them.
+
+Inside are chat, a coding workspace per project, research with live progress, bots and their results inbox, and notifications when something needs you. [Install & first run](/docs/desktop/mercury-desktop) covers the details, and [a tour of Mercury Desktop](/blog/mercury-desktop-tour) walks through every part of it.
+
+One honest caveat: this first release isn't code-signed with an Apple or Windows certificate. macOS and Windows ask once before the first launch, and the [download page](/download) shows the clicks. Updates are a different matter. Each one is signed with Mercury's update key and checked before it installs.
+
+## Other devices now need your approval
+
+An app that connects to a Mercury somewhere else made us look hard at how remote access worked, and it wasn't good enough. Mercury listens only on `127.0.0.1`, so a remote device reaches it through a tunnel or proxy on the same machine. Those connect from `127.0.0.1` too, and several "this computer only" checks trusted that address. Through a tunnel, a device with a token could do what you can do at the keyboard, including open a shell.
+
+In 1.5.0, a request counts as local only when it comes from `127.0.0.1` with no proxy headers and a `localhost` host. Everything else is remote, and remote devices work under your rules:
+
+- A new device needs your approval. It shows a 5-character code, and you answer `approve K7Q2M` from Telegram or WhatsApp, from the terminal, or in Mercury Desktop on your computer.
+- Sensitive actions from a remote device ask you each time: the terminal (off for remote devices unless you turn it on), Allow All, the workspace folder, powerful bots, plugins, channel tokens, restarts and the password.
+- Devices unused for 30 days are signed out, revoking one cuts its open connections, and a device connecting from a new address tells you.
+
+`/server` in the terminal, or `mercury server` in a shell, manages all of it, and `mercury doctor --security` checks your setup. The design is in [ADR-035](https://github.com/cosmicstack-labs/mercury-agent/blob/main/DECISIONS.md), and [Remote access & security](/docs/desktop/remote-access) explains how to use it.
+
+## Updates that put things back
+
+Updating used to mean `mercury upgrade`, which removed the npm package before installing the new one, kept no backup, and didn't check that the new version started. Now an update, from the app or the terminal, does this:
+
+1. Waits for running work to finish, for up to 10 minutes.
+2. Downloads the new version, resuming if the connection drops, and checks its checksums.
+3. Backs up the current program and Mercury's settings.
+4. Stops Mercury, installs, starts it, and waits for it to answer as the new version.
+5. If it doesn't, puts the old version and settings back and starts that.
+
+We ran this for real on a test install before the release. Updating 1.4.1 to the published 1.4.2 worked and Mercury was back in about four seconds. The first attempt, though, rolled back: the 1.4.2 binary reports an empty version on its health endpoint, so the check never matched. The updater now asks the installed program for its version when that happens. A deliberately broken release also kept Mercury offline for the full 90-second wait, so the updater now notices a crashed start and rolls back in about 15 seconds.
+
+Mercury Desktop shows an Update button at the top right, like Chrome's. It gets more noticeable the longer an update waits, and one panel covers the app and every server it connects to. You can read what's new before you update. When an update has to happen, for a security fix, the app says so on a screen you can only get past by ticking a short checklist, and only for a while. [Updating Mercury](/docs/desktop/updating) has the whole picture.
+
+## Also in 1.5.0
+
+- **Research you can watch.** A plan you can edit, every source read or failed with the reason, and a report even when a run is cut short. Reports export as PDF or Word.
+- **Files in one place.** What Mercury makes goes in `~/mercury-artifacts`, one folder per chat.
+- **MCP servers.** Mercury can use tools from Model Context Protocol servers, and every MCP call asks first in Ask Me mode. See [MCP Servers](/docs/integrations/mcp).
+- **Bots 2.0.** Each run reports, says there was nothing new, or says it failed, and results wait in an inbox.
+
+Update with `mercury upgrade`, or [download Mercury Desktop](/download) and let it update your Mercury for you.
+
+https://github.com/cosmicstack-labs/mercury-agent
+
+
+---
+
+# A tour of Mercury Desktop: one app, every Mercury you run
+
+> What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.
+
+Published 2026-11-03 by Mercury Engineering. Tags: product, releases.
+Canonical: https://mercuryagent.sh/blog/mercury-desktop-tour
+
+Mercury Desktop is the app we wanted every time we opened a terminal just to talk to Mercury. It ships in [1.5.0](/docs/releases/1.5.0) for macOS (Apple Silicon and Intel), Windows and Linux, and it does two jobs: it runs Mercury on the computer you're sitting at, and it connects to the Mercury you run somewhere else. Most of us end up with both, a laptop and a box in a cupboard or a small VPS, so the app is built around more than one Mercury from the first screen.
+
+This post walks through what's in it. If you only want the file, it's on the [download page](/download).
+
+## The first screen: install here, or connect elsewhere
+
+On first launch the app looks for Mercury on this computer. If one is running, it connects with the machine's local token and you're in.
+
+If there isn't one, **Install Mercury here** downloads the release for your CPU, checks it against the release's SHA-256 checksums, and runs it as a login service, so it's there after a restart. There's no terminal and no Node.js to install.
+
+**Connect elsewhere** takes the address of a Mercury on another machine. The app asks that Mercury for a device token, and the request waits for the owner: a 5-character code arrives on your Telegram or WhatsApp, or shows in `/server` on that machine, and you approve it there. The app never sees a password, and you can revoke it from either side. [Remote access & security](/docs/desktop/remote-access) explains the rules.
+
+## Several Mercurys, one app
+
+Every connection you add stays in the app. The top bar shows which Mercury this window is talking to and its version. Click it to switch, between your laptop's Mercury and the one on the VPS, for example. Tokens for remote connections live in the operating system's keychain, not in a settings file.
+
+Each connection is checked for updates on its own. If the server in the cupboard is a version behind, the Update button in the top right says so, and the updates panel has a row for the app and one per server. **Update server** starts the update on that machine. From a remote device the owner approves it first, like any other sensitive action. The server waits for running work to finish, backs up, installs, and checks the new version starts. If it doesn't, the old one comes back on its own.
+
+Settings → About has **Check for updates**, which asks the app and every server at once, and **Update everything** when there's more than one to do. [Updating Mercury](/docs/desktop/updating) has the details.
+
+## Chat
+
+Chat is where most time goes, so it got the most work.
+
+- **Commands and skills in the composer.** Type `/` for commands and `#` for skills, from the same catalog the terminal uses, filtered to the ones that make sense in the app. A picked command becomes a chip you can see before you send.
+- **Attachments.** Photos and PDFs go straight into the conversation.
+- **Ask Me or Allow All**, shown the same way everywhere, so you always know whether Mercury will stop and ask before it acts.
+- **Saved chats** open from a bookmark beside search.
+- **Honest waiting.** A server runs one turn at a time. If another chat is mid-reply, yours says *Waiting* and names the chat it's waiting for, instead of pretending to think. You can open that chat or ask for yours to go first.
+
+## Research you can watch
+
+Ask for research and you get one visible run instead of a long silence. Mercury proposes a plan you can approve or edit. While it works, a checklist shows each step, every source it read, and the ones that failed with the reason, such as a timeout or a page that refused it.
+
+You can say **Write the report now** at any point. If a run is cut short, you still get a report built from what it found, with what's missing listed at the end. Reports open in the app, export as PDF or Word, and show each source's site icon. Like everything Mercury makes, the files land in `~/mercury-artifacts`, one folder per chat, not loose in your home folder. The **Artifacts** view lists them.
+
+## Code
+
+**Code** is a workspace per project. Pick a folder and the chat in that project works in programming mode, with a panel beside it for the file tree, the git status of your changes, and the diff of any file you click. It's for reading along while Mercury works, not a replacement for your editor.
+
+## Bots
+
+Bots are Mercury instances with their own persona, tools and sandbox that run on a schedule or on demand. The app is now where you manage them:
+
+- **An inbox of results.** Every run closes with a report: what it did, what it made, and what it needs from you.
+- **Create and edit bots in words.** Describe the job and the persona builder drafts it, or let Mercury decide the whole setup.
+- **Fleets.** Design the crew for a lead bot yourself, or let Mercury propose one.
+- **Questions mid-run.** When a bot needs permission, the question appears with **Allow once**, **Always allow** and **Deny**, instead of the run failing.
+
+## Brain
+
+**Brain** shows what Mercury knows. Memories lists what it has learned about you and how you work, and you can correct anything that's wrong. People shows the people it knows from your conversations. Map groups your notes into topics, and Graph shows how people and notes connect.
+
+## Plugins and voice
+
+Plugins install from **Plugins**, with their setup on one page. With the [Optimus plugin](/blog/how-optimus-works), Mercury can use your computer, by chat or out loud. When Optimus is listening or speaking, a small capsule drops from the top centre of the screen, from the notch on Macs that have one. It stays above full-screen apps without stealing focus. The microphone picker, the permission checks and a live test sit at the top of the plugin page on every OS.
+
+## What isn't there yet
+
+This first release isn't code-signed with an Apple or Windows certificate, so a downloaded installer asks once before the first launch. The [download page](/download#first-open) shows the clicks. On a Mac you can skip that: `curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh` checks the download and installs the app, and it opens straight away. Updates are signed with Mercury's update key and checked before they install, so after that first launch you're covered.
+
+A Mercury server still answers one chat at a time. Running several turns side by side is the next change to the runtime.
+
+The app is open source like the rest of Mercury, in [`apps/desktop`](https://github.com/cosmicstack-labs/mercury-agent/tree/main/apps/desktop). If something in it gets in your way, [open an issue](https://github.com/cosmicstack-labs/mercury-agent/issues).
+
+https://github.com/cosmicstack-labs/mercury-agent
+
+
+---
+
+# Your agent returned 200 OK. It may still have failed
+
+> What to record in an AI agent run to find its first wrong step, and what Mercury records today. Based on OpenTelemetry's GenAI agent spans and a code review.
+
+Published 2026-10-31 by Tashir Khan. Tags: engineering, runtime.
+Canonical: https://mercuryagent.sh/blog/agent-observability-first-wrong-step
+
+An agent can finish a run with a fluent, confident answer and still have done the wrong thing. It may have picked the wrong tool, pulled a stale fact into context, or called the same tool five times with the same arguments. Uptime and error logs won't show any of that. This post looks at what a run needs to record so that you can find the first step where it went wrong, and what Mercury records today.
+
+## Why normal monitoring misses agent failures
+
+A normal service either fails or it doesn't. An agent can return a successful response and still fail the task. A 200 OK means the request was handled. It does not mean the task succeeded. [Snowflake's agent evaluation guide](https://www.snowflake.com/en/artificial-intelligence/agents/agent-evaluation) puts the gap plainly: a correct final answer is only the last part of the run. It also separates two jobs. Evaluation measures quality against defined tasks. Monitoring watches live behaviour through traces, logs, latency, cost, tool failures and user feedback.
+
+Microsoft's [Foundry observability documentation](https://learn.microsoft.com/en-us/azure/foundry/concepts/observability) describes tracing as capturing LLM calls, tool invocations, agent decisions and dependencies between services. New Relic's [agent observability write-up](https://newrelic.com/blog/observability/ai-agent-observability) makes the same point from the vendor side: without trace-level data, you can see that something went wrong but not why.
+
+## The unit of debugging is the first wrong step
+
+The final output is the symptom. The cause is usually an early step: a tool chosen when another was needed, a retrieved document that was out of date, or an argument that looked reasonable and wasn't. By the time the answer is wrong, that step is several calls back.
+
+In this post, the first wrong step means the earliest consequential deviation: the first step whose effect changed what came after it in a way that mattered to the outcome. A step that was odd but harmless does not count.
+
+So the question for a trace is not "what did the agent do?" It is "where is the earliest consequential deviation, and what did the agent have in front of it at that point?" A trace that can't answer that will show you a long, plausible transcript and leave you to read all of it.
+
+Here is a made-up run to show the difference. The user asks for last month's invoice total. Step 1 searches the wrong folder and gets a file from the previous year. Step 2 reads it, sums the totals, and reports a figure. Step 3 writes a fluent summary. The final answer looks right, and every tool call returned `ok`. A transcript shows three clean steps. A trace with timestamps, arguments and parent links shows that step 1 was the first consequential deviation, and that step 2 never had a chance to fix it. The run was never going to produce the right number, so the fix belongs at step 1, not in the summary.
+
+This example is illustrative, not a recorded Mercury incident.
+
+## What a useful agent trace records
+
+The clearest published model I found is OpenTelemetry's draft GenAI agent conventions. The [v1.41.0 agent span spec](https://raw.githubusercontent.com/open-telemetry/semantic-conventions/v1.41.0/docs/gen-ai/gen-ai-agent-spans.md) defines operation names including `invoke_agent`, `execute_tool`, `create_agent` and `invoke_workflow`. The [OpenTelemetry GenAI blog](https://opentelemetry.io/blog/2026/genai-observability/index.md) shows the resulting tree: an `invoke_agent` span with child spans for each model call and each tool call. It also records token counts such as `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens`, plus finish reasons and latency histograms.
+
+Mapped to the questions you need to answer:
+
+| Question | What to record |
+|---|---|
+| Which tool was chosen? | The chosen tool, its arguments, and the tools available at that step |
+| Did the call work? | The result, error type, latency, and whether the result entered subsequent context |
+| Is it looping? | Repeated calls with the same arguments, or revisited goals |
+| Where did work pass? | Handoffs to sub-agents, and what context went with them |
+| What changed in context? | Items added, dropped or summarised between steps |
+| What did it cost? | Token usage and money per model call, so a runaway loop shows up as a number |
+| Where did it first go wrong? | Ordered steps with timestamps and parent links, so you can walk back from the bad output |
+
+The last row is the one that matters most. Parent links and timestamps are what turn a transcript into something you can walk backwards through.
+
+## Three cautions
+
+**Traces show what happened, not whether it was right.** You still need evaluations over whole runs. Snowflake notes that production traces are often the raw material for later evaluations, so the two work together.
+
+**Full content is useful and risky.** Tool arguments and results can contain personal data, credentials or customer records. The OpenTelemetry GenAI blog notes that content capture is opt-in for this reason. Redaction and retention need an explicit design, not a default that someone forgets to change.
+
+**The standard is not final.** The OpenTelemetry agent spans are marked as development status, and vendor dashboards may use different attribute names. Treat these conventions as the best current reference, not as settled.
+
+## What Mercury records today
+
+We read the code paths in `src/core/agent.ts`, `src/core/context-window.ts` and `src/utils/logger.ts` at commit `c969d77` on `main`. We did not run a live session, so the findings below are from code review.
+
+It helps to separate two kinds of observability. Live observability is what you can see while a run is happening. Persisted observability is what survives the run, so you can debug it afterwards. Mercury has some of the first and, from what we found, very little of the second.
+
+**Live observability:**
+
+- **Live tool events.** Each tool start and finish is pushed to the interface with its duration. We did not find a persistent record of these events.
+- **A per-turn usage log.** At the end of a turn, Mercury logs the provider, model, input, cached and output tokens, step count, tool-call count and elapsed time. The logger is pino, and its level is `silent` unless you run with `--verbose` or set `LOG_LEVEL`.
+
+**Persisted observability:**
+
+- **A turn-end tool trace.** Each tool call becomes one line: the tool name, one summarised argument capped at 80 characters, and an outcome such as `ok (12 lines)` or an error message. These lines are written into the session so the next turn can see them. The trace is capped by line count. We did not find the per-turn usage log kept anywhere by default.
+- **Redaction of errors.** Errors pass through a `redactDeep` helper before they are logged, so keys in provider errors are masked.
+
+Measured against the table above, we did not find the following:
+
+- Call IDs, timestamps, durations or step indexes in the stored trace. You can read the order, but not the timing.
+- A record of the tools available at each step.
+- A parent link from a delegated task to the work it produced.
+- Per-model-call token usage or cost. Usage is recorded per turn.
+- A record of context changes, such as compaction and tool-result summarising. These appear to happen in memory.
+- Full arguments. The stored trace caps them at 80 characters, so you often can't reconstruct exactly what was sent.
+- An OpenTelemetry dependency in `package.json`, or an audit log.
+
+So the honest version is this. From the code we read, Mercury can show roughly what it did in the last turn. We did not find a way to show the first wrong step of a bad run from what it stores. This is the same gap our October 17 permissions post described from the other side: we can't audit access we don't record.
+
+## What we would instrument first
+
+The smallest change that closes the biggest gap is to give every tool call a stable ID, a start time, a duration and a parent turn ID, and to write those to the session store instead of only the summary line. That alone lets you order a run, time it, and link each call to the turn that made it. Per-model-call token usage comes next, then content capture behind an explicit, off-by-default setting with redaction.
+
+We have not built this yet. It is a plan, not a shipped feature.
+
+## What it means for you
+
+If you run agents in production, check three things before you need them. Can you tell which tool call came first in a bad run? Can you see how long each call took? Can you see what a single run cost, call by call? If the answer to any of these is no, that is a gap to close before the next failure.
+
+If you cannot reconstruct the run after it fails, a successful response can hide more than it proves.
+
+
+---
+
+# Running an agent overnight: what breaks first
+
+> We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.
+
+Published 2026-10-27 by Tashir Khan. Tags: runtime, engineering.
+Canonical: https://mercuryagent.sh/blog/running-an-agent-overnight
+
+Most overnight agent failures are quiet. The agent doesn't crash. A job just doesn't run, or runs twice, and nobody is told. This post looks at where that happens in Mercury's scheduler and budget code.
+
+An agent that works when you watch it is a different product from one you leave running. When you're watching, you catch the stuck tool call and the wrong turn. Overnight, nobody catches them. This post covers what we found in Mercury's scheduler and budget code when we asked where an unattended run would fail first.
+
+**Code snapshot:** Based on Mercury 1.3.9, commit `c969d77` on `main`, as of October 27, 2026. Line references are to that commit.
+
+**Evidence levels.** Each finding is labelled:
+
+- **[Reproduced]**: we ran the behaviour and observed it.
+- **[Confirmed from code]**: we traced the code path but did not run it end to end.
+- **[Code-based hypothesis]**: the code suggests it; we have not tested it.
+
+### Delayed tasks due during downtime are skipped [Confirmed from code]
+
+Delayed tasks are saved to `schedules.yaml` in Mercury's home directory, with an `executeAt` time. On startup, `restorePersistedTasks` in `src/core/scheduler.ts` checks each one. If `executeAt` has already passed, it logs `Delayed task already expired, skipping` and does not run it.
+
+For example, a delayed task due at 02:40, during a restart at 02:50, will not fire. A task due at 03:00 during the same restart will.
+
+Cron tasks are re-registered on startup. We found no catch-up logic in the scheduler, so firings that fall inside a downtime window are not replayed. Different features behave differently; bot routines go through their own governor, described below.
+
+**What to do:** Use cron for recurring work. For one-off work that must run, check the log for `already expired` after every restart.
+
+### Some scheduler errors are logged but not sent to you [Confirmed from code]
+
+This claim is narrow. The scheduler's own error handlers only log:
+
+- In `addTask`, a throwing handler logs `Scheduled task error`. Nothing else happens.
+- In `startHeartbeat`, a failing heartbeat logs `Heartbeat error`.
+- In `addDelayedTask`, a failing delayed task logs `Delayed task error`.
+
+Ordinary scheduled prompts take a different route. `handleScheduledTask` in `src/core/agent.ts` catches its own errors and logs `Scheduled task execution failed`. So for ordinary tasks, the scheduler's `Scheduled task error` path is usually not the one that fires. It fires for bot routines, where an error from enqueueing is not caught.
+
+Successful output is separate. A scheduled task's result goes back through its source channel like any other reply. We did not check whether a failure inside the agent loop is sent to the channel, so treat a missing result as unknown, not as success.
+
+**What to do:** Don't rely on error logs for overnight work. Have each task send a short end-of-run message. If it doesn't arrive, assume the run did not finish.
+
+### A delayed task leaves the schedule file once its prompt is handed off [Confirmed from code]
+
+In `addDelayedTask`, a `finally` block removes the task from `schedules.yaml` when its handler returns, even if the handler threw. For ordinary tasks, `handleScheduledTask` does not throw, so the removal happens once the prompt has been queued.
+
+The queued prompt is not lost on that basis alone. Accepted jobs are persisted in the work ledger, and on startup `recoverInterrupted()` re-queues the ones that were queued or interrupted (`src/core/agent.ts`). We have not tested a restart in the middle of a run.
+
+### Long runs may overlap [Reproduced at the scheduler level; queued inside the agent]
+
+Each cron task is registered with `cron.schedule` and an async handler. The scheduler keeps no in-flight flag per task ID. We reproduced this pattern with node-cron 3.0.3, the version Mercury pins: a job firing every second, with a handler that takes 3.5 seconds, reached four concurrent runs within eight seconds.
+
+Inside Mercury, the effect is different. Scheduled prompts go onto the agent's message queue, which processes one message at a time. Overlapping firings for a main-agent task therefore wait in line rather than running in parallel. [Confirmed from code; not run end to end.] Each queued firing still costs budget when it runs.
+
+Bot routines are different. The bot governor skips a tick when the bot is busy or the last run was too recent (`busy`, `too_soon`). [Confirmed from code.]
+
+**What to do:** Until overlap is tested on your own setup, avoid non-idempotent jobs (ones that write files, send messages, or spend money) with intervals shorter than their expected run time.
+
+### Budget stops can be silent for unattended jobs [Confirmed from code]
+
+Mercury tracks daily token use in `src/utils/tokens.ts`. The total is saved to `token-usage.json` and resets when the date changes, so a restart does not reset it. `isOverBudget()` is checked in `handleMessage` in `src/core/agent.ts`, before the agent loop runs.
+
+Scheduled prompts are not exempt. They enter the same queue and reach the same check, so a scheduled job is stopped by the same daily budget as chat.
+
+What differs is who hears about it:
+
+- A chat message gets a budget notice. On the CLI, it gets an override prompt.
+- A scheduled job with a source channel gets the same notice on that channel.
+- A scheduled job with no source channel (`internal`) gets nothing. The check returns without sending a message.
+
+We traced this in the code but did not run it: we did not set a one-request budget and fire a job. To confirm on your install, set a low budget, fire one scheduled job with a source channel and one without, and check what each sends and logs.
+
+**What to do:** Keep daily headroom for the overnight run. Give unattended jobs a source channel so the notice reaches you. Check `/budget` in the morning.
+
+## A checklist before you leave it running
+
+- Recurring work is on cron, not one-off delays.
+- Each overnight task sends an end-of-run message. No message means unknown.
+- Non-idempotent jobs don't run on intervals shorter than their expected run time.
+- The daily budget covers the overnight run with headroom.
+- Unattended jobs have a source channel, so budget notices reach you.
+- You've checked the log for `already expired` after the last restart.
+- You know what the agent does when a tool call hangs, and you've tested it.
+
+## Recovery is not replay
+
+Mercury can recover after a restart. Accepted jobs that were queued or interrupted are re-queued from the work ledger. That does not mean every scheduled run is replayed. Firings during downtime are skipped, and expired delayed tasks are not run. Recovery covers work that was accepted. It does not cover work that never reached the ledger.
+
+## What still breaks
+
+Scheduler reliability tells you a job ran. It doesn't tell you the job did the right thing. A tool that returns success with bad data, or a task that does the wrong thing correctly, passes every check above. An overnight run needs both: a schedule that fires, and a task that is correct when it does. We'll report the open tests here as we run them.
+
+
+---
+
 # How Optimus works: an agent that uses your computer
 
 > Inside Optimus, the Mercury plugin that sees your screen, moves the mouse and types: its processes, how it looks and acts, voice control, and the safety rails.
@@ -284,7 +612,7 @@ https://github.com/cosmicstack-labs/mercury-agent
 
 > A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.
 
-Published 2026-10-20 by tashiriskhan. Tags: engineering, news.
+Published 2026-10-20 by Tashir Khan. Tags: engineering, news.
 Canonical: https://mercuryagent.sh/blog/ai-coding-verification-bottleneck
 
 Coding agents are producing substantially more code. Whether that translates into more finished software is less clear.
@@ -368,7 +696,7 @@ Ars Technica, coverage of the same study. [arstechnica.com](https://arstechnica.
 
 > CERT-In says AI agents read live business records at Indian firms. Here is how least privilege, scoped access, approvals and audit logs should limit them.
 
-Published 2026-10-17 by tashiriskhan. Tags: security, news.
+Published 2026-10-17 by Tashir Khan. Tags: security, news.
 Canonical: https://mercuryagent.sh/blog/agent-permissions-least-privilege
 
 This week CERT-In, India's national cyber agency, said AI agents reached the live systems of several Indian organisations during "research and evaluation activity" and read business records, including personal data and confidential material. The incident came to light after the affected organisations said the agents "exceeded the authorisation of their assigned tasks." Tencent separately said that agents used to evaluate third-party models showed web-browsing behaviour it did not intend. Both stories point at the same gap: agents were allowed to do more than anyone meant them to.

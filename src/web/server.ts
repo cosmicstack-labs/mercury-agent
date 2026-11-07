@@ -6,30 +6,55 @@ import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { logger } from '../utils/logger.js';
 import { authGuard, errorHandler } from './middleware.js';
+import { apiCors } from './cors.js';
 import { initWebAuth, getWebPort } from './auth.js';
+import { loadConfig } from '../utils/config.js';
 import authRoutes from './api/auth.js';
 import statusRoutes, { updateStatus } from './api/status.js';
 import providerRoutes from './api/providers.js';
+import cloudRoutes from './api/cloud.js';
+import transcribeRoutes from './api/transcribe.js';
+import speakRoutes from './api/speak.js';
+import budgetRoutes, { setBudgetControls } from './api/budget.js';
+import channelRoutes from './api/channels.js';
+import artifactRoutes from './api/artifacts.js';
 import configRoutes from './api/config.js';
 import systemRoutes, { setScheduler } from './api/system.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
-import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setStatusSnapshotCallback, setSessionRepository, setSessionSyncEnabledCallback } from './api/chat.js';
+import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setStatusSnapshotCallback, setSessionRepository, setSessionSyncEnabledCallback, setStopCallback, setSessionBusyLookup, setQueueControls, setResearchControls } from './api/chat.js';
 import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api/agents.js';
 import botsRoutes, { setBotManager, setBotsWebhookSecret } from './api/bots.js';
 import spotifyRoutes, { setSpotifyClient } from './api/spotify.js';
 import kanbanRoutes, { setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders } from './api/kanban.js';
 import ideRoutes, { setIDEProviders } from './api/workspace-ide.js';
 import lifecycleRoutes, { setShutdownHandler } from './api/lifecycle.js';
+import mcpRoutes, { setMcpManager } from './api/mcp.js';
 import pluginRoutes from './api/plugins.js';
+import voiceRoutes from './api/voice.js';
+import deviceRoutes from './api/devices.js';
+import securityRoutes from './api/security.js';
+import updatesRoutes from './api/updates.js';
+import { bodyLimit } from 'hono/body-limit';
+import { migrateDevices } from './devices.js';
 import { BoardManager } from '../core/board-manager.js';
 import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
 export { setSessionRepository };
+export { setBudgetControls };
 export { setSessionSyncEnabledCallback };
 
 const app = new Hono();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function readCorsOrigins(): string[] {
+  try {
+    const list = loadConfig().web?.corsOrigins;
+    return Array.isArray(list) ? list.filter((o): o is string => typeof o === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
 function resolveWebDir(subpath: string): string {
   const envVar = subpath === 'static' ? process.env.MERCURY_WEB_STATIC : process.env.MERCURY_UI_DIR;
@@ -68,12 +93,35 @@ const spaIndexPath = join(uiDir, 'index.html');
 const spaAvailable = existsSync(spaIndexPath);
 
 app.use('*', errorHandler);
+// Baseline headers on everything; pages also refuse to be framed (clickjacking).
+app.use('*', async (c, next) => {
+  await next();
+  c.res.headers.set('X-Content-Type-Options', 'nosniff');
+  c.res.headers.set('Referrer-Policy', 'no-referrer');
+  if ((c.res.headers.get('Content-Type') ?? '').startsWith('text/html')) {
+    c.res.headers.set('X-Frame-Options', 'DENY');
+    if (!c.res.headers.has('Content-Security-Policy')) c.res.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+  }
+});
+// Sign-in bodies are tiny: refuse big ones before reading them (they arrive without a credential).
+app.use('/api/auth/*', bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: 'Request too large' }, 413) }));
+app.use('/login', bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.text('Request too large', 413) }));
+// CORS before the guard: a preflight (OPTIONS) carries no credential and
+// must be answered, not rejected. API routes only; the dashboard itself is
+// same-origin.
+app.use('/api/*', apiCors(readCorsOrigins()));
 app.use('*', authGuard);
 
 // ── API routes (always available) ──
 app.route('/', authRoutes);
 app.route('/', statusRoutes);
 app.route('/', providerRoutes);
+app.route('/', cloudRoutes);
+app.route('/', transcribeRoutes);
+app.route('/', speakRoutes);
+app.route('/', budgetRoutes);
+app.route('/', channelRoutes);
+app.route('/', artifactRoutes);
 app.route('/', configRoutes);
 app.route('/', systemRoutes);
 app.route('/', brainRoutes);
@@ -84,7 +132,12 @@ app.route('/', spotifyRoutes);
 app.route('/', kanbanRoutes);
 app.route('/', ideRoutes);
 app.route('/', lifecycleRoutes);
+app.route('/', mcpRoutes);
 app.route('/', pluginRoutes);
+app.route('/', voiceRoutes);
+app.route('/', deviceRoutes);
+app.route('/', securityRoutes);
+app.route('/', updatesRoutes);
 
 // ── Legacy static assets (vendor fonts, icons, wasm — still needed by React SPA) ──
 app.get('/vendor/*', (c) => {
@@ -199,7 +252,8 @@ if (spaAvailable) {
   });
 }
 
-export { setShutdownHandler };
+export { setShutdownHandler, setMcpManager };
+export { setStopCallback, setSessionBusyLookup, setQueueControls, setResearchControls };
 export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setStatusSnapshotCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders, setBotManager, setBotsWebhookSecret };
 
 let webServer: ReturnType<typeof createAdaptorServer> | null = null;
@@ -242,6 +296,8 @@ process.on('unhandledRejection', (reason: any) => {
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();
   initWebAuth();
+  // Devices from before idle expiry start their clock now (they keep working).
+  try { migrateDevices(); } catch { /* checked again next start */ }
 
   if (spaAvailable) {
     logger.info(`React UI loaded from: ${uiDir}`);

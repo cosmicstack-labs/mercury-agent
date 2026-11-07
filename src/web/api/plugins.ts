@@ -8,7 +8,8 @@
  * a LAN or Cloud-relayed session.
  */
 import { Hono, type Context } from 'hono';
-import { isLoopbackRequest } from '../middleware.js';
+import { isThisComputer } from '../middleware.js';
+import { requireOwner } from '../owner-gate.js';
 import { getPluginManager } from '../../plugins/manager.js';
 import { localService } from '../../plugins/service.js';
 import { qrSvg } from '../../plugins/qr-svg.js';
@@ -19,9 +20,14 @@ function svc() {
   return localService(getPluginManager());
 }
 
+/**
+ * Plugins run code on this computer: changing them from another device waits
+ * for the owner's approval (on this computer it just happens).
+ */
 function localOnly(c: Context): Response | null {
-  if (isLoopbackRequest(c)) return null;
-  return c.json({ error: 'Plugins can only be installed or changed from this machine.' }, 403);
+  if (isThisComputer(c)) return null;
+  const path = new URL(c.req.url).pathname;
+  return requireOwner(c, { id: `plugins:${c.req.method}:${path}`, title: `Change plugins (${c.req.method} ${path.replace('/api/plugins', '') || '/'})` });
 }
 
 function fail(c: Context, err: unknown) {

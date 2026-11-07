@@ -39,6 +39,13 @@ export class CloudTokenStore {
   private inflight: Promise<TokenPair> | null = null;
   private readonly liveConfig?: MercuryConfig;
   private active = true;
+  /**
+   * 'signed-out' once the server has definitively refused both the refresh
+   * token and the agent key: nothing will fix itself, so callers stop
+   * retrying and the owner is asked to sign in again. Fresh tokens clear it.
+   */
+  private authState: 'ok' | 'signed-out' = 'ok';
+  private authError: string | null = null;
 
   constructor(jwt: string, refreshTokenValue: string, apiUrl: string, agentId: string, liveConfig?: MercuryConfig, agentApiKey?: string) {
     this.jwt = jwt;
@@ -73,6 +80,21 @@ export class CloudTokenStore {
     return this.agentApiKey;
   }
 
+  getAuthState(): { state: 'ok' | 'signed-out'; error: string | null } {
+    return { state: this.authState, error: this.authError };
+  }
+
+  isSignedOut(): boolean {
+    return this.authState === 'signed-out';
+  }
+
+  private markSignedOut(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (this.authState !== 'signed-out') logger.error({ err: message }, 'Mercury Cloud session expired and cannot renew itself; sign in again (Settings → Models, or `mercury cloud connect`)');
+    this.authState = 'signed-out';
+    this.authError = message;
+  }
+
   matchesIdentity(apiUrl: string, agentId: string): boolean {
     return this.active && this.apiUrl === apiUrl && this.agentId === agentId;
   }
@@ -102,6 +124,8 @@ export class CloudTokenStore {
     if (!this.active) throw new Error('Mercury Cloud credentials have been invalidated');
     this.jwt = jwt;
     this.refreshTokenValue = refreshTokenValue;
+    this.authState = 'ok';
+    this.authError = null;
     if (this.liveConfig) {
       this.liveConfig.cloud.jwt = jwt;
       this.liveConfig.cloud.refreshToken = refreshTokenValue;
@@ -164,17 +188,29 @@ export class CloudTokenStore {
           // browser re-pair for remotely-deployed agents.
           if (this.agentApiKey) {
             logger.warn({ err: (error as Error).message }, 'Refresh token rotation failed; redeeming agent API key');
-            return await this.redeemWithAgentKey();
+            try {
+              return await this.redeemWithAgentKey();
+            } catch (redeemError) {
+              if (isAuthRejection(redeemError)) this.markSignedOut(redeemError);
+              throw redeemError;
+            }
           }
           // No recovery key configured — make the fix obvious instead of an
           // opaque 401 loop.
-          throw new Error(
+          const final = new Error(
             `${(error as Error).message} — no recovery key available. Run "mercury cloud connect" to re-pair.`,
           );
+          if (isAuthRejection(error)) this.markSignedOut(final);
+          throw final;
         }
       } else {
         // No refresh token at all — go straight to the agent API key.
-        return await this.redeemWithAgentKey();
+        try {
+          return await this.redeemWithAgentKey();
+        } catch (redeemError) {
+          if (isAuthRejection(redeemError)) this.markSignedOut(redeemError);
+          throw redeemError;
+        }
       }
     })().finally(() => {
       this.inflight = null;
@@ -268,6 +304,12 @@ export class CloudTokenStore {
       return null;
     }
   }
+}
+
+/** The server said no (401/403), as opposed to a network blip worth retrying. */
+export function isAuthRejection(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(401|403)\b|unauthori[sz]ed|forbidden|identity mismatch/i.test(message);
 }
 
 function isTokenExpired(jwt: string, skewMs = 60_000): boolean {

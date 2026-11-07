@@ -1,6 +1,6 @@
 [package]
 name = "mercury-optimus"
-version = "0.4.8"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.94"
 description = "Optimus: full computer control for Mercury (screen, mouse, keyboard, apps, voice)"
@@ -31,6 +31,9 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSGeometry", "NST
 objc2-app-kit = { version = "0.3", features = ["objc2-core-graphics", "objc2-quartz-core", "NSApplication", "NSWindow", "NSPanel", "NSView", "NSColor", "NSTextField", "NSControl", "NSResponder", "NSGraphics", "NSFont", "NSText", "NSScreen", "NSRunningApplication"] }
 objc2-quartz-core = { version = "0.3", features = ["CALayer", "objc2-core-foundation"] }
 dispatch2 = "0.3"
+# Microphone (and, later, camera) permission: ask and read it as Optimus.app.
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat", "block2"] }
+block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["xfixes", "shape"] }
@@ -39,7 +42,7 @@ x11rb = { version = "0.13", features = ["xfixes", "shape"] }
 wayland-sys = { version = "0.31", features = ["client", "dlopen"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_HiDpi", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_HiDpi", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Registry"] }
 
 [profile.release]
 opt-level = 3

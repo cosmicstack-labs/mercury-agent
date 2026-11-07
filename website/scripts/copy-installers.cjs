@@ -15,7 +15,7 @@ const root        = path.join(__dirname, '..', '..');
 const sourceDir   = path.join(root, 'scripts');
 const targetDir   = path.join(__dirname, '..', 'static');
 
-const files = ['install.sh', 'install.ps1', 'install-dev.sh', 'install-dev.ps1'];
+const files = ['install.sh', 'install.ps1', 'install-dev.sh', 'install-dev.ps1', 'install-desktop.sh'];
 
 fs.mkdirSync(targetDir, { recursive: true });
 for (const name of files) {

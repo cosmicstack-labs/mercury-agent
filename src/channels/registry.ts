@@ -8,6 +8,9 @@ import { SlackChannel } from './slack.js';
 import type { MercuryConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
+/** The messaging channels Mercury runs itself (WhatsApp is a plugin). */
+export type ExternalChannel = 'telegram' | 'signal' | 'discord' | 'slack';
+
 export class ChannelRegistry {
   private channels: Map<ChannelType, Channel> = new Map();
 
@@ -51,6 +54,48 @@ export class ChannelRegistry {
     } else if (config.channels.slack.enabled && (!config.channels.slack.botToken || !config.channels.slack.appToken)) {
       logger.warn('Slack channel is enabled but bot/app token credentials are incomplete. Run `mercury doctor`.');
     }
+  }
+
+  /** Whether config has what a messaging channel needs to start. */
+  static configured(config: MercuryConfig, type: ExternalChannel): boolean {
+    const c = config.channels;
+    if (type === 'telegram') return c.telegram.enabled && !!c.telegram.botToken;
+    if (type === 'signal') return c.signal.enabled && !!c.signal.phoneNumber;
+    if (type === 'discord') return c.discord.enabled && !!c.discord.botToken;
+    return c.slack.enabled && !!c.slack.botToken && !!c.slack.appToken;
+  }
+
+  private static create(config: MercuryConfig, type: ExternalChannel): Channel {
+    if (type === 'telegram') return new TelegramChannel(config);
+    if (type === 'signal') return new SignalChannel(config);
+    if (type === 'discord') return new DiscordChannel(config);
+    return new SlackChannel(config);
+  }
+
+  /**
+   * Stop one messaging channel and, if config says it should run, start a
+   * fresh one from the same live config: new tokens, turned on or off, all
+   * without restarting Mercury. `wire` repeats the boot-time wiring on the
+   * new instance (chat commands). Resolves with whether it came up.
+   */
+  async restart(type: ExternalChannel, config: MercuryConfig, wire?: (channel: Channel) => void): Promise<{ running: boolean; error?: string }> {
+    const old = this.channels.get(type);
+    if (old) {
+      try { await old.stop(); } catch (err) { logger.warn({ channel: type, err }, 'Stopping the old channel failed'); }
+      this.unregister(type, old);
+    }
+    if (!ChannelRegistry.configured(config, type)) return { running: false };
+    const next = ChannelRegistry.create(config, type);
+    this.register(type, next);
+    try { wire?.(next); } catch (err) { logger.warn({ channel: type, err }, 'Wiring the restarted channel failed'); }
+    try {
+      await next.start();
+    } catch (err) {
+      return { running: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    // Telegram and Discord log in in the background: give them a moment to come up.
+    for (let i = 0; i < 40 && !next.isReady(); i++) await new Promise((r) => setTimeout(r, 200));
+    return { running: next.isReady() };
   }
 
   getCliChannel(): CLIChannel | undefined {

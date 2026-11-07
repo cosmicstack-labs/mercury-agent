@@ -9,7 +9,7 @@ const root = dirname(fileURLToPath(import.meta.url));
 
 describe('reserved command names', () => {
   it('cover every built-in in the TUI autocomplete list (SLASH_COMMANDS)', () => {
-    const src = readFileSync(join(root, '..', 'ui', 'input-composer.tsx'), 'utf8');
+    const src = readFileSync(join(root, '..', 'core', 'commands', 'slash-list.ts'), 'utf8');
     const block = src.slice(src.indexOf('export const SLASH_COMMANDS'), src.indexOf('];', src.indexOf('export const SLASH_COMMANDS')));
     const names = [...block.matchAll(/'\/([a-z][a-z0-9_-]*)/g)].map((m) => m[1]);
     expect(names.length).toBeGreaterThan(20);

@@ -156,3 +156,25 @@ describe('WebChannel durable streaming', () => {
     await expect(channel.askPermission('Write file?', 'request-allowed')).resolves.toBe('yes');
   });
 });
+
+describe('WebChannel plan checklist', () => {
+  it('sends the plan only to that conversation and keeps it for reopening', async () => {
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { PlanStore } = await import('../core/plan.js');
+    const channel = new WebChannel('Mercury');
+    channel.plans = new PlanStore(join(mkdtempSync(join(tmpdir(), 'mercury-webplan-')), 'plans.json'));
+    const seen: Record<string, string[]> = { a: [], b: [] };
+    for (const id of ['a', 'b']) {
+      channel.addSSEClient({ enqueue: (v: Uint8Array) => seen[id].push(new TextDecoder().decode(v)), close() {} } as unknown as ReadableStreamDefaultController, id);
+    }
+    channel.sendPlan([{ label: 'Research', status: 'active' }, { label: 'Write', status: 'pending' }], 'a');
+    expect(seen.a.join('')).toContain('event: plan');
+    expect(seen.a.join('')).toContain('"label":"Research"');
+    expect(seen.b.join('')).not.toContain('event: plan');
+    expect(channel.plans.get('a')?.steps).toHaveLength(2);
+    channel.sendPlan([{ label: 'x', status: 'nonsense' }], 'a');
+    expect(channel.plans.get('a')?.steps[0].label).toBe('Research');
+  });
+});

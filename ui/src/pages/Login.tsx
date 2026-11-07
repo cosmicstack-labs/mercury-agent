@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -11,6 +12,7 @@ export function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const resolved = useThemeStore((s) => s.resolved);
+  const navigate = useNavigate();
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -21,7 +23,7 @@ export function LoginPage() {
       const res = await api.auth.login(username, password);
 
       if (res.type === "opaqueredirect" || res.status === 0 || res.ok || res.status === 302) {
-        window.location.href = "/";
+        navigate("/", { replace: true });
         return;
       }
 

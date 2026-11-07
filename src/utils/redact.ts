@@ -47,9 +47,18 @@ function maskMatch(match: string): string {
   return `${match.slice(0, 4)}****${match.slice(-4)}`;
 }
 
+const registeredSecrets = new Set<string>();
+
+export function registerSecretValue(value: string): void {
+  if (typeof value === 'string' && value.length >= 8) registeredSecrets.add(value);
+}
+
 export function redactSecrets(text: string): string {
   if (!text) return text;
   let out = text;
+  for (const secret of registeredSecrets) {
+    if (out.includes(secret)) out = out.split(secret).join('****');
+  }
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, maskMatch);
   }
@@ -79,6 +88,11 @@ export function userFacingAiError(error: unknown): string {
   const normalized = message.toLowerCase();
   if (/context(?:_|\s|-)?length|too many tokens|maximum context|request too large|payload too large/.test(normalized)) {
     return 'This request is too large for the selected model. Shorten the conversation or choose another model.';
+  }
+  // Before the rate-limit rule: a budget refusal is our own decision, not the provider's, and
+  // "please try again shortly" is exactly wrong advice — a ceiling does not lift by itself.
+  if (/daily token budget|token budget|budget (?:exhausted|exceeded)|exceeded (?:my|its) (?:daily )?budget/.test(normalized)) {
+    return 'Mercury has used its whole daily token budget, so it stopped answering. Raise the budget, or wait for the daily reset.';
   }
   if (/rate.?limit|too many requests|quota|capacity|overloaded|\b429\b/.test(normalized)) {
     return 'The selected model is temporarily busy. Please try again shortly.';

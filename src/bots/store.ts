@@ -9,8 +9,13 @@ import type {
   BotPermissionsFile,
 } from './types.js';
 
+/** Duplicate bot copies already warned about in this process. */
+const REPORTED_FORKS = new Set<string>();
+
 export const BOT_MANIFEST_FILENAME = 'bot.yaml';
 export const BOT_PERSONA_FILENAME = 'persona.md';
+/** A bot's face. Extension-less on purpose: the format is sniffed from the bytes. */
+export const BOT_AVATAR_FILENAME = 'avatar';
 export const BOT_PERMISSIONS_FILENAME = 'permissions.yaml';
 /** Fleet-shared sandbox folder (every bot gets read/write/execute). The
  * underscore prefix keeps store.list() from ever treating it as a bot. */
@@ -25,13 +30,21 @@ export const BOT_TRANSCRIPTS_DIRNAME = 'transcripts';
 export const BOT_STATE_FILENAME = 'state.md';
 /** Routine state (paused routines, no-outcome streaks) — ADR-020. */
 export const BOT_ROUTINE_STATE_FILENAME = 'routine-state.json';
+/** Per-job conversation checkpoints (resume an interrupted run). */
+export const BOT_CHECKPOINTS_DIRNAME = 'checkpoints';
+const CHECKPOINT_MAX_BYTES = 4 * 1024 * 1024;
+function safeJobId(jobId: string): string {
+  return jobId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+}
+/** Fleet-level list of bots the owner stopped. */
+export const BOT_HELD_FILENAME = 'stopped.json';
 /**
  * Data directories that live INSIDE a bot's profile dir but are never bot
  * profiles themselves. The roster scan does not descend into them: bots
  * used to copy their own profile folders into sandbox/ and outputs/ as
  * "mirrors", which the scan then reported as duplicate bots on every boot.
  */
-export const BOT_DATA_DIRNAMES: ReadonlySet<string> = new Set([BOT_SANDBOX_DIRNAME, 'outputs', 'skills', BOT_TRANSCRIPTS_DIRNAME]);
+export const BOT_DATA_DIRNAMES: ReadonlySet<string> = new Set([BOT_SANDBOX_DIRNAME, 'outputs', 'skills', BOT_TRANSCRIPTS_DIRNAME, 'checkpoints']);
 
 export interface BotRoutineState {
   /**
@@ -44,6 +57,10 @@ export interface BotRoutineState {
   noOutcomeStreak: Record<string, number>;
   /** Routine key → how many times it has been paused (cooldown backoff); reset by a productive run. */
   pauseCount?: Record<string, number>;
+  /** Routine key → when its last run ended (ISO): the minimum gap survives a restart. */
+  lastEnd?: Record<string, string>;
+  /** Routine key → consecutive failed runs; at the limit the routine is switched off. */
+  failStreak?: Record<string, number>;
 }
 
 /**
@@ -195,7 +212,7 @@ falls outside it.
 - Include the evidence (links, file paths, numbers) behind each claim.
 `;
 
-function atomicWrite(filePath: string, content: string, mode: number = 0o600): void {
+export function atomicWrite(filePath: string, content: string, mode: number = 0o600): void {
   const tmp = `${filePath}.tmp-${process.pid}`;
   writeFileSync(tmp, content, { encoding: 'utf-8', mode });
   renameSync(tmp, filePath);
@@ -247,7 +264,22 @@ export class BotStore {
     if (manifest.parent && manifest.parent !== id) {
       return join(this.deliverablesDir(manifest.parent), 'work', id);
     }
-    return join(this.deliverablesRootDir, deliverablesFolderName(manifest.name, manifest.id));
+    return join(this.deliverablesRootDir, manifest.deliverablesFolder ?? deliverablesFolderName(manifest.name, manifest.id));
+  }
+
+  /**
+   * Freeze the folder name of a lead's or a solo's deliverables, so a rename moves the label and
+   * not the files. Called when the folder is first written to; a crew bot has no folder of its own
+   * (it lives under its lead's `work/`), so there is nothing to pin.
+   */
+  pinDeliverablesFolder(id: string): string {
+    const manifest = this.get(id);
+    if (!manifest) return join(this.deliverablesRootDir, id);
+    if (manifest.parent && manifest.parent !== id) return this.deliverablesDir(id);
+    if (manifest.deliverablesFolder) return this.deliverablesDir(id);
+    manifest.deliverablesFolder = deliverablesFolderName(manifest.name, manifest.id);
+    this.save(manifest);
+    return this.deliverablesDir(id);
   }
 
   /** Rewrite the README index of a deliverables folder (finals on top, stages under work/). */
@@ -292,10 +324,57 @@ export class BotStore {
     atomicWrite(file, state + '\n');
   }
 
+  /**
+   * A job's conversation so far, written after every finished step so an
+   * interrupted run (provider error, pause, restart) resumes instead of
+   * starting over. Removed when the job is settled. Oversized ones are skipped.
+   */
+  writeCheckpoint(id: string, jobId: string, messages: unknown[]): void {
+    try {
+      const body = JSON.stringify({ at: Date.now(), messages });
+      if (body.length > CHECKPOINT_MAX_BYTES) return;
+      const dir = join(this.botDir(id), BOT_CHECKPOINTS_DIRNAME);
+      mkdirSync(dir, { recursive: true });
+      atomicWrite(join(dir, `${safeJobId(jobId)}.json`), body);
+    } catch { /* best effort */ }
+  }
+
+  readCheckpoint(id: string, jobId: string): unknown[] | undefined {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.botDir(id), BOT_CHECKPOINTS_DIRNAME, `${safeJobId(jobId)}.json`), 'utf-8')) as { messages?: unknown[] };
+      return Array.isArray(raw.messages) && raw.messages.length > 0 ? raw.messages : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  clearCheckpoint(id: string, jobId: string): void {
+    try { rmSync(join(this.botDir(id), BOT_CHECKPOINTS_DIRNAME, `${safeJobId(jobId)}.json`), { force: true }); } catch { /* gone */ }
+  }
+
+  /** Bots the owner stopped (/bots stop, the app's Stop). Durable: a restart must not undo a stop. */
+  readHeld(): Set<string> {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.botsRoot, BOT_HELD_FILENAME), 'utf-8'));
+      return new Set(Array.isArray(raw) ? raw.filter((x: unknown): x is string => typeof x === 'string') : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  writeHeld(held: Set<string>): void {
+    try {
+      mkdirSync(this.botsRoot, { recursive: true });
+      atomicWrite(join(this.botsRoot, BOT_HELD_FILENAME), JSON.stringify([...held].sort()) + '\n');
+    } catch (err) {
+      logger.warn({ err: (err as Error)?.message }, 'Could not persist stopped bots');
+    }
+  }
+
   readRoutineState(id: string): BotRoutineState {
     try {
       const raw = JSON.parse(readFileSync(join(this.botDir(id), BOT_ROUTINE_STATE_FILENAME), 'utf-8'));
-      return { paused: raw.paused ?? {}, noOutcomeStreak: raw.noOutcomeStreak ?? {}, pauseCount: raw.pauseCount ?? {} };
+      return { paused: raw.paused ?? {}, noOutcomeStreak: raw.noOutcomeStreak ?? {}, pauseCount: raw.pauseCount ?? {}, lastEnd: raw.lastEnd ?? {}, failStreak: raw.failStreak ?? {} };
     } catch {
       return { paused: {}, noOutcomeStreak: {}, pauseCount: {} };
     }
@@ -306,6 +385,62 @@ export class BotStore {
       atomicWrite(join(this.botDir(id), BOT_ROUTINE_STATE_FILENAME), JSON.stringify(state, null, 2) + '\n');
     } catch (err) {
       logger.warn({ botId: id, err: (err as Error)?.message }, 'Could not persist routine state');
+    }
+  }
+
+  /**
+   * The bot's avatar, kept next to the persona so deleting a bot takes its face
+   * with it and an exported/imported profile stays whole. No extension: the
+   * bytes decide the format (see `core/media-type.ts`), so a re-uploaded webp
+   * cannot end up labelled png by a stale filename.
+   */
+  avatarPath(id: string): string {
+    return join(this.botDir(id), BOT_AVATAR_FILENAME);
+  }
+
+  hasAvatar(id: string): boolean {
+    try {
+      return existsSync(this.avatarPath(id));
+    } catch {
+      return false;
+    }
+  }
+
+  /** Last write time of the avatar, for cache validators. 0 when there is none. */
+  avatarMtimeMs(id: string): number {
+    try {
+      return statSync(this.avatarPath(id)).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
+  readAvatar(id: string): Buffer | null {
+    try {
+      return readFileSync(this.avatarPath(id));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Replaces any previous avatar; the write is atomic so a half-written face never serves. */
+  writeAvatar(id: string, bytes: Buffer): void {
+    const file = this.avatarPath(id);
+    mkdirSync(join(file, '..'), { recursive: true });
+    const tmp = `${file}.tmp-${process.pid}`;
+    writeFileSync(tmp, bytes, { mode: 0o600 });
+    renameSync(tmp, file);
+    this.locationCache.delete(id);
+  }
+
+  removeAvatar(id: string): boolean {
+    try {
+      const file = this.avatarPath(id);
+      if (!existsSync(file)) return false;
+      rmSync(file, { force: true });
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -411,7 +546,6 @@ export class BotStore {
     // concurrent runtime or a rename fails on Windows) must not let the same
     // bot appear twice. First occurrence wins; extra copies are flagged.
     const seenIds = new Set<string>();
-    const reportedForks = new Set<string>();
     // Fleet layout is physical: crew profiles nest inside their lead's dir,
     // so walk the tree (bounded by the fleet depth cap). Data dirs without a
     // bot.yaml (sandbox/, skills/, rotations) are descended harmlessly but
@@ -436,8 +570,9 @@ export class BotStore {
             if (!seenIds.has(m.id)) {
               seenIds.add(m.id);
               manifests.push(m);
-            } else if (!reportedForks.has(m.id)) {
-              reportedForks.add(m.id);
+            } else if (!REPORTED_FORKS.has(sub)) {
+              // Once per copy per run: the roster is read often, the log shouldn't fill.
+              REPORTED_FORKS.add(sub);
               logger.warn({ botId: m.id, dir: sub }, 'Duplicate physical bot profile — roster keeps only the first occurrence; run `mercury` and remove the stale copy');
             }
           }

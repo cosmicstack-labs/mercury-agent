@@ -33,7 +33,8 @@ import { setToolOutcomeSink, unpublishPlugin, listLiveTools, listPluginCommands 
 import { InProcessRuntime, inProcessLogger } from './runtime/in-process.js';
 import { OutOfProcessRuntime } from './runtime/out-of-process.js';
 import { PluginChannel, type ChannelStatus } from './channel-bridge.js';
-import { transcribeAudio } from './transcribe.js';
+import { transcribeFile } from './transcribe.js';
+import { currentSpeechEngine } from './speech-choice.js';
 import { CallScheduler, registerCallScheduler } from './call-schedule.js';
 import type { PluginRuntime } from './runtime/types.js';
 import { providerSecretNames, whenMatches, type WhenCondition, type CatalogEntry, type DisabledCode, type PluginListItem, type PluginManifest, type PluginProviderId, type PluginsState } from './types.js';
@@ -277,10 +278,11 @@ export class PluginManager {
           () => resolvedSettings(manifest),
           (m) => { void this.notifyFn(m); },
           (key, value) => this.setSetting(id, key, value),
-          // Voice notes: transcribed with the owner's OpenAI provider, when there is one.
+          // Voice notes: transcribed with the owner's speech service (the voice
+          // chosen in Settings → Voice, else OpenAI, Gemini, Deepgram, ElevenLabs).
           (() => {
-            const openai = providerLookup('openai');
-            return openai?.apiKey ? (path: string) => transcribeAudio(path, { apiKey: openai.apiKey!, baseUrl: openai.baseUrl }) : null;
+            const engine = currentSpeechEngine('listen');
+            return engine ? (path: string) => transcribeFile(path, currentSpeechEngine('listen') ?? engine) : null;
           })(),
         );
       }
@@ -543,6 +545,37 @@ export class PluginManager {
     }
   }
 
+  /** Slash commands the running plugins add, for the "/" picker. */
+  commandHelp(): Array<{ name: string; description: string; plugin: string }> {
+    return [...this.running.values()].flatMap((r) => r.manifest.contributes.commands.map((c) => ({ name: c.name, description: c.description, plugin: r.manifest.name })));
+  }
+
+  // ── devices (the app's microphone and permissions screen) ────────────
+
+  /** Plugins that use this computer (`permissions.desktop`) and are running. */
+  devicePlugins(): Array<{ id: string; name: string }> {
+    return [...this.running.entries()]
+      .filter(([, r]) => r.manifest.permissions.desktop && r.runtime instanceof OutOfProcessRuntime)
+      .map(([id, r]) => ({ id, name: r.manifest.name }));
+  }
+
+  /** `mercury/device/*` on a running desktop plugin. */
+  async deviceRequest(id: string, method: 'status' | 'request' | 'select' | 'test', params: unknown, timeoutMs: number): Promise<unknown> {
+    const run = this.running.get(id);
+    if (!run) {
+      if (!readState().plugins[id]) throw new Error(`Plugin "${id}" is not installed.`);
+      throw new Error(`"${id}" is not running. Turn it on first.`);
+    }
+    if (!(run.runtime instanceof OutOfProcessRuntime)) throw new Error(`"${id}" doesn't use this computer's devices.`);
+    try {
+      return await run.runtime.deviceRequest(`mercury/device/${method}`, params, timeoutMs);
+    } catch (err) {
+      // Versions before the devices screen answer "unknown method".
+      if (/unknown method/i.test((err as Error).message)) throw new Error(`This version of ${run.manifest.name} can't report devices yet. Update it: mercury plugins update ${id}`);
+      throw err;
+    }
+  }
+
   // ── channels (plugin API 1.1) ────────────────────────────────────────
 
   private liveChannel(id: string): PluginChannel {
@@ -666,6 +699,7 @@ export class PluginManager {
       tier: inst && inst.source.type !== 'catalog' ? 'local' : cat?.tier ?? 'local',
       status,
       installedVersion: inst?.version,
+      previousVersion: inst?.previousVersion && existsSync(pluginVersionDir(id, inst.previousVersion)) ? inst.previousVersion : undefined,
       latestVersion: cat?.version,
       sizeBytes: inst ? packageSize(id, inst.version) : (cat?.artifacts ? Object.values(cat.artifacts)[0]?.size : cat?.artifact?.size),
       enabled: inst?.enabled ?? false,

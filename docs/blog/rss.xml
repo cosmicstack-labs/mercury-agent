@@ -4,11 +4,47 @@
         <title>Mercury Blog</title>
         <link>https://mercuryagent.sh/blog</link>
         <description>News, engineering notes and field reports from the team building Mercury.</description>
-        <lastBuildDate>Sat, 24 Oct 2026 00:00:00 GMT</lastBuildDate>
+        <lastBuildDate>Tue, 03 Nov 2026 00:00:00 GMT</lastBuildDate>
         <docs>https://validator.w3.org/feed/docs/rss2.html</docs>
         <generator>https://github.com/jpmonette/feed</generator>
         <language>en</language>
         <copyright>© 2026 Cosmic Stack</copyright>
+        <item>
+            <title><![CDATA[Mercury 1.5: Mercury Desktop]]></title>
+            <link>https://mercuryagent.sh/blog/mercury-1-5</link>
+            <guid>https://mercuryagent.sh/blog/mercury-1-5</guid>
+            <pubDate>Tue, 03 Nov 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.]]></description>
+            <category>News</category>
+            <category>Releases</category>
+        </item>
+        <item>
+            <title><![CDATA[A tour of Mercury Desktop: one app, every Mercury you run]]></title>
+            <link>https://mercuryagent.sh/blog/mercury-desktop-tour</link>
+            <guid>https://mercuryagent.sh/blog/mercury-desktop-tour</guid>
+            <pubDate>Tue, 03 Nov 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.]]></description>
+            <category>Product</category>
+            <category>Releases</category>
+        </item>
+        <item>
+            <title><![CDATA[Your agent returned 200 OK. It may still have failed]]></title>
+            <link>https://mercuryagent.sh/blog/agent-observability-first-wrong-step</link>
+            <guid>https://mercuryagent.sh/blog/agent-observability-first-wrong-step</guid>
+            <pubDate>Sat, 31 Oct 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[What to record in an AI agent run to find its first wrong step, and what Mercury records today. Based on OpenTelemetry's GenAI agent spans and a code review.]]></description>
+            <category>Engineering</category>
+            <category>Runtime</category>
+        </item>
+        <item>
+            <title><![CDATA[Running an agent overnight: what breaks first]]></title>
+            <link>https://mercuryagent.sh/blog/running-an-agent-overnight</link>
+            <guid>https://mercuryagent.sh/blog/running-an-agent-overnight</guid>
+            <pubDate>Tue, 27 Oct 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.]]></description>
+            <category>Runtime</category>
+            <category>Engineering</category>
+        </item>
         <item>
             <title><![CDATA[How Optimus works: an agent that uses your computer]]></title>
             <link>https://mercuryagent.sh/blog/how-optimus-works</link>

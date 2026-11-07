@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, statSync, chmodSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
 import { Command } from 'commander';
@@ -56,8 +56,13 @@ import { buildConversationHistoryPayload, CloudSessionSynchronizer, SessionRepos
 import { UserMemoryStore } from './memory/user-memory.js';
 import { BotManager } from './bots/bot-manager.js';
 import { getPluginManager, peekPluginManager, setProviderLookup } from './plugins/manager.js';
-import { setCallLearning, setChannelHost, setDesktopActivityHook, setVoiceBriefing, setWorkStopper } from './plugins/channel-bridge.js';
+import { setCallLearning, setChannelHost, setDesktopActivityHook, setVoiceBriefing, setWorkProbe, setWorkStopper } from './plugins/channel-bridge.js';
 import { registerPluginsCli } from './cli/plugins-cli.js';
+import { PersonVerifier, personCheckPrompt, parsePersonCheck } from './memory/person-verifier.js';
+import { setPersonVerifier } from './web/api/brain.js';
+import { registerDevicesCli } from './cli/devices-cli.js';
+import { registerUpdateCli, runUpgrade } from './cli/upgrade-cli.js';
+import { registerServerCli } from './cli/server-cli.js';
 import { SECOND_BRAIN_UNAVAILABLE_MESSAGE } from './memory/second-brain-db.js';
 import { isSqliteAvailable } from './utils/sqlite-driver.js';
 import { runStorageDoctor } from './utils/storage-doctor.js';
@@ -70,10 +75,12 @@ import { SpotifyClient } from './spotify/client.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
+import type { Channel } from './channels/base.js';
 import { SignalChannel } from './channels/signal.js';
 import { DiscordChannel } from './channels/discord.js';
 import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
+import { TITLE_SYSTEM_PROMPT, titlePrompt } from './sessions/title.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
@@ -91,9 +98,33 @@ import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler } from './web/server.js';
-import { isWebAuthInitialized, setWebPassword, writeAttachToken } from './web/auth.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setResearchControls as setWebResearchControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
+import { validateApiKey, validateBaseUrl, validateModelName } from './providers/provider-meta.js';
+import { setFirstProviderHandler, setProvidersReload } from './web/api/providers.js';
+import { setCloudReload } from './web/api/cloud.js';
+import { spawnDetachedRestart } from './cli/daemon.js';
+import { recordVoiceCalls } from './plugins/voice-calls.js';
+import { setChannelRuntime } from './web/api/channels.js';
+import { setSkillBuilder } from './web/api/system.js';
+import { setArtifactOutputDir, setArtifactSessions } from './web/api/artifacts.js';
+import { artifactStore } from './artifacts/store.js';
+import { isWebAuthInitialized, setWebPassword, writeAttachToken, initWebAuth } from './web/auth.js';
 import { startLoopLagMonitor } from './utils/loop-lag.js';
+import { McpManager, probeMcpServer, validateMcpConfig, type McpServerStatus } from './capabilities/mcp/index.js';
+import {
+  addServer as addMcpServer,
+  allowTools as allowMcpTools,
+  buildServerConfig as buildMcpServerConfig,
+  disallowTools as disallowMcpTools,
+  formatServerList as formatMcpServerList,
+  formatStatusLine as formatMcpStatusLine,
+  formatStdioCommand as formatMcpStdioCommand,
+  formatToolLines as formatMcpToolLines,
+  getServer as getMcpServer,
+  removeServer as removeMcpServer,
+  setServerEnabled as setMcpServerEnabled,
+} from './capabilities/mcp/admin.js';
+import { runMcpDoctor, summarizeMcpConfig } from './capabilities/mcp/doctor.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let pkgVersion: string;
@@ -166,14 +197,15 @@ function maskKey(key: string): string {
 }
 
 const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
-  { key: 'aimlapi', label: 'AI/ML API (recommended — 350+ models on one key)' },
-  { key: 'mercuryCloud', label: 'Mercury Cloud (hosted — no API keys needed)' },
+  { key: 'mercuryCloud', label: 'Mercury Cloud (recommended — quick start, no API keys)' },
+  { key: 'aimlapi', label: 'AI/ML API (350+ models on one key)' },
   { key: 'deepseek', label: 'DeepSeek' },
   { key: 'openai', label: 'OpenAI' },
   { key: 'anthropic', label: 'Anthropic' },
   { key: 'githubCopilot', label: 'GitHub Copilot' },
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'atlascloud', label: 'Atlas Cloud' },
+  { key: 'runcrate', label: 'Runcrate' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
   { key: 'atomicChat', label: 'Atomic Chat' },
@@ -295,78 +327,6 @@ async function chooseDefaultProvider(config: MercuryConfig): Promise<void> {
 
     console.log(chalk.red('  Please choose a valid number from the list above.'));
   }
-}
-
-function looksLikeToken(value: string, minLength: number = 20): boolean {
-  return value.length >= minLength && !/\s/.test(value) && /[A-Za-z]/.test(value) && /\d/.test(value);
-}
-
-function validateApiKey(provider: ProviderName, value: string): string | null {
-  if (provider === 'openai') {
-    return /^sk-(proj-|svcacct-)?[A-Za-z0-9_-]{16,}$/i.test(value)
-      ? null
-      : 'OpenAI keys must start with `sk-`, `sk-proj-`, or `sk-svcacct-`.';
-  }
-
-  if (provider === 'anthropic') {
-    return /^sk-ant-[A-Za-z0-9_-]{16,}$/i.test(value)
-      ? null
-      : 'Anthropic keys must start with `sk-ant-`.';
-  }
-
-  if (provider === 'deepseek') {
-    return /^sk-[A-Za-z0-9_-]{16,}$/i.test(value)
-      ? null
-      : 'DeepSeek keys must start with `sk-`.';
-  }
-
-  if (provider === 'grok') {
-    return looksLikeToken(value)
-      ? null
-      : 'Grok keys must look like a real API token: long, no spaces, and not plain text.';
-  }
-
-  if (provider === 'ollamaCloud') {
-    return looksLikeToken(value)
-      ? null
-      : 'Ollama Cloud keys must look like a real API token: long, no spaces, and not plain text.';
-  }
-
-  if (provider === 'lmStudio') {
-    return null;
-  }
-
-  if (provider === 'mimo') {
-    return /^sk-[A-Za-z0-9_-]{16,}$/i.test(value)
-      ? null
-      : 'MiMo keys must start with `sk-`.';
-  }
-
-  if (provider === 'mimoTokenPlan') {
-    return /^tp-[A-Za-z0-9_-]{16,}$/i.test(value)
-      ? null
-      : 'MiMo Token Plan keys must start with `tp-`.';
-  }
-
-  return null;
-}
-
-function validateBaseUrl(value: string): string | null {
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return 'Base URL must start with http:// or https://.';
-    }
-    return null;
-  } catch {
-    return 'Please enter a valid URL.';
-  }
-}
-
-function validateModelName(value: string): string | null {
-  if (!value.trim()) return 'Model name is required.';
-  if (/\s/.test(value)) return 'Model name cannot contain spaces.';
-  return null;
 }
 
 async function chooseProviderModel(
@@ -1539,6 +1499,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         continue;
       }
 
+      if (provider === 'runcrate') {
+        const mask = isReconfig && config.providers.runcrate.apiKey ? ` [${maskKey(config.providers.runcrate.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'runcrate',
+          'Runcrate',
+          chalk.white(`  Runcrate API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.runcrate.apiKey = result.apiKey;
+          config.providers.runcrate.model = result.model;
+          config.providers.runcrate.enabled = true;
+        }
+        continue;
+      }
+
       if (provider === 'ollamaCloud') {
         const mask = isReconfig && config.providers.ollamaCloud.apiKey ? ` [${maskKey(config.providers.ollamaCloud.apiKey)}]` : '';
         const result = await promptApiKeyWithModelSelection(
@@ -2200,14 +2177,24 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         console.log(chalk.dim('  Password unchanged.'));
       }
     } else {
-      console.log(chalk.dim('  Default password is Mercury@123 — set a custom one now or press Enter to keep it.'));
+      console.log(chalk.dim('  This password signs in the dashboard and new devices (Mercury Desktop, phones).'));
+      console.log(chalk.dim('  Press Enter to have Mercury make a strong one for you.'));
       console.log('');
-      const webPassword = await ask(chalk.white('  Web dashboard password [Mercury@123]: '));
-      if (webPassword.trim()) {
-        setWebPassword(webPassword.trim());
+      let chosen = '';
+      for (let attempt = 0; attempt < 3 && !chosen; attempt++) {
+        const typed = (await ask(chalk.white('  Web dashboard password [generate one]: '))).trim();
+        if (!typed) break;
+        if (typed.length < 10) { console.log(chalk.yellow('  Use at least 10 characters (or press Enter to generate one).')); continue; }
+        chosen = typed;
+      }
+      if (chosen) {
+        setWebPassword(chosen);
         console.log(chalk.green('  ✓ Web dashboard password set.'));
       } else {
-        console.log(chalk.dim('  Using default password: Mercury@123'));
+        const { initWebAuth: makeAuth, isWebAuthInitialized } = await import('./web/auth.js');
+        const generated = !isWebAuthInitialized() ? makeAuth().password : (() => { const p = randomBytes(12).toString('base64url'); setWebPassword(p); return p; })();
+        console.log(chalk.green(`  ✓ Username: mercury   Password: ${chalk.bold(generated)}`));
+        console.log(chalk.dim('  Save it in your password manager — it is shown only now. Change it any time with /server.'));
       }
     }
   } else {
@@ -2503,6 +2490,20 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (!providers.hasProviders()) {
     if (isDaemon) {
       logger.error('No LLM providers available. Run `mercury doctor` to configure providers.');
+      if (config.web.enabled) {
+        // Setup mode: keep the API up so Mercury Desktop or the dashboard
+        // can connect a provider (there is no terminal on a desktop
+        // install). The first working provider restarts into normal mode.
+        setFirstProviderHandler(() => {
+          logger.info('A provider is connected; restarting out of setup mode');
+          if (!spawnDetachedRestart()) logger.error('Could not restart out of setup mode; run `mercury restart`');
+        });
+        startWebServer();
+        writeAttachToken();
+        updateWebStatus({ running: true, pid: process.pid, state: 'setup' });
+        setShutdownHandler(() => { void stopWebServer().finally(() => { releaseRuntimeProcess('daemon'); process.exit(0); }); });
+        logger.warn('Setup mode: connect a model provider from Mercury Desktop or the dashboard');
+      }
       return;
     }
     console.log(chalk.red('  No LLM providers available. Run `mercury doctor` to configure providers.'));
@@ -2539,6 +2540,19 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   migrateLegacyMemory();
   const shortTerm = new ShortTermMemory(config);
   const sessions = new SessionRepository();
+  // Artifacts follow their thread: drop those whose thread is gone (deleted anywhere), now and every hour.
+  setArtifactSessions(sessions);
+  setArtifactOutputDir(() => config.artifacts?.outputDir);
+  const sweepArtifacts = () => {
+    try {
+      const removed = artifactStore().reconcile((id) => { try { return sessions.get(id).status !== 'deleted'; } catch { return false; } });
+      if (removed) logger.info({ removed }, 'Removed artifacts of deleted threads');
+    } catch (err) { logger.warn({ err }, 'Artifact sweep failed'); }
+  };
+  sweepArtifacts();
+  setInterval(sweepArtifacts, 60 * 60_000).unref();
+  // Desktop voice calls are saved as chat threads, live.
+  recordVoiceCalls(sessions);
   setWebSessions(sessions);
   const longTerm = new LongTermMemory(config);
   const episodic = new EpisodicMemory(config);
@@ -2559,6 +2573,22 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
   } else if (config.memory.secondBrain?.enabled !== false && !isSqliteAvailable()) {
     logger.warn(`Second brain disabled: ${SECOND_BRAIN_UNAVAILABLE_MESSAGE}`);
+  }
+
+  // "Is it a person?" for names new memories mention: batched, slow, capped.
+  // Only the process that owns the runtime runs it (never a second terminal).
+  if (userMemory && !daemonOwnsRuntime) {
+    const memForChecks = userMemory;
+    const verifier = new PersonVerifier(memForChecks, async (items) => {
+      const provider = providers.getDefault();
+      const { generateText } = await import('ai');
+      const result = await generateText({ model: provider.getModelInstance(), prompt: personCheckPrompt(items), maxOutputTokens: 400 });
+      const usage = (result as { usage?: { inputTokens?: number; outputTokens?: number } }).usage;
+      tokenBudget.recordUsage({ provider: provider.name, model: provider.getModel(), inputTokens: usage?.inputTokens ?? 0, outputTokens: usage?.outputTokens ?? 0, totalTokens: (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0), channelType: 'internal' });
+      return parsePersonCheck(result.text, items);
+    });
+    verifier.start();
+    setPersonVerifier(verifier);
   }
 
   const channels = new ChannelRegistry(config, { cliOnly: daemonOwnsRuntime });
@@ -2611,6 +2641,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     memoryGetSubconscious: (limit?: number) => userMemory ? userMemory.getSubconscious(limit) : [],
     memoryIsShareLearning: () => userMemory ? userMemory.isShareLearning() : false,
     memorySetShareLearning: (enabled: boolean) => { if (userMemory) userMemory.setShareLearning(enabled); },
+    mcpStatus: () => capabilities.getMcpManager()?.status() ?? [],
   });
 
   capabilities.setSendFileHandler(async (filePath: string, channel?: string) => {
@@ -2683,14 +2714,25 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   capabilities.registerAll();
 
+  const mcpConfig = validateMcpConfig(config.mcp);
+  for (const problem of mcpConfig.problems) logger.warn({ problem }, 'MCP server skipped');
+  for (const warning of mcpConfig.warnings) logger.warn({ warning }, 'MCP config warning');
+  // Like plugins (ADR-025), only the runtime owner connects MCP servers: a
+  // terminal attached to a live daemon must not start every stdio server twice.
+  const mcpManager = daemonOwnsRuntime ? undefined : new McpManager(mcpConfig.servers, {
+    gate: (request) => capabilities.permissions.checkMcpTool(request),
+  });
+  if (mcpManager) {
+    capabilities.attachMcp(mcpManager);
+    setWebMcpManager(mcpManager);
+    void mcpManager.connectAll();
+  }
+
   const agent = new Agent(
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler, sessions,
     async ({ userMessage, assistantMessage, providerName }) => {
       const provider = providers.get(providerName) ?? providers.getDefault();
-      const result = await provider.generateText(
-        `User: ${userMessage.slice(0, 1500)}\nAssistant: ${assistantMessage.slice(0, 1500)}`,
-        'Create a concise 3-7 word title for this conversation. Return only the title with no quotes, markdown, prefix, or punctuation.',
-      );
+      const result = await provider.generateText(titlePrompt(userMessage, assistantMessage), TITLE_SYSTEM_PROMPT);
       return result.text;
     },
   );
@@ -2719,6 +2761,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     setVoiceBriefing(() => agent.voiceBriefing());
     setCallLearning((ownerSaid, mercurySaid) => agent.learnFromConversation(ownerSaid, mercurySaid));
     setWorkStopper((prefix) => agent.stopWorkFor(prefix, 'Stopped by the owner on a voice call.'));
+    setWorkProbe((channelId) => agent.workStateFor(channelId));
     setDesktopActivityHook((label) => {
       const cli = channels.get('cli');
       if (cli instanceof CLIChannel) cli.setDesktopActivity(label);
@@ -2964,7 +3007,13 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       cloudClient.on('skill.install', async (msg) => {
         const skillUrl = msg.payload?.skillUrl as string | undefined;
         if (skillUrl) {
-          logger.info({ skillUrl }, 'Cloud command: install skill');
+          logger.info('Cloud command: install skill (asking the owner)');
+          // A skill is instructions Mercury follows from then on: the owner decides, not the Cloud account.
+          const { askOwner } = await import('./security/owner-approvals.js');
+          if (!(await askOwner({ title: 'Install a skill sent by Mercury Cloud', who: 'Mercury Cloud', detail: skillUrl.slice(0, 300) }))) {
+            cloudClient!.send({ type: 'skill.ack', agentId: config.cloud.agentId, payload: { success: false, error: 'The owner did not approve installing this skill.' }, timestamp: new Date().toISOString() });
+            return;
+          }
           try {
             await skillLoader.installFromUrl(skillUrl);
             cloudClient!.send({
@@ -3267,6 +3316,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Invalid permission mode request.' } });
             return;
           }
+          if (action === 'allow-all') {
+            // Acting without asking, switched on from Cloud: the owner confirms it first.
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'notice', data: { message: 'Waiting for the owner to approve Allow All on their own device…' } });
+            const { askOwner } = await import('./security/owner-approvals.js');
+            if (!(await askOwner({ title: 'Turn on Allow All for a chat, from Mercury Cloud', who: 'Mercury Cloud' }))) {
+              cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'The owner did not approve Allow All.' } });
+              return;
+            }
+          }
           webChannel.setSessionPermissionMode(suppliedSessionId, action);
           cloudClient!.sendStream({
             conversationId,
@@ -3473,11 +3531,53 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sigChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
 
+  // Settings → Channels: changes apply to this live config, and a channel restarts on its own.
+  const wireChannel = (ch: Channel) => {
+    if (ch instanceof TelegramChannel || ch instanceof SignalChannel) ch.setChatCommandContext(capabilities.getChatCommandContext()!);
+  };
+  setChannelRuntime({
+    config: () => config,
+    restart: (type) => channels.restart(type, config, wireChannel),
+    running: (type) => channels.get(type)?.isReady() ?? false,
+    notify: (type, target, text) => channels.get(type)?.send(text, target) ?? Promise.resolve(),
+  });
+
   setWebWebChannel(webChannel);
   setWebSessionSyncEnabled(() => agent.isSessionSyncEnabled());
   setWebProgrammingMode(agent.programmingMode);
   setWebBgTasks(agent.backgroundTasks);
   setWebModelSwitch((provider, model) => agent.switchProvider(provider, model));
+  setProvidersReload(() => agent.reloadProviders());
+  // Settings-free skill builder: the default model writes a skill from the owner's description.
+  setSkillBuilder({ provider: () => providers.getDefault(), tools: () => Object.keys(capabilities.getTools()).sort() });
+  setCloudReload(() => agent.reloadProviders());
+  setWebStop(() => agent.stopAllWork('stopped'));
+  setWebSessionBusy((sessionId) => agent.isBusyWith(sessionId));
+  setWebQueueControls({ state: (id) => agent.queueStateFor(id), prioritize: (id) => agent.prioritize(id) });
+  setWebResearchControls({
+    state: (id) => agent.researchMode.stateFor(id),
+    finish: (id) => agent.finishResearch(id),
+    off: (id) => { if (agent.researchMode.armedForSession(id)) agent.researchMode.setOff(); webChannel.sendResearchArmed(false, id); },
+  });
+  setWebBudgetControls({ config: () => config, tokens: () => tokenBudget, saver: () => agent.saverMode });
+  // Updates wait for running work: a reply, queued messages, bot turns.
+  {
+    const { setUpdateBusyProbe, reconcileUpdateJob } = await import('./updates/server-updater.js');
+    const { versionString } = await import('./web/api/status.js');
+    setUpdateBusyProbe(() => {
+      if (agent.processing) return 'a reply';
+      if (agent.queuedCount > 0) return agent.queuedCount === 1 ? 'a queued message' : `${agent.queuedCount} queued messages`;
+      const bots = botManager?.runningJobs() ?? 0;
+      if (bots > 0) return bots === 1 ? 'a bot run' : `${bots} bot runs`;
+      return null;
+    });
+    try { reconcileUpdateJob(versionString()); } catch (err) { logger.debug({ err }, 'updates: reconcile failed'); }
+  }
+  // Titles made before they were checked: fix them once, quietly, after start-up.
+  if (!daemonOwnsRuntime) {
+    const titleRepair = setTimeout(() => { void agent.repairSessionTitles().catch(() => {}); }, 20_000);
+    titleRepair.unref?.();
+  }
   setWebCurrentProvider(() => agent.getCurrentProvider());
   // Live bottom bar for attached terminals and the dashboard: one snapshot,
   // pushed on every model switch and checked every 2 s for anything else.
@@ -3863,6 +3963,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       // Release the bots' SQLite queue handle — on Windows an open handle
       // keeps queue.db locked against any later uninstall/replace.
       try { botManager?.dispose(); } catch { /* best effort */ }
+      try { await mcpManager?.close(); } catch { /* best effort */ }
       try { await pluginManager?.shutdown(); } catch { /* best effort */ }
       await agent.shutdown();
       clearCloudRuntimeOnline();
@@ -4091,7 +4192,29 @@ program
 program
   .command('setup')
   .description('Re-run the setup wizard (reconfigure)')
-  .action(async () => {
+  .option('--headless', 'No questions: write the minimum config with the dashboard enabled (used by Mercury Desktop)')
+  .option('--owner <name>', 'Owner name for --headless')
+  .option('--agent-name <name>', 'Agent name for --headless')
+  .option('--port <port>', 'Dashboard port for --headless')
+  .option('--json', 'With --headless: print the result as JSON')
+  .action(async (opts: { headless?: boolean; owner?: string; agentName?: string; port?: string; json?: boolean }) => {
+    if (opts.headless) {
+      const { applyHeadlessSetup } = await import('./cli/headless-setup.js');
+      const config = loadConfig();
+      const port = opts.port !== undefined ? Number(opts.port) : undefined;
+      const { changed } = applyHeadlessSetup(config, { owner: opts.owner, agentName: opts.agentName, port });
+      saveConfig(ensureCreatorField(config));
+      // The dashboard password exists from now on; shown once, like the wizard does.
+      const webAuth = initWebAuth();
+      const result = { ok: true, owner: config.identity.owner, agentName: config.identity.name, webPort: config.web.port, changed, username: webAuth.username, password: webAuth.password || null };
+      if (opts.json) {
+        console.log(JSON.stringify(result));
+      } else {
+        console.log(chalk.green(`  ✓ Mercury configured for ${config.identity.owner} · dashboard on port ${config.web.port}`));
+        if (webAuth.password) console.log(`  Dashboard login: ${webAuth.username} / ${webAuth.password}  ${chalk.dim('(shown once; change it in Settings)')}`);
+      }
+      return;
+    }
     if (isSetupComplete()) {
       await configure(loadConfig());
     } else {
@@ -4104,8 +4227,20 @@ program
   .description('Reconfigure Mercury setup (name, providers, channels, permissions defaults)')
   .option('--platform', 'Show platform compatibility diagnostics')
   .option('--storage', 'Show SQLite backend, database files and row counts')
+  .option('--mcp', 'Connect to each configured MCP server and report its status')
   .option('--plugins', 'Check installed plugins and why any are turned off')
+  .option('--security', 'Check remote access and security (password, devices, file permissions, tunnel)')
   .action(async (opts) => {
+    if (opts.security) {
+      const { securityCheck, summarizeFindings } = await import('./security/check.js');
+      const { findingsText } = await import('./security/server-menu.js');
+      const findings = securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
+      console.log(`\n  Security: ${summarizeFindings(findings)}\n`);
+      console.log(findingsText(findings).split('\n').map((l) => `  ${l}`).join('\n'));
+      console.log(chalk.dim('\n  Manage remote access with `mercury server` (or /server in the terminal chat).\n'));
+      if (findings.some((f) => f.level === 'risk')) process.exitCode = 1;
+      return;
+    }
     {
       // Keys that cannot be right — say so before anything is tried.
       const { checkKeyShapes } = await import('./providers/key-shape.js');
@@ -4120,6 +4255,29 @@ program
       runStorageDoctor();
       return;
     }
+    if (opts.mcp) {
+      const mcpDoctor = await runMcpDoctor(loadConfig().mcp);
+      for (const line of mcpDoctor.lines) console.log(line);
+      if (!mcpDoctor.ok) process.exitCode = 1;
+      return;
+    }
+    const mcpSummary = summarizeMcpConfig(loadConfig().mcp);
+    if (mcpSummary) console.log(chalk.dim(`  ${mcpSummary}`));
+    {
+      // One line about security on every doctor run; details with --security.
+      const { securityCheck, summarizeFindings } = await import('./security/check.js');
+      const findings = securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
+      const summary = summarizeFindings(findings);
+      const line = `  Security: ${summary}${summary === 'All good' ? '' : ' — run `mercury doctor --security`'}`;
+      console.log(findings.some((f) => f.level === 'risk') ? chalk.yellow(line) : chalk.dim(line));
+    }
+    try {
+      // One line about updates: current, newest, required, blocked.
+      const { serverUpdateStatus } = await import('./updates/status.js');
+      const { updatesLine } = await import('./updates/notices.js');
+      const u = updatesLine(await serverUpdateStatus({ current: pkgVersion }));
+      console.log(u.level === 'risk' ? chalk.red(u.text) : u.level === 'note' ? chalk.yellow(u.text) : chalk.dim(u.text));
+    } catch { /* offline: say nothing */ }
     if (opts.plugins) {
       const { runPluginDoctor } = await import('./cli/plugins-cli.js');
       await runPluginDoctor();
@@ -4978,28 +5136,23 @@ serviceCmd
     showServiceStatus();
   });
 
-  program
+registerDevicesCli(program);
+registerServerCli(program);
+
+registerUpdateCli(program, pkgVersion);
+
+program
   .command('upgrade')
-  .description('Upgrade Mercury to the latest version')
+  .description('Upgrade Mercury to the latest version (goes back on its own if the new version fails)')
   .option('--force', 'Reinstall even when already on the latest version')
-  .action(async (opts: { force?: boolean }) => {
-    console.log('');
-    console.log(chalk.cyan(`  Mercury ${chalk.white(`v${pkgVersion}`)}`));
-    // Already current? Say so and touch nothing — not the daemon, not the
-    // binary. (This used to stop the daemon and re-run the installer
-    // unconditionally: "upgrade" on the latest build was a restart.)
-    if (!opts.force) {
-      const { fetchLatestVersion } = await import('./cli/latest-version.js');
-      const channel = isDevBuild(pkgVersion) ? 'dev' : 'stable';
-      const latest = await fetchLatestVersion(channel);
-      if (latest && latest === pkgVersion) {
-        console.log(chalk.green(`  ✓ Already on the latest ${channel === 'dev' ? 'dev build' : 'version'} (v${pkgVersion}). Nothing to do.`));
-        console.log(chalk.dim('  Use mercury upgrade --force to reinstall anyway.'));
-        console.log('');
-        return;
-      }
-      if (latest) console.log(chalk.dim(`  Latest on the ${channel} channel: v${latest}`));
-    }
+  .option('--check', 'Only show whether a newer version exists and what is in it')
+  .option('--now', "Don't wait for running work to finish")
+  .action(async (opts: { force?: boolean; check?: boolean; now?: boolean }) => {
+    await runUpgrade(pkgVersion, opts, legacyReinstall);
+  });
+
+/** `--force` on the newest version: re-run the installer (binary) or npm (npm install), as before. */
+async function legacyReinstall(): Promise<void> {
     // A dev binary upgrades itself in place on the same channel (re-running
     // the dev installer below); npm builds take the npm stable track.
     if (isDevBuild(pkgVersion)) {
@@ -5129,7 +5282,7 @@ serviceCmd
     }
 
     console.log('');
-  });
+  }
 
 program
   .command('code')
@@ -5195,6 +5348,190 @@ program
     console.log('');
   });
 
+interface McpAddOptions {
+  stdio?: string;
+  http?: string;
+  env: string[];
+  header: string[];
+  cwd?: string;
+  allow?: string;
+  autoApprove?: string;
+  allowPrivate?: boolean;
+  disabled?: boolean;
+  yes?: boolean;
+}
+
+async function confirmMcp(question: string): Promise<boolean> {
+  try {
+    const answer = (await ask(chalk.white(`  ${question} [y/N] `))).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } catch (err) {
+    if (err instanceof InputClosedError) return false;
+    throw err;
+  }
+}
+
+function printMcpProbe(status: McpServerStatus): void {
+  const line = formatMcpStatusLine(status);
+  console.log(status.state === 'connected' ? chalk.green(`  ✓ ${line}`) : chalk.red(`  ✗ ${line}`));
+  if (status.state === 'connected') {
+    for (const toolLine of formatMcpToolLines(status)) console.log(chalk.dim(`    ${toolLine}`));
+  }
+  if (status.stderrTail) {
+    console.log(chalk.dim('  stderr:'));
+    for (const stderrLine of status.stderrTail.trim().split('\n').slice(-20)) console.log(chalk.dim(`    ${stderrLine}`));
+  }
+}
+
+function mcpAction<A extends unknown[]>(fn: (...args: A) => Promise<void> | void): (...args: A) => Promise<void> {
+  return async (...args: A) => {
+    try {
+      await fn(...args);
+    } catch (err) {
+      console.log(chalk.red(`  ${err instanceof Error ? err.message : String(err)}`));
+      console.log('');
+      process.exitCode = 1;
+    }
+  };
+}
+
+function saveMcpChange(config: MercuryConfig, message: string): void {
+  saveConfig(config);
+  console.log(chalk.green(`  ✓ ${message}`));
+  restartDaemonIfRunning('Restarting the background daemon to apply the change...');
+  console.log('');
+}
+
+const collectRepeated = (value: string, previous: string[]): string[] => [...previous, value];
+
+const mcpCmd = program.command('mcp').description('Manage MCP servers whose tools Mercury can use');
+
+mcpCmd
+  .command('list')
+  .description('Show configured MCP servers')
+  .action(mcpAction(() => {
+    console.log('');
+    for (const line of formatMcpServerList(loadConfig())) {
+      console.log(line.startsWith('  ') ? chalk.dim(`  ${line}`) : `  ${line}`);
+    }
+    console.log('');
+  }));
+
+mcpCmd
+  .command('add <id> [args...]')
+  .description('Add an MCP server: --stdio <command> [-- args...] or --http <url>')
+  .option('--stdio <command>', 'command that starts a local stdio server')
+  .option('--http <url>', 'Streamable HTTP endpoint of a remote server')
+  .option('--env <KEY=VALUE>', 'environment variable for a stdio server, ${env:NAME} for secrets (repeatable)', collectRepeated, [])
+  .option('--header <Name: value>', 'HTTP header, ${env:NAME} for secrets (repeatable)', collectRepeated, [])
+  .option('--cwd <dir>', 'working directory for a stdio server')
+  .option('--allow <tools>', 'comma-separated tools the agent may see, or *')
+  .option('--auto-approve <tools>', 'comma-separated tools that run without asking')
+  .option('--allow-private', 'allow a private or loopback address for an HTTP server')
+  .option('--disabled', 'save the server without enabling it')
+  .option('-y, --yes', 'do not ask for confirmation')
+  .action(mcpAction(async (id: string, args: string[], opts: McpAddOptions) => {
+    const config = loadConfig();
+    const server = buildMcpServerConfig({ ...opts, args });
+    const warnings = addMcpServer(config, id, server);
+    console.log('');
+    for (const warning of warnings) console.log(chalk.yellow(`  ⚠ ${warning}`));
+    if (server.transport === 'stdio') {
+      console.log(chalk.white(`  Mercury will start this command: ${formatMcpStdioCommand(server)}`));
+      if (!opts.yes && !(await confirmMcp('Add this server?'))) {
+        console.log(chalk.dim('  Cancelled.'));
+        console.log('');
+        return;
+      }
+    }
+    if (server.enabled !== false) {
+      console.log(chalk.dim('  Testing the connection...'));
+      const status = await probeMcpServer(id, server);
+      printMcpProbe(status);
+      if (status.state !== 'connected' && !opts.yes && !(await confirmMcp('Save it anyway?'))) {
+        console.log(chalk.dim('  Cancelled.'));
+        console.log('');
+        return;
+      }
+    }
+    if (!server.tools?.allow?.length) {
+      console.log(chalk.dim(`  No tools are enabled yet. Enable some with \`mercury mcp allow ${id} <tool...>\`.`));
+    }
+    saveMcpChange(config, `MCP server "${id}" saved.`);
+  }));
+
+mcpCmd
+  .command('remove <id>')
+  .description('Remove an MCP server')
+  .action(mcpAction((id: string) => {
+    const config = loadConfig();
+    removeMcpServer(config, id);
+    console.log('');
+    saveMcpChange(config, `MCP server "${id}" removed.`);
+  }));
+
+mcpCmd
+  .command('enable <id>')
+  .description('Enable an MCP server')
+  .option('-y, --yes', 'do not ask for confirmation')
+  .action(mcpAction(async (id: string, opts: { yes?: boolean }) => {
+    const config = loadConfig();
+    const server = getMcpServer(config, id);
+    console.log('');
+    if (server.transport === 'stdio') {
+      console.log(chalk.white(`  Mercury will start this command: ${formatMcpStdioCommand(server)}`));
+      if (!opts.yes && !(await confirmMcp('Enable this server?'))) {
+        console.log(chalk.dim('  Cancelled.'));
+        console.log('');
+        return;
+      }
+    }
+    setMcpServerEnabled(config, id, true);
+    saveMcpChange(config, `MCP server "${id}" enabled.`);
+  }));
+
+mcpCmd
+  .command('disable <id>')
+  .description('Disable an MCP server without removing it')
+  .action(mcpAction((id: string) => {
+    const config = loadConfig();
+    setMcpServerEnabled(config, id, false);
+    console.log('');
+    saveMcpChange(config, `MCP server "${id}" disabled.`);
+  }));
+
+mcpCmd
+  .command('allow <id> <tools...>')
+  .description('Let the agent see these tools (quote "*" to allow all)')
+  .action(mcpAction((id: string, tools: string[]) => {
+    const config = loadConfig();
+    const server = allowMcpTools(config, id, tools);
+    console.log('');
+    saveMcpChange(config, `${id}: allowed ${server.tools?.allow?.join(', ') || 'nothing'}.`);
+  }));
+
+mcpCmd
+  .command('disallow <id> <tools...>')
+  .description('Hide these tools from the agent')
+  .action(mcpAction((id: string, tools: string[]) => {
+    const config = loadConfig();
+    const server = disallowMcpTools(config, id, tools);
+    console.log('');
+    const deny = server.tools?.deny?.length ? `, denied ${server.tools.deny.join(', ')}` : '';
+    saveMcpChange(config, `${id}: allowed ${server.tools?.allow?.join(', ') || 'nothing'}${deny}.`);
+  }));
+
+mcpCmd
+  .command('test <id>')
+  .description('Connect to an MCP server and list its tools')
+  .action(mcpAction(async (id: string) => {
+    const server = getMcpServer(loadConfig(), id);
+    console.log('');
+    const status = await probeMcpServer(id, server);
+    printMcpProbe(status);
+    console.log('');
+    if (status.state !== 'connected') process.exitCode = 1;
+  }));
 registerPluginsCli(program);
 
 const cloud = program.command('cloud').description('Manage Mercury Cloud connection');

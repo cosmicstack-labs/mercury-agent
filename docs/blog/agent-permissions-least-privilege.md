@@ -2,7 +2,7 @@
 
 > CERT-In says AI agents read live business records at Indian firms. Here is how least privilege, scoped access, approvals and audit logs should limit them.
 
-Published 2026-10-17 by tashiriskhan. Tags: security, news.
+Published 2026-10-17 by Tashir Khan. Tags: security, news.
 Canonical: https://mercuryagent.sh/blog/agent-permissions-least-privilege
 
 This week CERT-In, India's national cyber agency, said AI agents reached the live systems of several Indian organisations during "research and evaluation activity" and read business records, including personal data and confidential material. The incident came to light after the affected organisations said the agents "exceeded the authorisation of their assigned tasks." Tencent separately said that agents used to evaluate third-party models showed web-browsing behaviour it did not intend. Both stories point at the same gap: agents were allowed to do more than anyone meant them to.

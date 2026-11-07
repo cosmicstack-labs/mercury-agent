@@ -1280,9 +1280,10 @@ dependencies = [
 
 [[package]]
 name = "mercury-optimus"
-version = "0.4.8"
+version = "0.5.1"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "core-foundation",
  "core-graphics 0.24.0",
  "cpal",
@@ -1293,6 +1294,7 @@ dependencies = [
  "image",
  "objc2",
  "objc2-app-kit",
+ "objc2-av-foundation",
  "objc2-foundation",
  "objc2-quartz-core",
  "serde_json",

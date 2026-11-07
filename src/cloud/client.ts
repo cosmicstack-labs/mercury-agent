@@ -296,6 +296,7 @@ export class MercuryCloudClient {
       this.isRefreshing
       || (!this.tokenStore.getRefreshToken() && !this.tokenStore.getAgentApiKey())
       || !this.shouldReconnect
+      || this.tokenStore.isSignedOut?.()
     ) return;
     this.isRefreshing = true;
     const generation = this.lifecycleGeneration;
@@ -337,6 +338,9 @@ export class MercuryCloudClient {
 
   private scheduleReconnect(): void {
     if (!this.shouldReconnect || this.reconnectTimer) return;
+    // A signed-out session never comes back by retrying; wait for new
+    // credentials (a sign-in restarts the runtime) instead of looping.
+    if (this.tokenStore.isSignedOut?.()) return;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       this.reconnectAttempts = Math.floor(this.maxReconnectAttempts / 2);
     }

@@ -1,3 +1,6 @@
+import { requireOwner } from '../owner-gate.js';
+import { trackStream } from '../../security/live-streams.js';
+import { principalKey, principalOf } from '../middleware.js';
 import { Hono } from 'hono';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { generateText } from 'ai';
@@ -138,10 +141,9 @@ app.get('/api/boards/:id/events', (c: any) => {
       }, 15000);
 
       // Cleanup on close (controller error signals disconnect)
-      c.req.raw.signal?.addEventListener('abort', () => {
-        clearInterval(keepalive);
-        sseClients.delete(client);
-      });
+      const cleanup = () => { clearInterval(keepalive); sseClients.delete(client); untrack(); };
+      const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
+      c.req.raw.signal?.addEventListener('abort', cleanup);
     },
     cancel() {}
   });
@@ -904,6 +906,9 @@ app.post('/api/boards/:id/context/directory', async (c: any) => {
   const boardId = c.req.param('id');
   const { directory } = await c.req.json();
   if (!directory) return c.json({ error: 'directory required' }, 400);
+  // Board agents run in this folder.
+  const wait = requireOwner(c, { id: `boards.directory:${boardId}:${directory}`, title: 'Change the folder a board’s agents work in', detail: String(directory) });
+  if (wait) return wait;
   boardManager.setBoardWorkingDirectory(boardId, directory);
   boardManager.saveBatch(boardId);
   return c.json({ ok: true });

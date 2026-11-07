@@ -5,6 +5,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { config as loadDotenv } from 'dotenv';
 import { logger } from './logger.js';
 import type { SignalAccessUser, SignalPendingRequest, DiscordAccessUser, DiscordPendingRequest, SlackAccessUser, SlackPendingRequest } from '../types/channel.js';
+import type { McpConfig } from '../capabilities/mcp/types.js';
 import {
   LEGACY_SEED_API_URL,
   LEGACY_SEED_WS_URL,
@@ -36,6 +37,12 @@ export interface ProviderConfig {
   enabled: boolean;
   /** Optional per-provider cap on output tokens per request. */
   maxOutputTokens?: number;
+  /**
+   * The owner says this endpoint's model reads images. `modelSeesImages` otherwise
+   * guesses from the model name, which cannot know about a self-hosted model — a
+   * local Qwen-VL called `qwen3.8-flash-next` was refused for that reason.
+   */
+  vision?: boolean;
 }
 
 export interface TelegramAccessUser {
@@ -64,6 +71,7 @@ export type ProviderName =
   | 'deepseek'
   | 'grok'
   | 'atlascloud'
+  | 'runcrate'
   | 'ollamaCloud'
   | 'ollamaLocal'
   | 'atomicChat'
@@ -108,6 +116,7 @@ export interface MercuryConfig {
     deepseek: ProviderConfig;
     grok: ProviderConfig;
     atlascloud: ProviderConfig;
+    runcrate: ProviderConfig;
     ollamaCloud: ProviderConfig;
     ollamaLocal: ProviderConfig;
     atomicChat: ProviderConfig;
@@ -238,6 +247,10 @@ export interface MercuryConfig {
     suggestedDailyTokenBudget?: number;
     /** Fleet-wide daily token cap across all bots (0 = unlimited). ADR-020. */
     fleetDailyTokenBudget?: number;
+    /** Fewest minutes between two runs of any bot routine (default 15). */
+    routineMinGapMinutes?: number;
+    /** How long a bot waits for the owner to answer its question before it's a no (default 10, max 60). */
+    approvalWaitMinutes?: number;
     /** Owner-visible folder for finished results (default: ~/Documents/Mercury). */
     deliverablesDir?: string;
     retention: {
@@ -274,6 +287,23 @@ export interface MercuryConfig {
   web: {
     enabled: boolean;
     port: number;
+    /**
+     * Extra browser origins allowed to call /api/* with a Bearer token
+     * (CORS). Mercury Desktop's own origins are always allowed; list a
+     * self-hosted web build or a dev server here. Never '*'.
+     */
+    corsOrigins?: string[];
+    /**
+     * Host names this server may be reached by directly, besides localhost —
+     * only for a proxy of your own that rewrites Host and adds no forwarding
+     * headers. Anything else is refused (DNS rebinding).
+     */
+    allowedHosts?: string[];
+  };
+  mcp?: McpConfig;
+  /** Where the files Mercury makes go (default ~/mercury-artifacts): Research/ and one folder per chat. */
+  artifacts?: {
+    outputDir?: string;
   };
 }
 
@@ -291,6 +321,21 @@ function getEnvBool(key: string, fallback: boolean): boolean {
   if (val === 'true') return true;
   if (val === 'false') return false;
   return fallback;
+}
+
+/**
+ * A capability the owner declares, where "not set" is a third state.
+ *
+ * `getEnvBool(key, false)` would answer `false` for a variable nobody set, and a `false` is a
+ * declaration: it switches images off for a model whose name the guesser would have accepted
+ * (`gpt-4o` behind a gateway). Undefined means "nothing declared", so the name-based guess in
+ * `modelSeesImages` still applies.
+ */
+function getEnvOptionalBool(key: string): boolean | undefined {
+  const val = process.env[key]?.toLowerCase();
+  if (val === 'true') return true;
+  if (val === 'false') return false;
+  return undefined;
 }
 
 export function getDefaultConfig(): MercuryConfig {
@@ -367,6 +412,13 @@ export function getDefaultConfig(): MercuryConfig {
         model: getEnv('ATLASCLOUD_MODEL', 'qwen/qwen3.5-flash'),
         enabled: getEnvBool('ATLASCLOUD_ENABLED', true),
       },
+      runcrate: {
+        name: 'runcrate',
+        apiKey: getEnv('RUNCRATE_API_KEY', ''),
+        baseUrl: getEnv('RUNCRATE_BASE_URL', 'https://api.runcrate.ai/v1'),
+        model: getEnv('RUNCRATE_MODEL', 'deepseek-ai/DeepSeek-V4.1-Flash'),
+        enabled: getEnvBool('RUNCRATE_ENABLED', true),
+      },
       ollamaCloud: {
         name: 'ollamaCloud',
         apiKey: getEnv('OLLAMA_CLOUD_API_KEY', ''),
@@ -394,6 +446,7 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('OPENAI_COMPAT_BASE_URL', ''),
         model: getEnv('OPENAI_COMPAT_MODEL', ''),
         enabled: getEnvBool('OPENAI_COMPAT_ENABLED', false),
+        vision: getEnvOptionalBool('OPENAI_COMPAT_VISION'),
       },
       mimo: {
         name: 'mimo',
@@ -412,6 +465,7 @@ export function getDefaultConfig(): MercuryConfig {
       lmStudio: {
         name: 'lmStudio',
         apiKey: getEnv('LM_STUDIO_API_KEY', ''),
+        vision: getEnvOptionalBool('LM_STUDIO_VISION'),
         baseUrl: getEnv('LM_STUDIO_BASE_URL', 'http://127.0.0.1:1234/v1'),
         model: getEnv('LM_STUDIO_MODEL', ''),
         enabled: getEnvBool('LM_STUDIO_ENABLED', false),
@@ -436,6 +490,7 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('LITELLM_BASE_URL', 'http://localhost:4000/v1'),
         model: getEnv('LITELLM_MODEL', 'gpt-4o-mini'),
         enabled: getEnvBool('LITELLM_ENABLED', false),
+        vision: getEnvOptionalBool('LITELLM_VISION'),
       },
     },
     channels: {
@@ -783,7 +838,7 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
   if (provider.name === 'ollamaCloud') {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0;
   }
-  if (provider.name === 'atlascloud') {
+  if (provider.name === 'atlascloud' || provider.name === 'runcrate') {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0 && provider.model.length > 0;
   }
   if (provider.name === 'openaiCompat' || provider.name === 'litellm') {

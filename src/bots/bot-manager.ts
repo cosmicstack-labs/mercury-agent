@@ -1,20 +1,24 @@
 import { refinePersona } from './persona-template.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, relative, resolve, join } from 'node:path';
 import { writeFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, rmSync } from 'node:fs';
 import type { Tool } from 'ai';
+import type { ChannelAttachment } from '../types/channel.js';
 import type { MercuryConfig } from '../utils/config.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import { UserMemoryStore as UserMemoryStoreImpl } from '../memory/user-memory.js';
+import { BotInbox } from './inbox.js';
+import { BotApprovals, durableGrant } from './approvals.js';
+import { detectTier } from './permission-tiers.js';
 import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression } from './store.js';
 import { BotJournal, type BotTranscript, type BotUsage } from './journal.js';
 import { BotQueue, idempotencyKeyFor, LEASE_SECONDS, type DurableBotJob } from './queue.js';
 import { sweepSharedSandbox } from './retention.js';
-import { proposeCrew } from './fleet-onboarding.js';
+import { planBotShape, proposeCrew, type BotShapePlan } from './fleet-onboarding.js';
 import { createBotCapabilityRegistry, filterBotTools } from './registry-factory.js';
 import { createBotSendTool } from './tools/bot-send.js';
 import { BotTaskStore, renderTaskPrompt, renderBatchDigest, isTerminalTask, type BotTask, type BotTaskResult } from './tasks.js';
@@ -49,6 +53,8 @@ export interface BotJob {
   fromBot?: string;
   /** Originating surface for completion delivery. */
   source?: { channelType: string; channelId: string };
+  /** Photos/PDFs to hand the turn; `web/api/uploads.ts` already wrote them to disk. */
+  attachments?: ChannelAttachment[];
   createdAt: number;
   attempts: number;
   /** Scheduler task id for cron runs (routine gating + no-outcome streaks). */
@@ -109,6 +115,14 @@ export interface BotManagerDeps {
 const MAX_TRANSIENT_ATTEMPTS = 3;
 /** Consecutive no-outcome runs after which a work routine is paused (ADR-020). */
 export const NO_OUTCOME_PAUSE_AFTER = 3;
+/** No routine runs more often than this, whatever its cron says (Bots 2.0). */
+export const ROUTINE_MIN_GAP_MINUTES = 15;
+/** A routine that fails this many runs in a row is switched off until the owner starts it again. */
+export const ROUTINE_FAIL_OFF_AFTER = 5;
+/** Hand-offs nest at most this deep: owner → lead → crew → crew's crew. */
+export const MAX_HANDOFF_DEPTH = 3;
+/** One run hands off at most this many tasks, across all its delegate calls. */
+export const MAX_HANDOFFS_PER_RUN = 12;
 /** First no-outcome cooldown; doubles per repeat up to NO_OUTCOME_PAUSE_MAX_MS. A pause always ends by itself. */
 export const NO_OUTCOME_PAUSE_MS = 6 * 60 * 60 * 1000;
 export const NO_OUTCOME_PAUSE_MAX_MS = 24 * 60 * 60 * 1000;
@@ -227,6 +241,14 @@ export class BotManager {
   private turnLimitAlerted: Map<string, string> = new Map();
   /** Periodic due-sweep interval — cleared by dispose() (tests, shutdown). */
   private dueTimer?: ReturnType<typeof setInterval>;
+  /** What the bots did for the owner, kept until read (Bots 2.0). */
+  readonly inbox: BotInbox;
+  /** Bots asking the owner mid-run, waiting for an answer (Bots 2.0). */
+  readonly approvals = new BotApprovals();
+  /** job id → how many hand-offs deep it is (owner-started work is 0). */
+  private jobDepth = new Map<string, number>();
+  /** running job id → tasks it has handed off so far. */
+  private jobFanout = new Map<string, number>();
 
   constructor(deps: BotManagerDeps) {
     this.config = deps.config;
@@ -250,6 +272,26 @@ export class BotManager {
     this.skillsRoot = deps.skillsRoot;
     this.queue = deps.queue ?? new BotQueue(this.store.botsRoot, this.config.bots?.retention?.dlqCap);
     this.tasks = new BotTaskStore(this.store.botsRoot);
+    this.inbox = new BotInbox(this.store.botsRoot);
+    // A stop survives a restart (it used to be in memory only, so a restart
+    // quietly undid /bots stop).
+    for (const id of this.store.readHeld()) if (this.store.exists(id)) this.held.add(id);
+    // Today's spend survives a restart too: rebuilt from the journals, so a
+    // restart can't reset a bot's (or the fleet's) daily budget.
+    const dayStart = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`);
+    const today = new Date().toISOString().slice(0, 10);
+    for (const m of this.store.list()) {
+      try {
+        const u = this.journalFor(m.id).usage(m.id, dayStart);
+        const tokens = u.tokensIn + u.tokensOut;
+        if (tokens > 0) {
+          this.dailyTokens.set(m.id, { day: today, tokens });
+          this.fleetDailyTokens = { day: today, tokens: (this.fleetDailyTokens.day === today ? this.fleetDailyTokens.tokens : 0) + tokens };
+          const cap = this.dailyCapFor(m);
+          if (cap > 0 && tokens >= cap) this.pausedForBudget.add(m.id);
+        }
+      } catch { /* a journal we can't read starts the day at zero */ }
+    }
     // Resume work a crashed predecessor left behind: pending jobs (and
     // expired-lease claimed jobs) re-enter the in-memory queues. Durable
     // enqueue happens before any ack, so nothing was lost (§2.6).
@@ -393,7 +435,7 @@ export class BotManager {
     return this.journalFor(botId);
   }
 
-  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string }): { jobId: string; accepted: boolean; reasonCode?: string } {
+  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string; attachments?: ChannelAttachment[] }): { jobId: string; accepted: boolean; reasonCode?: string; duplicated?: boolean } {
     const manifest = this.store.get(botId);
     if (!manifest) return { jobId: '', accepted: false, reasonCode: 'target_unknown' };
     if (!manifest.enabled || this.disabled.has(botId)) return { jobId: '', accepted: false, reasonCode: 'target_disabled' };
@@ -406,6 +448,8 @@ export class BotManager {
     // routine ran too recently, or when the routine was paused for
     // producing nothing. The next tick tries again.
     if (job.trigger === 'cron') {
+      // A stopped bot's routines don't queue up behind the stop.
+      if (this.held.has(botId)) return { jobId: '', accepted: false, reasonCode: 'stopped' };
       const key = job.routineId ?? `bot:${botId}:cron`;
       const routineState = this.store.readRoutineState(botId);
       const pausedEntry = routineState.paused[key];
@@ -419,7 +463,8 @@ export class BotManager {
         logger.info({ botId, routineKey: key }, 'Bot routine cooldown over — resuming');
       }
       if (queue.length > 0 || (this.running.get(botId)?.size ?? 0) > 0) return { jobId: '', accepted: false, reasonCode: 'busy' };
-      const lastEnd = this.routineLastEnd.get(key);
+      const persisted = routineState.lastEnd?.[key] ? Date.parse(routineState.lastEnd[key]) : undefined;
+      const lastEnd = this.routineLastEnd.get(key) ?? (Number.isFinite(persisted) ? persisted : undefined);
       const minGapMs = this.routineConfig(manifest, key).minIntervalMinutes * 60_000;
       if (lastEnd !== undefined && Date.now() - lastEnd < minGapMs) return { jobId: '', accepted: false, reasonCode: 'too_soon' };
     }
@@ -435,12 +480,13 @@ export class BotManager {
       prompt: job.prompt,
       fromBot: job.fromBot,
       source: job.source,
+      attachments: job.attachments,
       attempts: job.attempts ?? 0,
       createdAt: Date.now(),
-      idempotencyKey: idempotencyKeyFor(botId, job.trigger, job.prompt, job.fromBot),
+      idempotencyKey: idempotencyKeyFor(botId, job.trigger, job.prompt, job.fromBot, job.attachments),
     });
     if (durable.duplicated) {
-      return { jobId: durable.job.id, accepted: true };
+      return { jobId: durable.job.id, accepted: true, duplicated: true };
     }
     const id = durable.job.id;
     queue.push({ id, botId, trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, createdAt: durable.job.createdAt, attempts: durable.job.attempts, routineId: job.routineId });
@@ -448,15 +494,22 @@ export class BotManager {
     return { jobId: id, accepted: true };
   }
 
+  /** The fleet's floor between two runs of one routine (`bots.routineMinGapMinutes`, default 15). */
+  private routineMinGap(): number {
+    const v = this.config.bots?.routineMinGapMinutes;
+    return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : ROUTINE_MIN_GAP_MINUTES;
+  }
+
   /** A routine's declared contract (bot.yaml schedules) or the defaults. */
   private routineConfig(manifest: BotManifest, routineKey: string): { expects: BotExpectedOutcome; minIntervalMinutes: number } {
     const declared = (manifest.schedules ?? []).find(r => `bot:${manifest.id}:${r.name}` === routineKey);
-    // A cadence the owner declared in bot.yaml is honoured as written (the
-    // busy-skip still applies); routines a bot created for itself are
-    // rate-limited to 30 minutes unless the owner says otherwise.
+    // Every routine waits at least ROUTINE_MIN_GAP_MINUTES between runs, the
+    // owner's own too: a 5-minute cron on a lead spent hundreds of millions of
+    // tokens writing records about records. Routines a bot created for itself
+    // wait 30 minutes unless the owner says otherwise.
     return {
       expects: declared?.expects ?? 'work',
-      minIntervalMinutes: declared?.minIntervalMinutes ?? (declared ? 0 : 30),
+      minIntervalMinutes: Math.max(this.routineMinGap(), declared?.minIntervalMinutes ?? (declared ? this.routineMinGap() : 30)),
     };
   }
 
@@ -503,22 +556,92 @@ export class BotManager {
       if (t.bot === requester) return { ok: false, error: 'You cannot delegate to yourself' };
       if (!roster.includes(t.bot)) return { ok: false, error: `"${t.bot}" is not in your crew (${roster.join(', ') || 'no crew yet — bot_spawn one'})` };
     }
+    const handoff = this.handoffCheck(requester, spec.tasks.length);
+    if (!handoff.ok) return handoff;
     const deadlineAt = Date.now() + (spec.deadlineMinutes ?? DEFAULT_TASK_DEADLINE_MINUTES) * 60_000;
     const batch = this.tasks.createBatch({ requester, label: spec.label, wakeWhen: spec.wakeWhen ?? 'all', deadlineAt });
     const out: Array<{ id: string; assignee: string; duplicated: boolean }> = [];
     for (const t of spec.tasks) {
-      const r = this.startTask({ batchId: batch.id, requester, assignee: t.bot, goal: t.goal, acceptance: t.acceptance });
+      const r = this.startTask({ batchId: batch.id, requester, assignee: t.bot, goal: t.goal, acceptance: t.acceptance }, undefined, handoff.depth);
       out.push({ id: r.task.id, assignee: t.bot, duplicated: r.duplicated });
     }
     logger.info({ requester, batchId: batch.id, tasks: out.length }, 'Fleet batch dispatched');
     return { ok: true, batchId: batch.id, tasks: out };
   }
 
-  private startTask(input: Omit<BotTask, 'id' | 'status' | 'createdAt' | 'jobId'>, previous?: BotTaskResult): { task: BotTask; duplicated: boolean } {
+  /**
+   * A bot wants something outside its grants. The question goes to the
+   * owner's inbox (and their phone, if an alert channel is set up) and the run
+   * waits for the answer; no answer in `bots.approvalWaitMinutes` (default 10)
+   * is a no. "Always" goes into this bot's own permissions file, never the
+   * global one.
+   */
+  private async askOwner(botId: string, prompt: string): Promise<string> {
+    const manifest = this.store.get(botId);
+    const runId = [...(this.running.get(botId) ?? [])][0];
+    if (!manifest || !runId) return 'no';
+    const minutes = Math.max(1, Math.min(60, this.config.bots?.approvalWaitMinutes ?? 10));
+    const { approval, answer } = this.approvals.ask({ botId, botName: manifest.name, runId, prompt }, minutes * 60_000);
+    const what = prompt.split('\n')[0];
+    this.emitBotActivity({ botId, jobId: runId, kind: 'step', label: 'Waiting for your approval', stepIndex: 0, elapsedMs: 0 });
+    const entry = this.inbox.add({
+      botId, botName: manifest.name, runId, kind: 'needs-you', approvalId: approval.id, files: [],
+      title: `${manifest.name} asks: ${what.slice(0, 120)}`,
+      summary: `${prompt}\n\nThe run is waiting for your answer. Without one in ${minutes} minute${minutes === 1 ? '' : 's'}, it's refused.`,
+    });
+    if (this.alert) {
+      void this.alert(`🔐 **${manifest.name}** asks: ${what}. Answer in Mercury Desktop (Bots → Inbox) within ${minutes} min, or it's refused.`).catch(() => {});
+    }
+    const result = await answer;
+    this.inbox.markRead([entry.id]);
+    if (result === 'always') this.persistGrant(botId, prompt);
+    logger.info({ botId, runId, answer: result, what: what.slice(0, 80) }, 'Bot approval answered');
+    return result;
+  }
+
+  /** "Always": make the owner's yes part of this bot's permissions.yaml. */
+  private persistGrant(botId: string, prompt: string): void {
+    const grant = durableGrant(prompt);
+    if (!grant) return;
+    const perms = this.store.readPermissions(botId);
+    if ('command' in grant) {
+      perms.autoApproveCommands = [...new Set([...(perms.autoApproveCommands ?? []), grant.command])];
+    } else {
+      perms.paths = mergePathScopes(perms.paths, [{ scope: grant.path, read: true, write: grant.write }]);
+    }
+    this.store.writePermissions(botId, perms);
+    logger.info({ botId, grant }, 'Owner granted a bot permission permanently');
+  }
+
+  /**
+   * May `requester` hand off `count` more tasks now? Work nests at most
+   * MAX_HANDOFF_DEPTH deep (a lead's crew can't keep delegating downwards
+   * forever), and one run hands off at most MAX_HANDOFFS_PER_RUN tasks. The
+   * refusal says what to do instead, so the model stops trying.
+   */
+  private handoffCheck(requester: string, count: number): { ok: true; depth: number } | { ok: false; error: string } {
+    const running = [...(this.running.get(requester) ?? [])];
+    const depth = Math.max(0, ...running.map((j) => this.jobDepth.get(j) ?? 0)) + 1;
+    if (depth > MAX_HANDOFF_DEPTH) {
+      return { ok: false, error: `Hand-off limit: this work is already ${depth - 1} hand-offs deep (max ${MAX_HANDOFF_DEPTH}). Do it yourself, or report back to whoever asked you with what you have.` };
+    }
+    const job = running[0];
+    const used = job ? this.jobFanout.get(job) ?? 0 : 0;
+    if (used + count > MAX_HANDOFFS_PER_RUN) {
+      return { ok: false, error: `Hand-off limit: one run can hand off at most ${MAX_HANDOFFS_PER_RUN} tasks (${used} so far). Wait for those results, or combine tasks.` };
+    }
+    if (job) this.jobFanout.set(job, used + count);
+    return { ok: true, depth };
+  }
+
+  private startTask(input: Omit<BotTask, 'id' | 'status' | 'createdAt' | 'jobId'>, previous?: BotTaskResult, depth?: number): { task: BotTask; duplicated: boolean } {
     const created = this.tasks.createTask(input);
     if (created.duplicated) return created;
     const requesterName = this.store.get(input.requester)?.name ?? input.requester;
+    // Pipeline stages chain on the lead's behalf: one level below it.
+    const level = depth ?? Math.max(0, ...[...(this.running.get(input.requester) ?? [])].map((j) => this.jobDepth.get(j) ?? 0)) + 1;
     const job = this.enqueue(input.assignee, { trigger: 'mailbox', prompt: renderTaskPrompt(created.task, requesterName, previous), fromBot: input.requester });
+    if (job.accepted && job.jobId) this.jobDepth.set(job.jobId, level);
     if (!job.accepted) {
       this.tasks.update(created.task.id, { status: 'failed', completedAt: Date.now(), result: { outcome: 'none', summary: `could not dispatch: ${job.reasonCode}`, deliverables: [], reasonCode: job.reasonCode } });
       this.onTaskSettled(created.task.id);
@@ -703,6 +826,8 @@ export class BotManager {
   private pump(botId: string): void {
     const manifest = this.store.get(botId);
     if (!manifest?.enabled || this.disabled.has(botId)) return;
+    // Stopped by the owner: work waits (durably) until they start it again.
+    if (this.held.has(botId)) return;
     const today = new Date().toISOString().slice(0, 10);
     const used = this.dailyTokens.get(botId);
     if (used && used.day !== today) {
@@ -842,6 +967,7 @@ export class BotManager {
         tokensIn: output.tokensIn,
         tokensOut: output.tokensOut,
         summary: output.output.slice(0, 300),
+        ...(output.report ? { report: output.report.kind, ...(output.report.complete ? { complete: true } : {}) } : {}),
         error: output.error,
         reasonCode: output.reasonCode,
         // A turn cut off by policy is not an escalation (ADR-020).
@@ -861,7 +987,29 @@ export class BotManager {
       this.lastRun.set(botId, { at: Date.now(), state: record.state });
       this.needsYou.delete(botId);
       this.recordBotTokens(botId, manifest, output.tokensIn + output.tokensOut);
-      if (routineKey) this.routineLastEnd.set(routineKey, Date.now());
+      // Did this run fail for good (not a retry, not a policy cut-off)? Either the
+      // turn died, or the bot itself reported that it couldn't do the job.
+      const failedForGood = (output.status === 'failed' && !willRetry && !turnLimited) || output.outcome === 'failed';
+      let routineFailStreak = 0;
+      if (routineKey) {
+        this.routineLastEnd.set(routineKey, Date.now());
+        const state = this.store.readRoutineState(botId);
+        state.lastEnd = { ...(state.lastEnd ?? {}), [routineKey]: new Date().toISOString() };
+        if (failedForGood) {
+          routineFailStreak = (state.failStreak?.[routineKey] ?? 0) + 1;
+          state.failStreak = { ...(state.failStreak ?? {}), [routineKey]: routineFailStreak };
+          if (routineFailStreak >= ROUTINE_FAIL_OFF_AFTER) {
+            // Switched off, not cooled down: it would keep burning tokens on the same failure.
+            state.paused[routineKey] = { since: new Date().toISOString(), reason: `${routineFailStreak} runs in a row failed` };
+            delete state.failStreak![routineKey];
+            logger.warn({ botId, routineKey, streak: routineFailStreak }, 'Bot routine switched off — failing every run');
+            void this.alertOwner(botId, `⏹ **${manifest.name}**'s routine \`${routineKey.split(':').pop()}\` is switched off: its last ${routineFailStreak} runs failed${output.reasonCode ? ` (${output.reasonCode})` : ''}. Fix the cause, then Start the bot (\`/bots start ${botId}\`) to turn it back on.`);
+          }
+        } else if (output.status === 'completed' && state.failStreak?.[routineKey]) {
+          delete state.failStreak[routineKey];
+        }
+        this.store.writeRoutineState(botId, state);
+      }
 
       // No-outcome streak (ADR-020): a work routine that produces nothing
       // three runs in a row is paused — the owner is told once, and
@@ -932,14 +1080,25 @@ export class BotManager {
         const delay = Math.min(15000, 1000 * 2 ** job.attempts);
         this.queue.retry(job.id, job.attempts + 1, Date.now() + delay);
         logger.info({ botId, jobId: job.id, reasonCode: output.reasonCode, retryIn: delay }, 'Bot turn failed transiently — retrying in place');
-        setTimeout(() => this.resumeDueJobs(), delay).unref?.();
+        // A little past due: a timer can fire a millisecond early, and the job
+        // would then wait for the next 30 s sweep.
+        setTimeout(() => this.resumeDueJobs(), delay + 50).unref?.();
       } else if (turnLimited) {
         this.queue.settle(job.id, 'done');
+        this.store.clearCheckpoint(botId, job.id);
+        this.jobDepth.delete(job.id);
       } else if (output.status === 'failed') {
         this.queue.settle(job.id, 'dead', output.reasonCode);
+        // A replay from the dead-letter queue starts fresh: the failure may be in the conversation itself.
+        this.store.clearCheckpoint(botId, job.id);
+        this.jobDepth.delete(job.id);
         this.needsYou.add(botId);
         logger.warn({ botId, jobId: job.id, reasonCode: output.reasonCode }, 'Bot turn failed permanently — moved to DLQ (replayable via /bots dlq)');
-        await this.alertOwner(botId, `❌ **${manifest.name}** failed permanently [reason: ${output.reasonCode}] — replay with \`/bots replay ${botId} ${job.id}\``);
+        // A routine failing again and again tells the owner once, on the first
+        // failure; the streak switches it off after ROUTINE_FAIL_OFF_AFTER.
+        if (routineFailStreak <= 1) {
+          await this.alertOwner(botId, `❌ **${manifest.name}** failed permanently [reason: ${output.reasonCode}] — replay with \`/bots replay ${botId} ${job.id}\``);
+        }
       } else if (output.status === 'paused') {
         // Step-budget pause: work continues next turn — same job requeues in
         // place (durable), no attempts bump.
@@ -947,6 +1106,8 @@ export class BotManager {
         setTimeout(() => this.resumeDueJobs(), 2000).unref?.();
       } else {
         this.queue.settle(job.id, 'done');
+        this.store.clearCheckpoint(botId, job.id);
+        this.jobDepth.delete(job.id);
       }
 
       // Deliver the outcome — the bot thread is the ONLY local surface
@@ -966,7 +1127,9 @@ export class BotManager {
       // (sendToBot), and its synthesis is the user-facing outcome of the
       // whole delegation — skipping every mailbox turn left it journaled
       // but never shown.
-      if (this.notify && !replyTargetFor(job)) {
+      // Quiet runs (bot_no_update) are recorded, never announced: "nothing new"
+      // every 15 minutes is exactly the noise the owner stops reading.
+      if (this.notify && !replyTargetFor(job) && output.outcome !== 'quiet') {
         const botThread = `bot:${botId}`;
         const icon = output.status === 'completed' ? '🤖' : output.status === 'failed' ? '❌' : output.status === 'halted' ? '⏹' : '⏸';
         // Full result, matched to the channel's per-message cap (64KB) — the
@@ -1004,13 +1167,39 @@ export class BotManager {
         }
       }
 
+      // The owner's inbox (Bots 2.0): results, reported failures and runs that
+      // need them — durable, so they're there when the owner comes back. Not
+      // here: quiet runs, retries, halts, and results addressed to another bot.
+      if (!replyTargetFor(job) && output.status !== 'halted') {
+        const firstLine = (s: string) => s.split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+        const base = { botId, botName: manifest.name, runId: job.id, files: output.deliverables };
+        if (output.outcome === 'failed') {
+          this.inbox.add({ ...base, kind: 'failed', title: `${manifest.name} couldn't do it: ${firstLine(output.report?.summary ?? output.output).slice(0, 100)}`, summary: output.report?.summary ?? output.output });
+        } else if (failedForGood) {
+          this.inbox.add({ ...base, kind: 'needs-you', title: `${manifest.name} failed (${output.reasonCode ?? 'error'})`, summary: output.error ?? output.output, reasonCode: output.reasonCode });
+        } else if (turnLimited) {
+          this.inbox.add({ ...base, kind: 'needs-you', title: `${manifest.name} hit its per-run limit`, summary: `The run was stopped at its ${output.reasonCode === 'turn_time' ? 'time' : 'token'} limit before it finished. Split the task, or raise the limit in the bot's settings.`, reasonCode: output.reasonCode });
+        } else if (output.status === 'completed' && ['deliverable', 'action', 'message', 'delegated'].includes(output.outcome)) {
+          const summary = output.report?.summary ?? output.output;
+          const files = output.deliverables.length;
+          this.inbox.add({
+            ...base,
+            kind: 'result',
+            title: `${manifest.name}: ${firstLine(summary).slice(0, 110) || (files ? `delivered ${files} file${files === 1 ? '' : 's'}` : 'finished')}`,
+            summary,
+            ...(output.report?.complete ? { complete: true } : {}),
+          });
+        }
+      }
+
       // Fleet delegation loop: a task dispatched by another bot reports its
       // result back to the sender's mailbox (attributed, plain mail — never a
       // task, so results can't ping-pong). Paused runs requeue and report
       // later; the failure/retry machinery above owns transient states.
       // Memory (ADR-021): a productive run teaches the bot something.
       const memoryStore = this.userMemoryFor(botId, manifest);
-      if (output.status === 'completed' && memoryStore && manifest.memory?.learn !== false) {
+      // A quiet run ("nothing new") has nothing to teach: no extra model call for it.
+      if (output.status === 'completed' && output.outcome !== 'quiet' && memoryStore && manifest.memory?.learn !== false) {
         void extractBotMemories({
           botId, botName: manifest.name, prompt: job.prompt, output: output.output, outcome: output.outcome,
           deliverables: output.deliverables, provider: resolveProvider(this.providers, manifest, this.config), tokenBudget: this.tokenBudget, memory: memoryStore,
@@ -1063,6 +1252,8 @@ export class BotManager {
     } finally {
       if (heartbeat) clearInterval(heartbeat);
       running.delete(job.id);
+      this.jobFanout.delete(job.id);
+      this.approvals.cancelRun(job.id);
       this.aborts.delete(`${botId}:${job.id}`);
       if (running.size === 0) this.activity.delete(botId);
       // Mail-arrival race: a reply (e.g. a crew's task result) delivered
@@ -1116,6 +1307,7 @@ export class BotManager {
         manifest,
         trigger: job.trigger,
         prompt: job.prompt,
+        attachments: job.attachments,
         persona: this.store.readPersona(botId),
         mail,
         pollMail: () => this.drainMailbox(botId),
@@ -1132,6 +1324,9 @@ export class BotManager {
         provider: resolveProvider(this.providers, manifest, this.config),
         tokenBudget: this.tokenBudget,
         abortSignal: signal,
+        // Pick up an interrupted run of this job where it stopped; checkpoint every step.
+        resume: this.store.readCheckpoint(botId, job.id) as Parameters<typeof runBotTurn>[0]['resume'],
+        onCheckpoint: (messages) => this.store.writeCheckpoint(botId, job.id, messages),
       },
       cleanup: () => { /* per-bot registries are persistent, nothing to restore */ },
     };
@@ -1215,6 +1410,8 @@ export class BotManager {
       sandbox: { workspace: this.store.sandboxDir(botId), shared: this.store.sharedSandboxDir() },
       userMemory: this.userMemoryFor(botId, manifest),
       config: this.config,
+      // Outside its grants the bot asks the owner (and waits a while) instead of failing outright.
+      ask: (prompt) => this.askOwner(botId, prompt),
     });
     // Filter FIRST (strips interactive/global-mutation tools and applies the
     // permissions.yaml tool gate), THEN add the bot-specific tools —
@@ -1271,6 +1468,16 @@ export class BotManager {
   // ---- fleet management (shared by onboarding, lead tools, API) -----------
 
   /** Max crew per lead — CrewAI guidance: 3-6 for delegation accuracy. */
+  /** The persona builder (no save): rough instructions → the structured persona format. Null when unavailable. */
+  async buildPersona(text: string, name: string): Promise<string | null> {
+    return refinePersona(text, name || 'Bot', this.providers.getDefault());
+  }
+
+  /** "Let Mercury decide": solo or fleet for what the owner described, with a proposed crew. Nothing is created. */
+  async planShape(input: { name: string; description: string; persona: string; fleet?: boolean }): Promise<BotShapePlan> {
+    return planBotShape(input, this.providers.getDefault(), this.maxCrew());
+  }
+
   maxCrew(): number {
     return this.config.bots?.fleets?.maxCrew ?? 6;
   }
@@ -1496,7 +1703,7 @@ export class BotManager {
     this.lastRun.delete(botId);
     this.needsYou.delete(botId);
     this.pausedForBudget.delete(botId);
-    this.held.delete(botId);
+    if (this.held.delete(botId)) this.store.writeHeld(this.held);
     logger.info({ botId }, 'Bot deleted: queue/mail/DLQ purged, routines removed');
   }
 
@@ -1589,6 +1796,27 @@ export class BotManager {
     }
   }
 
+  /**
+   * Re-register one bot's owner-declared routines after its schedules changed
+   * (the app's editor): routines no longer declared are removed, the rest
+   * replaced. Routines the bot created for itself are left alone.
+   */
+  syncRoutines(botId: string, previousNames: string[]): void {
+    const scheduler = this.scheduler;
+    const manifest = this.store.get(botId);
+    if (!scheduler || !manifest) return;
+    const now = new Set((manifest.schedules ?? []).map((r) => r.name));
+    for (const name of previousNames) if (!now.has(name)) scheduler.removeTask(`bot:${botId}:${name}`);
+    for (const routine of manifest.schedules ?? []) {
+      scheduler.removeTask(`bot:${botId}:${routine.name}`);
+      if (!manifest.enabled || !isValidCronExpression(routine.cron)) continue;
+      scheduler.addPersistedTask({
+        id: `bot:${botId}:${routine.name}`, cron: routine.cron, description: routine.name, prompt: routine.prompt, botId, createdAt: new Date().toISOString(),
+      });
+    }
+    scheduler.persistSchedules();
+  }
+
   // ---- control plane -------------------------------------------------------
 
   async halt(botId: string, jobId?: string): Promise<boolean> {
@@ -1596,6 +1824,7 @@ export class BotManager {
     const hadRunning = !!running && running.size > 0;
     for (const id of running ?? []) {
       if (jobId && id !== jobId) continue;
+      this.approvals.cancelRun(id);
       this.aborts.get(`${botId}:${id}`)?.abort();
     }
     // Queued-but-not-started jobs leave the in-memory lane; their durable rows
@@ -1624,6 +1853,7 @@ export class BotManager {
     let heldJobs = (this.queues.get(botId) ?? []).length;
     let halted = await this.halt(botId);
     this.held.add(botId);
+    this.store.writeHeld(this.held);
     let crewStopped = 0;
     if (this.store.isLead(botId)) {
       for (const crew of this.store.crewOf(botId)) {
@@ -1650,11 +1880,12 @@ export class BotManager {
     const manifest = this.store.get(botId);
     if (!manifest) throw new Error(`Bot "${botId}" does not exist`);
     this.held.delete(botId);
+    this.store.writeHeld(this.held);
     // An explicit start is the owner saying "try again": paused routines
-    // resume with a clean streak.
+    // resume with a clean streak (and a routine switched off for failing gets another chance).
     const routines = this.store.readRoutineState(botId);
-    if (Object.keys(routines.paused).length > 0 || Object.keys(routines.noOutcomeStreak).length > 0) {
-      this.store.writeRoutineState(botId, { paused: {}, noOutcomeStreak: {}, pauseCount: {} });
+    if (Object.keys(routines.paused).length > 0 || Object.keys(routines.noOutcomeStreak).length > 0 || Object.keys(routines.failStreak ?? {}).length > 0) {
+      this.store.writeRoutineState(botId, { paused: {}, noOutcomeStreak: {}, pauseCount: {}, lastEnd: routines.lastEnd ?? {}, failStreak: {} });
     }
     let resumed = this.rehydratePending(botId);
     if (!manifest.enabled || this.disabled.has(botId)) {
@@ -1667,6 +1898,7 @@ export class BotManager {
         const m = this.store.get(crew.id);
         if (!m?.enabled || this.disabled.has(crew.id)) continue; // explicitly disabled crew stay off
         this.held.delete(crew.id);
+        this.store.writeHeld(this.held);
         resumed += this.rehydratePending(crew.id);
         this.pump(crew.id);
         resumed += this.start(crew.id).resumed;
@@ -1698,6 +1930,13 @@ export class BotManager {
   }
 
   /** Fire a bot's configured routine immediately, or send a bare wake turn. */
+  /** How many bot turns are running right now (the updater waits for them). */
+  runningJobs(): number {
+    let n = 0;
+    for (const set of this.running.values()) n += set.size;
+    return n;
+  }
+
   runNow(botId: string, routineName?: string): { accepted: boolean; jobId?: string; reasonCode?: string } {
     const manifest = this.store.get(botId);
     if (!manifest) return { accepted: false, reasonCode: 'target_unknown' };
@@ -1725,6 +1964,7 @@ export class BotManager {
   // ---- observation ---------------------------------------------------------
 
   getStatusSummaries(): BotStatusSummary[] {
+    const unread = this.inbox.unreadByBot();
     return this.store.list().map((m) => {
       const running = this.running.get(m.id);
       const queue = this.queues.get(m.id) ?? [];
@@ -1743,6 +1983,11 @@ export class BotManager {
         lastRunAt: last?.at,
         lastRunState: last?.state,
         needsYou: this.needsYou.has(m.id),
+        hasAvatar: this.store.hasAvatar(m.id),
+        unread: unread.get(m.id) ?? 0,
+        tier: detectTier(this.store.readPermissions(m.id)),
+        ...(this.held.has(m.id) ? { stopped: true } : {}),
+        ...(m.description ? { description: m.description } : {}),
         fleetRole: m.fleetRole,
         parent: m.parent,
         crewWorking: m.fleetRole === 'lead'
@@ -1944,11 +2189,22 @@ export class BotManager {
     }
     const isCrew = Boolean(manifest.parent);
     const final = Boolean(options.final) && !isCrew;
-    const botFolder = this.store.deliverablesDir(botId);
+    // Pin before the folder is created: from here on the folder name belongs to the files, not to
+    // whatever the bot is called today.
+    const botFolder = this.store.pinDeliverablesFolder(botId);
     const destDir = isCrew ? botFolder : final ? botFolder : join(botFolder, 'work');
     mkdirSync(destDir, { recursive: true });
+    // The same content delivered again (a retry, a re-run) is the file already
+    // there, not "Report (2).md" next to it.
+    const same = sameContentIn(destDir, candidate);
+    if (same) {
+      try { unlinkSync(candidate); } catch { /* the source copy is the bot's; leave it */ }
+      logger.info({ botId, dest: same }, 'Bot re-delivered an artifact already in the folder');
+      return { accepted: true, path: same, final };
+    }
     const sourceName = options.saveAs || basename(candidate);
-    const ext = extname(sourceName) || extname(candidate);
+    // A file without an extension opens as nothing on the owner's computer: text becomes .md.
+    const ext = extname(sourceName) || extname(candidate) || (looksLikeText(candidate) ? '.md' : '');
     const stem = options.title?.trim() || basename(sourceName, ext);
     const fileName = deliverableFileName(stem, ext);
     const finalExt = extname(fileName);
@@ -1991,6 +2247,12 @@ export class BotManager {
    * behind so an owner with a bookmark finds the new place.
    */
   migrateDeliverables(): { moved: number } {
+    // Existing bots: pin the folder they already use, so the first rename after this upgrade does
+    // not move their deliverables. Runs before the legacy scan, which may return early.
+    for (const manifest of this.store.list()) {
+      if (manifest.parent) continue;
+      this.store.pinDeliverablesFolder(manifest.id);
+    }
     const legacy = this.store.outputsDir();
     if (!existsSync(legacy)) return { moved: 0 };
     let moved = 0;
@@ -2129,3 +2391,28 @@ function describeJob(job: BotJob): string {
 
 // Re-exported for the /bots storage view.
 export { BOT_JOURNAL_FILENAME };
+
+/** A file in `dir` with exactly the bytes of `file`, if any (size first, then content). */
+function sameContentIn(dir: string, file: string): string | undefined {
+  try {
+    const size = statSync(file).size;
+    const want = createHash('sha256').update(readFileSync(file)).digest('hex');
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      const st = statSync(p);
+      if (!st.isFile() || st.size !== size || name === 'README.md') continue;
+      if (createHash('sha256').update(readFileSync(p)).digest('hex') === want) return p;
+    }
+  } catch { /* no folder yet, or unreadable: deliver normally */ }
+  return undefined;
+}
+
+/** No NUL bytes in the first 4 KB: text. */
+function looksLikeText(file: string): boolean {
+  try {
+    const buf = readFileSync(file).subarray(0, 4096);
+    return !buf.includes(0);
+  } catch {
+    return false;
+  }
+}

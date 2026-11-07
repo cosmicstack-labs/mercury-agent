@@ -4,6 +4,7 @@ import type { MercuryConfig } from './config.js';
 import { getMercuryHome, saveConfig } from './config.js';
 import { logger } from './logger.js';
 import { formatNumber } from './format.js';
+import { recordDay, seedToday } from './token-history.js';
 
 export interface TokenTracker {
   dailyUsed: number;
@@ -51,10 +52,29 @@ export class TokenBudget {
       this.lifetimeSaved = lifetime;
     }
     this.restore();
+    // The ledger starts with today's counter on its first run, so today isn't blank.
+    if (this.dailyUsed > 0) {
+      const input = this.requestLog.reduce((a, e) => a + safeNumber(e.inputTokens), 0);
+      const output = this.requestLog.reduce((a, e) => a + safeNumber(e.outputTokens), 0);
+      seedToday(this.dailyUsed, input, output, this.requestLog.length);
+    }
+  }
+
+  /**
+   * A budget of zero (or less) is not a ceiling, it is the absence of one.
+   *
+   * The console has always read `dailyBudget: 0` as "unlimited", and an owner who clears the
+   * field in the app means the same thing. Comparing `used >= 0` instead turned that request
+   * into "every turn is refused from the first token" — a config that reads as *no limit* and
+   * behaves as *no answers*, with nothing in the UI able to tell the two apart.
+   */
+  private hasCeiling(): boolean {
+    return safeNumber(this.dailyBudget) > 0;
   }
 
   canAfford(estimatedTokens: number): boolean {
     this.resetIfNewDay();
+    if (!this.hasCeiling()) return true;
     return safeNumber(this.dailyUsed) + estimatedTokens <= safeNumber(this.dailyBudget);
   }
 
@@ -64,6 +84,7 @@ export class TokenBudget {
       this.forceNext = false;
       return false;
     }
+    if (!this.hasCeiling()) return false;
     return safeNumber(this.dailyUsed) >= safeNumber(this.dailyBudget);
   }
 
@@ -106,6 +127,7 @@ export class TokenBudget {
     const logEntry: TokenLogEntry = { ...safeEntry, timestamp: Date.now() };
     this.dailyUsed += totalTokens;
     this.requestLog.push(logEntry);
+    recordDay(inputTokens, outputTokens, totalTokens, logEntry.timestamp);
 
     if (entry.agentId) {
       const agentUsed = this.perAgentUsage.get(entry.agentId) ?? 0;
@@ -164,6 +186,9 @@ export class TokenBudget {
 
   getStatusText(): string {
     const used = this.sanitizeCount(this.dailyUsed);
+    if (!this.hasCeiling()) {
+      return `Token budget: ${formatNumber(used)} used today, no daily ceiling`;
+    }
     const pct = Math.round(this.getUsagePercentage());
     const remaining = this.getRemaining();
     return `Token budget: ${formatNumber(used)} / ${formatNumber(this.dailyBudget)} used (${pct}%), ${formatNumber(remaining)} remaining`;

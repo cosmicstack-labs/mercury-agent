@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
+import type { PersonVerifier } from '../../memory/person-verifier.js';
 import { loadConfig, getMemoryDir, saveConfig } from '../../utils/config.js';
 import { isBetterSqlite3Available } from '../../memory/second-brain-db.js';
 import { UserMemoryStore } from '../../memory/user-memory.js';
+import { cardinalityOf, exclusiveGroup, relationCatalog } from '../../memory/person-standing.js';
 import type { Belief, BeliefKind, BeliefStatus, BeliefStore, Evidence } from '../../memory/beliefs.js';
 import { join } from 'node:path';
 
@@ -12,6 +14,11 @@ const SQLITE_DEPENDENCY_ERROR =
 
 export function setUserMemory(mem: UserMemoryStore | null): void {
   userMemory = mem;
+}
+
+let personVerifier: PersonVerifier | null = null;
+export function setPersonVerifier(v: PersonVerifier | null): void {
+  personVerifier = v;
 }
 
 function ensureMemory(): UserMemoryStore | null {
@@ -61,6 +68,13 @@ function personToJson(p: any) {
     traits: p.traits ?? [],
     confidence: p.confidence,
     memoryCount: p.memoryCount,
+    kind: p.kind ?? 'unverified',
+    verifiedBy: p.verifiedBy ?? null,
+    meta: p.meta ?? {},
+    ownerEdited: p.ownerEdited === true,
+    /** 0-100 and known / shadow / faint, with the reasons (person-standing.ts). */
+    standing: p.standing ?? null,
+    cardinality: p.relationshipToUser ? cardinalityOf(p.relationshipToUser) : null,
     firstSeenAt: p.firstSeenAt,
     lastSeenAt: p.lastSeenAt,
     createdAt: p.createdAt,
@@ -204,9 +218,118 @@ brain.get('/api/brain/persons', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ persons: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
   const q = c.req.query('q') || '';
-  const limit = Math.min(parseInt(c.req.query('limit') || '100'), 200);
-  const persons = mem.listPersons(q, limit);
+  const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '100', 10) || 100, 1), 5000);
+  const kinds = (c.req.query('kind') || '').split(',').map((k) => k.trim()).filter(Boolean);
+  const showRejected = c.req.query('rejected') === '1';
+  const tierParam = c.req.query('tier');
+  const tier = tierParam === 'known' || tierParam === 'shadow' || tierParam === 'faint' ? tierParam : undefined;
+  const persons = mem.listPersons(q, limit, tier)
+    .filter((p) => showRejected || p.verifiedBy !== 'model-rejected')
+    .filter((p) => kinds.length === 0 || kinds.includes(p.kind));
   return c.json({ persons: persons.map(personToJson), total: persons.length, available: true });
+});
+
+// ── People: curation, checks (registered before /:id so the paths win) ────
+
+const PERSON_KINDS = ['person', 'pet', 'unverified'] as const;
+const META_KEYS = ['phone', 'email', 'birthday', 'location', 'company', 'role', 'notes', 'links', 'avatarColor'] as const;
+
+function cleanMeta(input: unknown): Record<string, unknown> | undefined {
+  if (input === undefined) return undefined;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const out: Record<string, unknown> = {};
+  for (const key of META_KEYS) {
+    const v = (input as Record<string, unknown>)[key];
+    if (v === undefined || v === null || v === '') continue;
+    if (key === 'links') {
+      if (Array.isArray(v)) out.links = v.filter((l): l is string => typeof l === 'string').map((l) => l.trim().slice(0, 300)).filter(Boolean).slice(0, 20);
+      continue;
+    }
+    if (typeof v === 'string') out[key] = v.trim().slice(0, key === 'notes' ? 4000 : 200);
+  }
+  return out;
+}
+
+/** Relationship words with their cardinality, for the edit form. */
+brain.get('/api/brain/relations', (c) => c.json({ relations: relationCatalog() }));
+
+brain.get('/api/brain/persons/checks', (c) => {
+  const status = personVerifier?.status();
+  const mem = ensureMemory();
+  return c.json(status ?? { enabled: false, pending: mem ? mem.countPersonChecks() : 0, callsToday: 0, dailyCap: 0, lastRunAt: null, lastError: null, nextRunAt: null, checked: 0 });
+});
+
+/** Owner opt-in: queue the people already in the brain for the same slow, capped check. */
+brain.post('/api/brain/persons/checks/queue-existing', (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const queued = mem.queueExistingPersonChecks();
+  return c.json({ queued, status: personVerifier?.status() ?? null });
+});
+
+brain.post('/api/brain/persons/checks/run', async (c) => {
+  if (!personVerifier) return c.json({ error: 'Person checks run in the process that owns the runtime' }, 409);
+  const checked = await personVerifier.runOnce();
+  return c.json({ checked, status: personVerifier.status() });
+});
+
+brain.patch('/api/brain/persons/:id', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+  const kind = body.kind as string | undefined;
+  if (kind !== undefined && kind !== 'not_person' && !(PERSON_KINDS as readonly string[]).includes(kind)) return c.json({ error: 'kind must be person, pet, unverified or not_person' }, 400);
+  if (kind === 'not_person') {
+    return mem.markNotPerson(c.req.param('id')) ? c.json({ success: true, removed: true }) : c.json({ error: 'Person not found' }, 404);
+  }
+  const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : undefined);
+  // One-to-one relations (wife, mother, manager…) belong to one person: say who has it,
+  // and move it only when the owner confirms (force).
+  const relationship = body.relationship === null ? null : str(body.relationship, 60);
+  const group = relationship ? exclusiveGroup(relationship) : null;
+  if (group) {
+    const holder = mem.exclusiveHolder(group, c.req.param('id'));
+    if (holder && body.force !== true) {
+      return c.json({ error: `${holder.name} is already your ${holder.relationshipToUser}.`, conflict: { id: holder.id, name: holder.name, relationship: holder.relationshipToUser } }, 409);
+    }
+    if (holder) mem.releaseExclusiveRelationship(group, c.req.param('id'));
+  }
+  const updated = mem.updatePerson(c.req.param('id'), {
+    displayName: str(body.name, 80),
+    relationship,
+    description: body.summary === null ? null : str(body.summary, 2000),
+    kind: kind as 'person' | 'pet' | 'unverified' | undefined,
+    meta: cleanMeta(body.meta),
+  });
+  if (!updated) return c.json({ error: 'Person not found' }, 404);
+  return c.json({ person: personToJson(updated) });
+});
+
+brain.post('/api/brain/persons/:id/merge', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const body = await c.req.json<{ into?: unknown }>().catch(() => ({} as { into?: unknown }));
+  if (typeof body.into !== 'string' || !body.into) return c.json({ error: 'into (a person id) is required' }, 400);
+  if (!mem.mergePersons(c.req.param('id'), body.into)) return c.json({ error: 'Could not merge (missing person or same person)' }, 404);
+  const into = mem.getPerson(body.into);
+  return c.json({ person: into ? personToJson(into) : null });
+});
+
+/** Everything known as a mind map: themes → sub-themes → notes, with sparse "related" links. Local, no model calls. */
+brain.get('/api/brain/map', (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
+  const map = mem.knowledgeMap({ archive: c.req.query('archive') === '1' });
+  return c.json({ ...map, available: true });
+});
+
+/** The brain as a graph of real links: memories, people, who appears where, who relates to whom. */
+brain.get('/api/brain/graph/v2', (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
+  const parsed = parseInt(c.req.query('memories') || '400', 10);
+  const g = mem.personGraph(Number.isFinite(parsed) ? parsed : 400, { shadows: c.req.query('shadows') === '1' });
+  return c.json({ ...g, available: true });
 });
 
 brain.get('/api/brain/persons/:id', async (c) => {
@@ -222,9 +345,11 @@ brain.get('/api/brain/persons/:id/memories', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ memories: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
   const id = c.req.param('id');
-  const limit = Math.min(parseInt(c.req.query('limit') || '50'), 100);
-  const memories = mem.getPersonMemories(id, limit);
-  return c.json({ memories: memories.map(memToJson), total: memories.length, available: true });
+  // Paged, not capped: a person can have any number of memories.
+  const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '50', 10) || 50, 1), 500);
+  const offset = Math.max(parseInt(c.req.query('offset') || '0', 10) || 0, 0);
+  const page = mem.personMemoryPage(id, limit, offset);
+  return c.json({ memories: page.records.map(memToJson), total: page.total, limit, offset, available: true });
 });
 
 brain.get('/api/brain/graph', async (c) => {

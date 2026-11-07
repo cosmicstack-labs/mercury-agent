@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { existsSync, mkdtempSync, readdirSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getDefaultConfig } from '../../utils/config.js';
 import { BotManager } from '../../bots/bot-manager.js';
 import { BotStore } from '../../bots/store.js';
 import { PERMISSION_TIERS } from '../../bots/permission-tiers.js';
-import app, { setBotManager } from './bots.js';
+import app, { registerRosterClient, setBotManager } from './bots.js';
 
 /**
  * Web cockpit API — handlers tested directly via the module's own Hono app
@@ -51,6 +51,10 @@ afterEach(() => {
 });
 
 const jreq = (res: Response) => res.json() as Promise<any>;
+
+/** What a fleet-feed client receives: the event name, and the roster it carries. */
+type RosterBody = { bots: Array<Record<string, unknown>>; queue?: Record<string, number> };
+type RosterFeed = Array<{ event: string; data: RosterBody }>;
 
 describe('web bots API — cockpit', () => {
   it('GET tiers returns the executable tier catalog', async () => {
@@ -204,5 +208,282 @@ describe('web bots API — deliverables folder (where results land)', () => {
     expect(typeof root.display).toBe('string');
     expect(typeof root.exists).toBe('boolean');
     expect((await app.request('/api/bots/ghost/folder')).status).toBe(404);
+  });
+  it('a config edit the roster shows is announced — a client keeps showing the old value without it', async () => {
+    store.create({ id: 'quiet', name: 'Quiet' });
+    const seen: RosterFeed = [];
+    const unsubscribe = registerRosterClient({ send: (event, data) => seen.push({ event, data: data as RosterBody }) });
+
+    try {
+      await app.request('/api/bots/quiet', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: false }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      // The summary carries the flag, not the description: the roster is what a drawer draws, and
+      // the description belongs to the bot's own page.
+      const roster = seen.filter((e) => e.event === 'bot_roster').at(-1);
+      const edited = roster?.data.bots.find((b) => b.id === 'quiet');
+      expect(edited?.enabled).toBe(false);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('a rejected edit is not announced — no phantom refresh on an unknown bot', async () => {
+    const seen: RosterFeed = [];
+    const unsubscribe = registerRosterClient({ send: (event, data) => seen.push({ event, data: data as RosterBody }) });
+
+    try {
+      const res = await app.request('/api/bots/ghost', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: false }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      // The handler answers 400 for an unknown id, the same as the other malformed requests.
+      expect(res.status).toBe(400);
+      expect(seen.filter((e) => e.event === 'bot_roster')).toHaveLength(0);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+});
+
+describe('web bots API — avatars', () => {
+  const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const put = (id: string, body: unknown) =>
+    app.request(`/api/bots/${id}/avatar`, { method: 'PUT', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+
+  beforeEach(() => {
+    store.create({ id: 'painter', name: 'Painter' });
+  });
+
+  it('stores a face and serves it back with the type the bytes have', async () => {
+    expect((await put('painter', { data: PNG.toString('base64') })).status).toBe(200);
+
+    const res = await app.request('/api/bots/painter/avatar');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/png');
+    expect(res.headers.get('Cache-Control')).toContain('private');
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    const served = Buffer.from(await res.arrayBuffer());
+    expect(served.equals(PNG)).toBe(true);
+  });
+
+  it('advertises the avatar in the roster so a client need not probe', async () => {
+    const before = await jreq(await app.request('/api/bots'));
+    expect(before.bots.find((b: any) => b.id === 'painter').hasAvatar).toBe(false);
+
+    await put('painter', { data: PNG.toString('base64') });
+
+    const after = await jreq(await app.request('/api/bots'));
+    expect(after.bots.find((b: any) => b.id === 'painter').hasAvatar).toBe(true);
+  });
+
+  it('answers 404 when there is no avatar yet', async () => {
+    const res = await app.request('/api/bots/painter/avatar');
+    expect(res.status).toBe(404);
+    await expect(jreq(res)).resolves.toEqual({ error: 'Bot has no avatar' });
+  });
+
+  it('replaces the previous face in place', async () => {
+    await put('painter', { data: PNG.toString('base64') });
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00]);
+    const res = await put('painter', { data: jpeg.toString('base64') });
+    expect(res.status).toBe(200);
+    await expect(jreq(res)).resolves.toMatchObject({ ok: true, mime: 'image/jpeg' });
+
+    const served = await app.request('/api/bots/painter/avatar');
+    expect(served.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(existsSync(store.avatarPath('painter'))).toBe(true);
+    // one face, never two: the file name carries no extension to accumulate
+    expect(readFileSync(store.avatarPath('painter')).length).toBe(jpeg.length);
+  });
+
+  it('refuses a document, a text file, and an oversized image', async () => {
+    await expect(jreq(await put('painter', { data: Buffer.from('%PDF-1.4\n').toString('base64') })))
+      .resolves.toEqual({ error: 'avatar must be a png, jpeg, webp or gif image' });
+    await expect(jreq(await put('painter', { data: Buffer.from('hello').toString('base64') })))
+      .resolves.toEqual({ error: 'avatar must be a png, jpeg, webp or gif image' });
+    await expect(jreq(await put('painter', {}))).resolves.toEqual({ error: 'avatar needs base64 "data"' });
+
+    const huge = Buffer.concat([PNG, Buffer.alloc(2 * 1024 * 1024)]);
+    const res = await put('painter', { data: huge.toString('base64') });
+    expect(res.status).toBe(400);
+    expect((await jreq(res)).error).toContain('the limit is 2 MB');
+    expect(store.hasAvatar('painter')).toBe(false);
+  });
+
+  it('validates the cache with an ETag instead of resending the face', async () => {
+    await put('painter', { data: PNG.toString('base64') });
+    const first = await app.request('/api/bots/painter/avatar');
+    const etag = first.headers.get('ETag');
+    expect(etag).toBeTruthy();
+
+    const again = await app.request('/api/bots/painter/avatar', { headers: { 'If-None-Match': etag! } });
+    expect(again.status).toBe(304);
+  });
+
+  it('deletes the face and says whether there was one', async () => {
+    await put('painter', { data: PNG.toString('base64') });
+
+    await expect(jreq(await app.request('/api/bots/painter/avatar', { method: 'DELETE' }))).resolves.toEqual({ ok: true, removed: true });
+    expect(store.hasAvatar('painter')).toBe(false);
+    await expect(jreq(await app.request('/api/bots/painter/avatar', { method: 'DELETE' }))).resolves.toEqual({ ok: true, removed: false });
+  });
+
+  it('answers 404 for a bot that does not exist', async () => {
+    expect((await app.request('/api/bots/ghost/avatar')).status).toBe(404);
+    expect((await put('ghost', { data: PNG.toString('base64') })).status).toBe(404);
+    expect((await app.request('/api/bots/ghost/avatar', { method: 'DELETE' })).status).toBe(404);
+  });
+
+  it('keeps the avatar inside the bot profile dir, so deleting the bot takes it', async () => {
+    await put('painter', { data: PNG.toString('base64') });
+    expect(store.avatarPath('painter')).toBe(join(root, 'bots', 'painter', 'avatar'));
+
+    manager.store.delete('painter');
+    expect(existsSync(join(root, 'bots', 'painter'))).toBe(false);
+  });
+});
+
+describe('web bots API — files on a bot message', () => {
+  const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    // Uploads land in `<mercury home>/uploads`: keep them in this test's folder, never the real home.
+    savedHome = process.env.MERCURY_HOME;
+    process.env.MERCURY_HOME = root;
+    store.create({ id: 'painter', name: 'Painter' });
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.MERCURY_HOME;
+    else process.env.MERCURY_HOME = savedHome;
+  });
+
+  const send = (body: unknown) =>
+    app.request('/api/bots/painter/message', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  it('queues a photo with the job and names it in the response', async () => {
+    const res = await send({ message: '', attachments: [{ name: 'dot.png', data: PNG.toString('base64') }] });
+
+    expect(res.status).toBe(202);
+    await expect(jreq(res)).resolves.toMatchObject({
+      accepted: true,
+      status: 'accepted',
+      attachments: [{ name: 'dot.png', kind: 'image' }],
+    });
+  });
+
+  it('deletes the files of a retry the queue already holds', async () => {
+    // The first copy belongs to the queued job; the retry's copy has no job to read it.
+    vi.spyOn(manager, 'enqueue').mockReturnValue({ jobId: 'queued', accepted: true, duplicated: true });
+    const res = await send({ message: 'what is this?', attachments: [{ name: 'dot.png', data: PNG.toString('base64') }] });
+
+    expect(res.status).toBe(202);
+    await expect(jreq(res)).resolves.toMatchObject({ accepted: true, jobId: 'queued' });
+    const stored = readdirSync(join(root, 'uploads'), { recursive: true, withFileTypes: true }).filter(e => e.isFile());
+    expect(stored).toHaveLength(0);
+  });
+
+  it('still takes a plain message with no files', async () => {
+    const res = await send({ message: 'check the logs' });
+    expect(res.status).toBe(202);
+    const body = await jreq(res);
+    expect(body).toMatchObject({ accepted: true });
+    expect(body.attachments).toBeUndefined();
+  });
+
+  it('refuses a file it cannot read, and writes nothing', async () => {
+    const before = existsSync(join(root, 'uploads'));
+    const res = await send({ message: 'look', attachments: [{ data: Buffer.from('hello').toString('base64') }] });
+
+    expect(res.status).toBe(400);
+    await expect(jreq(res)).resolves.toEqual({
+      error: 'attachment 1 is not a supported image (png, jpeg, webp, gif) or PDF',
+    });
+    expect(existsSync(join(root, 'uploads'))).toBe(before);
+  });
+
+  it('requires something to say when there is nothing attached', async () => {
+    const res = await send({ message: '   ' });
+    expect(res.status).toBe(400);
+    await expect(jreq(res)).resolves.toEqual({ error: 'message is required' });
+  });
+});
+
+describe('web bots API — editing routines and the inbox', () => {
+  const patch = (id: string, body: unknown) =>
+    app.request(`/api/bots/${id}`, { method: 'PATCH', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+
+  it('refuses a routine without a valid schedule, a name or instructions', async () => {
+    store.create({ id: 'poster', name: 'Poster' });
+    for (const bad of [
+      [{ name: 'daily', cron: 'every day', prompt: 'post' }],
+      [{ name: 'has space', cron: '0 9 * * *', prompt: 'post' }],
+      [{ name: 'daily', cron: '0 9 * * *', prompt: '  ' }],
+      [{ name: 'daily', cron: '0 9 * * *', prompt: 'a' }, { name: 'daily', cron: '0 10 * * *', prompt: 'b' }],
+    ]) {
+      expect((await patch('poster', { schedules: bad })).status).toBe(400);
+    }
+  });
+
+  it('an edited routine takes effect now: added, replaced, and removed from the scheduler', async () => {
+    const tasks = new Map<string, string>();
+    manager.setScheduler({
+      addPersistedTask: (m: { id: string; cron: string }) => { tasks.set(m.id, m.cron); },
+      removeTask: (id: string) => { tasks.delete(id); },
+      persistSchedules: () => {},
+      getManifests: () => [],
+      addDelayedTask: () => {},
+    } as never);
+    store.create({ id: 'poster', name: 'Poster' });
+    expect((await patch('poster', { schedules: [{ name: 'morning', cron: '0 9 * * *', prompt: 'post' }] })).status).toBe(200);
+    expect([...tasks]).toEqual([['bot:poster:morning', '0 9 * * *']]);
+    await patch('poster', { schedules: [{ name: 'evening', cron: '0 18 * * *', prompt: 'post' }] });
+    expect([...tasks]).toEqual([['bot:poster:evening', '0 18 * * *']]);
+  });
+
+  it('the inbox lists results newest first and marks them read', async () => {
+    store.create({ id: 'scout', name: 'Scout' });
+    manager.inbox.add({ botId: 'scout', botName: 'Scout', runId: 'r1', kind: 'result', title: 'Scout: first', summary: 'a', files: [] });
+    manager.inbox.add({ botId: 'scout', botName: 'Scout', runId: 'r2', kind: 'failed', title: 'Scout: second', summary: 'b', files: [] });
+    const listed = await jreq(await app.request('/api/bots/inbox'));
+    expect(listed.unread).toBe(2);
+    expect(listed.entries.map((e: { runId: string }) => e.runId)).toEqual(['r2', 'r1']);
+    await app.request('/api/bots/inbox/read', { method: 'POST', body: JSON.stringify({ ids: [listed.entries[0].id] }), headers: { 'Content-Type': 'application/json' } });
+    expect((await jreq(await app.request('/api/bots/inbox?unread=1'))).entries.map((e: { runId: string }) => e.runId)).toEqual(['r1']);
+    const roster = await jreq(await app.request('/api/bots'));
+    expect(roster.unread).toBe(1);
+    expect(roster.bots.find((b: { id: string }) => b.id === 'scout')).toMatchObject({ unread: 1, tier: expect.any(String) });
+  });
+});
+
+describe('web bots API — persona builder and plan', () => {
+  const post = (path: string, body: unknown) =>
+    app.request(path, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+
+  it('the persona builder needs some text, and says so plainly when no model can build', async () => {
+    expect((await post('/api/bots/persona-builder', { text: 'hi' })).status).toBe(400);
+    // The stub provider answers "ok": not a persona, so nothing is replaced.
+    const res = await post('/api/bots/persona-builder', { text: 'Watch Hacker News for Rust posts and report new ones.', name: 'Rust Watch' });
+    expect(res.status).toBe(503);
+    expect((await jreq(res)).error).toMatch(/unchanged/);
+  });
+
+  it('the plan falls back to one bot when the model gives no usable plan, and creates nothing', async () => {
+    const before = store.list().length;
+    const body = await jreq(await post('/api/bots/plan', { name: 'Newsroom', description: 'News', persona: 'Write the news' }));
+    expect(body.plan).toMatchObject({ shape: 'solo', crew: [] });
+    expect(typeof body.maxCrew).toBe('number');
+    expect(store.list().length).toBe(before);
   });
 });
