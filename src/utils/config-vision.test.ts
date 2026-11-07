@@ -3,7 +3,7 @@ import { getDefaultConfig } from './config.js';
 import { modelSeesImages } from '../core/attachments.js';
 
 /**
- * « Not declared » is a third state, not `false`.
+ * "Not declared" is a third state, not `false`.
  *
  * The three self-hosted endpoints (`openaiCompat`, `lmStudio`, `litellm`) used to default their
  * capability flag to `false` through `getEnvBool(…, false)`. A `false` is a declaration: it turned
