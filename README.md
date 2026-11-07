@@ -317,7 +317,7 @@ These run locally and do not use tokens. `/help` lists everything.
 | Web | `fetch_url` |
 | Skills | `install_skill`, `list_skills`, `use_skill` |
 | Scheduler | `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` |
-| Memory | `save_memory`, `search_memory` |
+| Memory | `save_memory`, `search_memory`; saved conversations: `search_sessions`, `read_session` |
 | Agents | `delegate_task`, `list_agents`, `stop_agent`, `dispatch_bot` |
 | Interaction | `ask_user`, `update_plan`, `send_message`, `budget_status` |
 | Spotify | search, playback, queue, devices, playlists and more (when connected) |

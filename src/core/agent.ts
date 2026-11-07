@@ -658,6 +658,7 @@ export class Agent {
     this.lifecycle = new Lifecycle();
     this.scheduler = scheduler;
     this.capabilities = capabilities;
+    this.capabilities.setSessionRepository(sessions);
     this.installProgressPulse();
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
     this.programmingMode = new ProgrammingMode();
@@ -3111,6 +3112,11 @@ export class Agent {
         }
       }
 
+      // Set this turn's caller before exposing tools or routing a skill. A
+      // previous local/owner turn must not determine remote recall access.
+      this.capabilities.setChannelContext(msg.channelId, msg.channelType);
+      this.capabilities.permissions.setCurrentSenderRole(msg.senderRole);
+
       let systemPrompt = this.buildSystemPrompt();
       if (chatFolder) systemPrompt += `\n- Files you make go in the working directory (this chat's folder in the owner's Mercury artifacts folder), unless the owner names another place. Use relative paths or that folder; never write loose files into the home folder.`;
       if (msg.metadata?.workContinuation === true) {
@@ -3219,10 +3225,6 @@ export class Agent {
         await channel.typing(msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
         this.markProgress();
       }
-
-      this.capabilities.setChannelContext(msg.channelId, msg.channelType);
-      this.capabilities.permissions.setCurrentChannelType(msg.channelType);
-      this.capabilities.permissions.setCurrentSenderRole(msg.senderRole);
 
       const providerContextId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : msg.channelId);
       const channelOverride = this.channelProviderOverrides.get(providerContextId);
