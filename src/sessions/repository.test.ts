@@ -150,6 +150,21 @@ describe('SessionRepository', () => {
     expect(() => repository.updateTitle(session.id, ' '.repeat(2))).toThrow(/required/);
   });
 
+  it('keeps a user rename when automatic generation or startup repair finishes later', async () => {
+    const { root, repository } = fixture();
+    const session = repository.create();
+    repository.appendMessage(session.id, { role: 'user', content: 'Discuss the launch' });
+    // Simulate a title generator/repair suspended while the owner renames.
+    let finish!: () => void;
+    const delayedTitle = new Promise<void>(resolve => { finish = resolve; }).then(() => repository.updateTitle(session.id, 'Automatic title', 'generated'));
+    const renamed = repository.updateTitle(session.id, 'My launch plan', 'user', { touch: false });
+    finish();
+    await delayedTitle;
+    repository.updateTitle(session.id, 'Fallback title', 'fallback');
+    const reloaded = new SessionRepository({ rootDir: join(root, 'sessions'), autoMigrate: false });
+    expect(reloaded.get(session.id)).toMatchObject({ title: 'My launch plan', titleSource: 'user', revision: renamed.revision });
+  });
+
   it('imports legacy web and short-term JSON idempotently without deleting sources', () => {
     const root = mkdtempSync(join(tmpdir(), 'mercury-migration-'));
     const web = join(root, 'web-chat-history');
@@ -178,7 +193,7 @@ describe('SessionRepository', () => {
 describe('SessionRepository.updateTitle without touching', () => {
   it('renames without moving the session in the list', () => {
     const repo = new SessionRepository({ rootDir: mkdtempSync(join(tmpdir(), 'mercury-retitle-')), autoMigrate: false });
-    const older = repo.create({ title: 'Older' });
+    const older = repo.create({ title: 'Older', titleSource: 'generated' });
     repo.appendMessage(older.id, { role: 'user', content: 'a', timestamp: 1_000 });
     const newer = repo.create({ title: 'Newer' });
     repo.appendMessage(newer.id, { role: 'user', content: 'b', timestamp: Date.now() + 60_000 });
