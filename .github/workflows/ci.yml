@@ -277,6 +277,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify failed updates preserve the previous installation
+        run: python3 scripts/test-installers.py --shell sh -v
+
       - name: Build a fake release directory
         run: |
           set -euo pipefail
@@ -397,8 +400,12 @@ jobs:
           test ! -e "$MERCURY_INSTALL/bin/mercury"
 
   installer-windows:
-    name: Installer dry run (install.ps1, Windows PowerShell 5.1, local release dir)
+    name: Installer dry run (install.ps1, ${{ matrix.shell }}, local release dir)
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
     steps:
       - uses: actions/checkout@v4
 
@@ -429,6 +436,17 @@ jobs:
           class H(http.server.SimpleHTTPRequestHandler):
               def guess_type(self, path):
                   return 'application/octet-stream'
+              def do_GET(self):
+                  if self.path == '/cosmicstack-labs/mercury-agent/releases/latest':
+                      self.send_response(302)
+                      self.send_header('Location', '/cosmicstack-labs/mercury-agent/releases/tag/v9.9.9')
+                      self.end_headers()
+                  elif self.path == '/cosmicstack-labs/mercury-agent/releases/tag/v9.9.9':
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'release fixture')
+                  else:
+                      super().do_GET()
           os.chdir(sys.argv[1])
           http.server.ThreadingHTTPServer(('127.0.0.1', 8765), H).serve_forever()
           '@ -replace '^          ', '' | Set-Content -Path $server -Encoding ASCII
@@ -437,7 +455,19 @@ jobs:
           foreach ($i in 1..30) { try { Invoke-WebRequest -Uri http://127.0.0.1:8765/v9.9.9/checksums.txt -UseBasicParsing | Out-Null; $ok = $true; break } catch { Start-Sleep -Milliseconds 500 } }
           if (-not $ok) { throw 'fake release server did not come up' }
 
-      - name: Run install.ps1 from disk under Windows PowerShell 5.1
+      - name: Check latest-version resolution and piped dev installer
+        shell: powershell
+        run: |
+          # shell: does not accept the matrix context; invoke the selected
+          # interpreter explicitly so both PowerShell runtimes are exercised.
+          & '${{ matrix.shell }}' -NoProfile -ExecutionPolicy Bypass -File scripts/test-installer-helpers.ps1 -LatestUri http://127.0.0.1:8765/cosmicstack-labs/mercury-agent/releases/latest
+          if ($LASTEXITCODE -ne 0) { throw 'installer helper checks failed' }
+
+      - name: Verify failed updates preserve the previous installation
+        shell: powershell
+        run: python scripts/test-installers.py --shell ${{ matrix.shell }} -v
+
+      - name: Run install.ps1 from disk
         shell: powershell
         env:
           MERCURY_VERSION: 9.9.9
@@ -450,7 +480,7 @@ jobs:
           "PSVersion: $($PSVersionTable.PSVersion)"
           $log = Join-Path $env:RUNNER_TEMP 'install.log'
           # From disk (not irm | iex): also proves the file parses without a BOM under the ANSI code page.
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 2>&1 | Tee-Object -FilePath $log
+          & '${{ matrix.shell }}' -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
           if (-not (Select-String -Path $log -Pattern 'Checksums verified' -Quiet)) { throw 'no "Checksums verified" in output' }
           if (-not (Select-String -Path $log -Pattern 'Smoke test passed' -Quiet)) { throw 'no "Smoke test passed" in output' }

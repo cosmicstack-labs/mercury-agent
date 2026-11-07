@@ -4,7 +4,7 @@ title: Linux
 sidebar_label: Linux
 ---
 
-Mercury runs on any modern Linux distro with glibc ≥ 2.31 (Ubuntu 20.04+, Debian 11+, Fedora 34+, Arch, etc.) on **x86_64** or **arm64**.
+Mercury publishes standalone Linux binaries for **x86_64** and **arm64** on glibc-based systems. Alpine/musl, Android/bionic, and 32-bit systems need another installation route; see the [support limits](../installation.mdx#standalone-support-limits).
 
 ## Quickest install (recommended)
 
@@ -22,7 +22,7 @@ mercury --version
 ```
 
 :::note Older x86-64 CPUs
-The default Linux x64 build uses AVX2. On a CPU without it (Intel before 2013, some VMs) the installer picks the **baseline** build automatically — from `/proc/cpuinfo`, or by switching after an `Illegal instruction` crash. To force it: `MERCURY_ASSET=mercury-linux-x64-baseline curl -fsSL https://mercuryagent.sh/install.sh | sh`.
+The default Linux x64 build uses AVX2. On a CPU without it (Intel before 2013, some VMs) the installer picks the **baseline** build automatically — from `/proc/cpuinfo`, or by switching after an `Illegal instruction` crash. To force it: `curl -fsSL https://mercuryagent.sh/install.sh | MERCURY_ASSET=mercury-linux-x64-baseline sh`.
 :::
 
 ## Via npm (if you already have Node)
@@ -46,7 +46,7 @@ Check yours:
 uname -m   # x86_64 or aarch64
 ```
 
-For armv7 (32-bit Pi, older boards), use the [npm route](#via-npm-if-you-already-have-node) — there's no prebuilt 32-bit ARM binary yet.
+There is no prebuilt 32-bit ARM binary. The [npm route](#via-npm-if-you-already-have-node) requires a compatible Node.js 22+ build and dependencies for the device; older boards are not covered by the standard binary releases.
 
 ## Pinning a version
 

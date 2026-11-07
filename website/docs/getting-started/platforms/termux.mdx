@@ -4,7 +4,7 @@ title: Termux & Lightweight Devices
 sidebar_label: Termux & Mobile
 ---
 
-Mercury runs on **Android via [Termux](https://termux.dev/)**, giving you a real coding agent in your pocket. It also works in other minimal environments like iSH (iOS), Alpine containers, and Raspberry Pi.
+Mercury runs on **Android via [Termux](https://termux.dev/)**. Other lightweight environments require a compatible Node.js 22+ build and Mercury dependencies; availability varies by operating system and CPU.
 
 ## Termux (Android)
 
@@ -105,7 +105,7 @@ npm i -g @cosmicstack/mercury-agent@latest
 
 ## iSH (iOS)
 
-[iSH](https://ish.app/) runs an Alpine Linux user-space on iOS. Mercury works there via npm:
+[iSH](https://ish.app/) runs an Alpine Linux user-space on iOS. Its emulated x86 environment is not covered by Mercury's standalone releases. Only try the npm route if Node.js 22+ and the dependencies are available:
 
 ```sh
 apk add nodejs npm
@@ -129,17 +129,11 @@ This applies to Docker images based on `alpine:*` as well.
 ## Raspberry Pi
 
 - **64-bit Pi OS (Pi 3/4/5)**: the standard [Linux installer](./linux.mdx) works — pulls `mercury-linux-arm64`.
-- **32-bit Pi OS or armv6 (Pi Zero, Pi 1)**: no prebuilt binary; install via npm:
-
-  ```bash
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-  sudo apt install -y nodejs
-  npm i -g @cosmicstack/mercury-agent
-  ```
+- **32-bit Pi OS or armv6 (Pi Zero, Pi 1)**: no prebuilt binary. The npm route requires a compatible Node.js 22+ build for the device and may require compiling native dependencies. Do not install Node.js 20 as a fallback; it does not meet Mercury's minimum version.
 
 ## Other lightweight environments
 
-If your platform isn't listed and the binary doesn't run (`Exec format error`, missing libc), the npm route always works as long as Node.js 20+ is available. If Node isn't packaged for your OS, see [Build From Source](../build-from-source).
+If a binary reports `Exec format error` or a missing libc, check the [standalone support limits](../installation.mdx#standalone-support-limits). The npm route requires Node.js 22+ and compatible dependencies; it is not guaranteed on unlisted systems. [Building from source](../build-from-source) also requires a compatible runtime.
 
 ## Next steps
 
