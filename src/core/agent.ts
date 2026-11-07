@@ -97,7 +97,7 @@ import { compactConversation, memoryGovernorThresholds, memoryGovernorVerdict } 
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
-import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, toModelMessage, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult, detectRepetitionLoop } from './context-window.js';
+import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, buildModelHistory, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult, detectRepetitionLoop } from './context-window.js';
 import { buildSystemPrompt as assembleSystemPrompt, budgetContext } from './system-prompt.js';
 import { buildStatusVerbPrompt, parseStatusVerbs, shouldRefreshStatusVerbs } from './status-verbs.js';
 import { verbPoolFor } from '../ui/status-word.js';
@@ -3155,15 +3155,16 @@ export class Agent {
         this.saverMode.isActive() ? HISTORY_TOKEN_BUDGET_SAVER : HISTORY_TOKEN_BUDGET,
       );
 
-      const messages: any[] = [];
-      // Per-turn context (retrieved memory, shared-pool hits, loop warnings)
+      const history = buildModelHistory(recentMemory);
+      const messages: any[] = [...history.messages];
+      // Per-turn context (tool history, retrieved memory, loop warnings)
       // goes into a second, volatile system block instead of being staged as
       // fake user/assistant dialogue: the fake "Noted. I'll keep this in
       // mind." turns primed terse acknowledgements and polluted history.
       const contextBlocks: string[] = [];
       contextBlocks.push(budgetContext(this.tokenBudget.getStatusText(), this.tokenBudget.getUsagePercentage()));
 
-      const loopWarning = detectRepetitionLoop(recentMemory);
+      const loopWarning = detectRepetitionLoop(history.messages);
       if (loopWarning) contextBlocks.push(loopWarning);
 
       // Chat channels can carry an access level and guidance (plugin API 1.1,
@@ -3180,7 +3181,7 @@ export class Agent {
       if (guidance) contextBlocks.unshift(guidance);
       if (!generalAccess) contextBlocks.push(...(await this.retrieveMemoryContext(msg)));
 
-      for (const m of recentMemory) messages.push(toModelMessage(m));
+      if (history.toolContext) contextBlocks.push(history.toolContext);
 
       if (!canonicalSessionId) messages.push({ role: 'user', content: msg.content });
 
