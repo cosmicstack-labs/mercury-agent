@@ -16,6 +16,10 @@
  *       mercury-linux-arm64
  *       mercury-win-x64.exe
  *       web.tar.gz
+ *       mercury-adapted-skills.tgz
+ *       live-time-<plugin-version>.tgz
+ *       hardlight-<plugin-version>.tgz
+ *       mercury-community-plugins.json
  *       checksums.txt
  *     v1.2.0/ ...
  *     smoke/v1.2.0/ ...         ← non-publishable host-only builds
@@ -51,6 +55,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { buildContent } = require('./release-content.cjs');
 
 const root = path.join(__dirname, '..');
 const releaseRoot = path.join(root, 'release');
@@ -299,7 +304,10 @@ for (const target of targets) {
 }
 
 const webTarPath = createWebArchive(versionDir, { required: buildDev || buildAll });
-writeChecksums(versionDir, [...results.map((result) => result.outPath), webTarPath]);
+// Portable content ships in stable/dev releases and host smoke builds alike.
+const contentPaths = buildContent(root, versionDir, { dev: buildDev });
+for (const file of contentPaths) console.log(`  ✓ ${path.basename(file)}`);
+writeChecksums(versionDir, [...results.map((result) => result.outPath), webTarPath, ...contentPaths]);
 
 if (buildDev || buildAll) {
   execFileSync(process.execPath, [path.join(__dirname, 'verify-standalone-release.cjs'), versionDir], {
