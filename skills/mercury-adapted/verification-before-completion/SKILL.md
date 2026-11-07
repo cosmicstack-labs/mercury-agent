@@ -92,6 +92,21 @@ For historical RED, use an explicitly approved isolated baseline or mutation, no
 owner-tree rollback. Name which tests actually failed behaviorally; tests that
 passed on the broken baseline are additional coverage, not proven RED cases.
 
+## Acceptance-test integrity
+
+Before an authorized repair, identify the acceptance files, runner configuration,
+selected cases and artifact inputs. Record their hashes in scoped test evidence;
+this is not a personal-memory store. Preserve the acceptance contract: a passing
+run after weakening assertions, removing cases or changing expected outputs is
+not proof of the original requirement. Legitimate specification changes require
+explicit approval and a separately identified baseline.
+
+Check hashes and the scoped diff again after concurrent workers finish. If inputs
+changed during a run, invalidate that receipt and rerun against stable bytes.
+Bind release claims to the actual packaged artifact and its digest, not merely a
+checkout that resembles it. Record skipped tests, filters and unavailable target
+runtimes. Hashes establish byte identity, not correctness or trusted provenance.
+
 ## Negative claims and delegated results
 
 “Nothing was sent” and “no files changed” need evidence too. Identify relevant

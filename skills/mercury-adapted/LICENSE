@@ -20,6 +20,21 @@ These curated adaptations acknowledge the installed MIT-labelled source skills:
 - Hermes Agent: simplify-code (after Claude Code /simplify) and
   skill-fleet-quality-audit, retargeted to Mercury's native skill loader.
 
+- obra/superpowers and Hermes Agent: receiving-code-review,
+  using-git-worktrees and finishing-a-development-branch.
+- Hermes Curator and Hermes Agent: transactional-workflow-recovery and
+  llm-judge-output-contracts.
+- Hermes Agent: financial-estimate-refutation.
+- Hermes Agent, itself adapted from gsd-build/get-shit-done (MIT, Lex
+  Christopherson): spike.
+- Hermes Agent, itself adapted from obra/superpowers: subagent-delegation.
+- Hermes Agent: blocked-page-recovery.
+
+The shell-wrapper-reliability, deterministic-release-zip-builder,
+mcp-server-patterns, image-pdf-production, file-organization and
+agent-workstation-backup-recovery workflows are independently authored
+Cosmic Stack instructions; no unresolved-license source payloads are bundled.
+
 The adaptations are rewritten for Mercury and are not upstream-endorsed or
 claims of complete compatibility. Original author attribution is retained in
 each skill's metadata. The Hardlight upstream copyright notice is retained above.

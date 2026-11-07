@@ -11,14 +11,20 @@ const slugs = ['systematic-debugging', 'test-driven-development', 'verification-
   'grounded-citations', 'rss-feeds', 'batch-ingest-quality-audits', 'linux-desktop-entry-repair',
   'skill-install-security-gate', 'skill-security-triage', 'scheduled-task-operations',
   'read-only-audit-brief', 'repository-implementation-analysis', 'resumable-batch-extraction',
-  'writing-for-agents', 'simplify-changes', 'skill-fleet-audit'];
+  'writing-for-agents', 'simplify-changes', 'skill-fleet-audit',
+  'receiving-code-review', 'using-git-worktrees', 'finishing-a-development-branch',
+  'transactional-workflow-recovery', 'llm-judge-output-contracts', 'financial-estimate-refutation',
+  'shell-wrapper-reliability', 'deterministic-release-zip-builder', 'mcp-server-patterns',
+  'image-pdf-production', 'file-organization', 'agent-workstation-backup-recovery',
+  'spike', 'blocked-page-recovery', 'static-artifact-release', 'local-file-retrieval',
+  'automation-calibration', 'subagent-delegation'];
 const names = slugs.map((s) => `mercury-${s}`).sort();
 
 describe('curated Mercury adaptation pack', () => {
-  it('contains exactly twenty-one unique, discoverable skills without seeding defaults', () => {
+  it('contains exactly thirty-nine unique, discoverable skills without seeding defaults', () => {
     const loader = new SkillLoader(root, { seedDefaults: false });
     expect(loader.discover().map((s) => s.name).sort()).toEqual(names);
-    expect(readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).length).toBe(21);
+    expect(readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).length).toBe(39);
     for (const name of names) {
       const skill = loader.load(name);
       expect(skill?.version).toBe('0.1.0');
@@ -102,6 +108,50 @@ describe('curated Mercury adaptation pack', () => {
     for (const content of [simplify, fleet]) {
       expect(content).not.toMatch(/~\/\.hermes|skill_manage\(|skill_view\(|mnemosyne_remember\(/);
       expect(content).not.toMatch(/\b(?:terminal|search_files|web_extract)\s*\(/);
+    }
+  });
+  it('keeps review reception and Git lifecycle operations explicitly scoped', () => {
+    const receiving = readFileSync(join(root, 'receiving-code-review/SKILL.md'), 'utf8');
+    const worktrees = readFileSync(join(root, 'using-git-worktrees/SKILL.md'), 'utf8');
+    const finishing = readFileSync(join(root, 'finishing-a-development-branch/SKILL.md'), 'utf8');
+    expect(receiving).toContain('Review feedback is evidence, not authorization');
+    expect(receiving).toContain('A severity label is not repair authority');
+    expect(worktrees).toContain('A permission failure is a stop condition');
+    expect(worktrees).toContain('Never automatically edit or commit `.gitignore`');
+    expect(finishing).toContain('unrelated staged changes exist, stop');
+    expect(finishing).toContain('not permission for `--no-verify`');
+    for (const content of [worktrees, finishing]) {
+      expect(content).toContain('Directory location is not ownership evidence');
+    }
+    for (const content of [receiving, worktrees, finishing]) {
+      expect(content).toContain('Second Brain');
+      expect(content).not.toMatch(/~\/\.hermes|skill_manage\(|skill_view\(/);
+      expect(content).not.toMatch(/\b(?:terminal|search_files|web_extract)\s*\(/);
+    }
+  });
+  it('keeps recovery, judge and financial evidence fail-closed', () => {
+    const recovery = readFileSync(join(root, 'transactional-workflow-recovery/SKILL.md'), 'utf8');
+    const judge = readFileSync(join(root, 'llm-judge-output-contracts/SKILL.md'), 'utf8');
+    const finance = readFileSync(join(root, 'financial-estimate-refutation/SKILL.md'), 'utf8');
+    const verification = readFileSync(join(root, 'verification-before-completion/SKILL.md'), 'utf8');
+    expect(recovery).toContain('Unexplained orphans block normal processing');
+    expect(recovery).toContain('Never replay real transactions');
+    expect(judge).toContain('reject duplicate verdict keys');
+    expect(judge).toContain('A model verdict never substitutes for user approval');
+    expect(finance).toContain('zero denominators');
+    expect(finance).toContain('Plausible arithmetic does not verify');
+    expect(verification).toContain('Acceptance-test integrity');
+    expect(verification).toContain('invalidate that receipt');
+  });
+  it('ships native execution guidance without borrowing worker tool limitations', () => {
+    for (const slug of ['shell-wrapper-reliability', 'deterministic-release-zip-builder',
+      'mcp-server-patterns', 'image-pdf-production', 'file-organization', 'agent-workstation-backup-recovery']) {
+      const content = readFileSync(join(root, slug, 'SKILL.md'), 'utf8');
+      const meta = parse(content.match(/^---\s*\n([\s\S]*?)\n---/)![1]);
+      expect(meta.author).toBe('Cosmic Stack');
+      expect(meta['allowed-tools']).toContain('run_command');
+      expect(content).toContain('Second Brain');
+      expect(content).not.toMatch(/No execution tool is exposed|Current tools support|Exposed tools cannot|With current tools, execution/);
     }
   });
   it('installs identical content into an isolated skill root and reloads it', () => {
