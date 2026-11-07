@@ -2,12 +2,29 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://mercuryagent.sh/blog</id>
     <title>Mercury Blog</title>
-    <updated>2026-11-03T00:00:00.000Z</updated>
+    <updated>2026-11-05T00:00:00.000Z</updated>
     <generator>https://github.com/jpmonette/feed</generator>
     <link rel="alternate" href="https://mercuryagent.sh/blog"/>
     <subtitle>News, engineering notes and field reports from the team building Mercury.</subtitle>
     <icon>https://mercuryagent.sh/img/logo-light.png</icon>
     <rights>© 2026 Cosmic Stack</rights>
+    <entry>
+        <title type="html"><![CDATA[9 Safest, Most Secure, and Permission-Aware AI Agents for Real-World Tasks]]></title>
+        <id>https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work</id>
+        <link href="https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work"/>
+        <updated>2026-11-05T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[Grok, ChatGPT Work, Mercury, OpenClaw, Manus, Gemini agent for work, Devin, Claude Cowork and Comet compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.]]></summary>
+        <author>
+            <name>Tashir Khan</name>
+            <uri>https://github.com/tashiriskhan</uri>
+        </author>
+        <category label="Engineering" term="Engineering"/>
+        <category label="Product" term="Product"/>
+        <category label="AI Agents" term="AI Agents"/>
+        <category label="AI Agent Comparison" term="AI Agent Comparison"/>
+        <category label="Self-Hosted AI" term="Self-Hosted AI"/>
+        <category label="AI Agent Memory" term="AI Agent Memory"/>
+    </entry>
     <entry>
         <title type="html"><![CDATA[Mercury 1.5: Mercury Desktop]]></title>
         <id>https://mercuryagent.sh/blog/mercury-1-5</id>

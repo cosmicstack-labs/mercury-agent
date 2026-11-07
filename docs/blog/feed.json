@@ -5,6 +5,26 @@
     "description": "News, engineering notes and field reports from the team building Mercury.",
     "items": [
         {
+            "id": "https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work",
+            "title": "9 Safest, Most Secure, and Permission-Aware AI Agents for Real-World Tasks",
+            "summary": "Grok, ChatGPT Work, Mercury, OpenClaw, Manus, Gemini agent for work, Devin, Claude Cowork and Comet compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.",
+            "date_modified": "2026-11-05T00:00:00.000Z",
+            "author": {
+                "name": "Tashir Khan",
+                "url": "https://github.com/tashiriskhan"
+            },
+            "tags": [
+                "Engineering",
+                "Product",
+                "AI Agents",
+                "AI Agent Comparison",
+                "Self-Hosted AI",
+                "AI Agent Memory"
+            ]
+        },
+        {
             "id": "https://mercuryagent.sh/blog/mercury-1-5",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/mercury-1-5",
