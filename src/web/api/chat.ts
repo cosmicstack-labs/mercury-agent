@@ -14,7 +14,8 @@ import type { WebChannel } from '../../channels/web.js';
 import type { ProgrammingMode, ProgrammingModeState } from '../../core/programming-mode.js';
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { join, extname, basename, relative, resolve } from 'node:path';
-import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
+import { getMercuryHome, loadConfig, getActiveProviders, type ProviderConfig } from '../../utils/config.js';
+import { basicAuthHeaders } from '../../providers/basic-auth.js';
 import type { SessionRepository } from '../../sessions/index.js';
 import { loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
 import {
@@ -423,12 +424,12 @@ function recentlyFailed(key: string): boolean {
 }
 
 /** Every model the local Ollama server has pulled (empty if unreachable). */
-async function listOllamaModels(baseUrl: string): Promise<string[]> {
-  const root = baseUrl.replace(/\/+$/, '').replace(/\/(v1|api)$/, '');
+async function listOllamaModels(server: Pick<ProviderConfig, 'baseUrl' | 'username' | 'password'>): Promise<string[]> {
+  const root = server.baseUrl.replace(/\/+$/, '').replace(/\/(v1|api)$/, '');
   const lookup = `ollama:${root}`;
   if (recentlyFailed(lookup)) return [];
   try {
-    const res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${root}/api/tags`, { headers: basicAuthHeaders(server), signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = (await res.json()) as { models?: { name?: string }[] };
     failedLookups.delete(lookup);
@@ -464,8 +465,8 @@ async function listChatGPTModels(): Promise<string[]> {
 }
 
 /** Providers that serve many models list each one; others list their configured model. */
-async function listProviderModels(p: { name: string; baseUrl: string }): Promise<string[]> {
-  if (p.name === 'ollamaLocal') return listOllamaModels(p.baseUrl);
+async function listProviderModels(p: ProviderConfig): Promise<string[]> {
+  if (p.name === 'ollamaLocal') return listOllamaModels(p);
   if (p.name === 'chatgptWeb') return [...(await listChatGPTModels())];
   return [];
 }

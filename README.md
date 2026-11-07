@@ -252,6 +252,18 @@ Mercury tries your default provider first and falls back to the others if it fai
 
 LiteLLM and GitHub Copilot endpoints are also available through `mercury doctor`.
 
+A server behind a reverse proxy with a username and password (for example Ollama behind nginx) works with Ollama Local, OpenAI-compatible, LM Studio, LiteLLM and Atomic Chat. Set `username` and `password` on the provider in `mercury.yaml`; Mercury then sends `Authorization: Basic ...` instead of the API key. Use `https://` for any server that is not on your own machine. Behind Cloudflare, set SSL/TLS mode to Full (strict): in Flexible mode the hop from Cloudflare to your server is plain http.
+
+```yaml
+providers:
+  ollamaLocal:
+    baseUrl: https://ollama.example.com/v1
+    model: gemma4:12b
+    username: me
+    password: my-password
+    enabled: true
+```
+
 </details>
 
 ## Reference
