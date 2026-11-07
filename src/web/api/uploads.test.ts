@@ -77,9 +77,44 @@ describe('storeInlineAttachments', () => {
     expect(result.attachments[0].name).toMatch(/\.png$/);
   });
 
-  it('rejects bytes it does not recognise', () => {
-    const result = storeInlineAttachments([{ name: 'notes.txt', data: Buffer.from('hello').toString('base64') }]);
-    expect(result).toEqual({ ok: false, error: 'attachment 1 is not a supported image (png, jpeg, webp, gif) or PDF' });
+  it('rejects formats outside the allowlist even if they contain text', () => {
+    const result = storeInlineAttachments([{ name: 'index.html', mime: 'text/plain', data: Buffer.from('hello').toString('base64') }]);
+    expect(result).toEqual({ ok: false, error: 'attachment 1 is not a supported image (png, jpeg, webp, gif), PDF, TXT or Markdown file' });
+  });
+
+  it.each(['notes.txt', 'notes.MD', 'notes.markdown'])('includes %s for a text-only model with its filename', (name) => {
+    const text = '# Notes\nHello, 世界 👋';
+    const result = storeInlineAttachments([{ name, data: Buffer.from(text).toString('base64') }]);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.attachments[0].kind).toBe('document');
+    expect(readFileSync(result.attachments[0].path, 'utf8')).toBe(text);
+    const message = { id: '1', channelId: 'web', channelType: 'web' as const, senderId: 'owner', content: 'Summarize', timestamp: 0, metadata: { attachments: result.attachments } };
+    const out = withAttachments([{ role: 'user', content: 'Summarize' }], message, 'deepseek', 'deepseek-chat');
+    const parts = out[0].content as unknown as Array<{ type: string; text: string }>;
+    expect(parts[1].type).toBe('text');
+    expect(parts[1].text).toContain('untrusted content');
+    expect(JSON.parse(parts[1].text.split('\n').slice(1).join('\n'))).toEqual({ name, text });
+  });
+
+  it('accepts empty text and UTF-8 BOMs, including an unnamed text upload', () => {
+    for (const text of ['', '\ufeffhello']) {
+      const result = storeInlineAttachments([{ mime: 'text/plain; charset=utf-8', data: Buffer.from(text).toString('base64') }]);
+      if (!result.ok) throw new Error(result.error);
+      expect(result.attachments[0].name).toMatch(/\.txt$/);
+    }
+  });
+
+  it('rejects malformed UTF-8, binary controls, malformed base64 and non-string metadata', () => {
+    for (const bytes of [Buffer.from([0xc3, 0x28]), Buffer.from('binary\0data'), Buffer.from('utf16', 'utf16le')]) {
+      expect(storeInlineAttachments([{ name: 'notes.txt', data: bytes.toString('base64') }])).toMatchObject({ ok: false, error: expect.stringContaining('UTF-8') });
+    }
+    expect(storeInlineAttachments([{ name: 'notes.txt', data: 'aGVsbG8=!!' }])).toMatchObject({ ok: false, error: expect.stringContaining('base64') });
+    expect(storeInlineAttachments([{ name: 123, data: 'aGVsbG8=' }])).toMatchObject({ ok: false, error: expect.stringContaining('strings') });
+  });
+
+  it('enforces the text byte cap', () => {
+    const result = storeInlineAttachments([{ name: 'large.txt', data: Buffer.alloc(256 * 1024 + 1, 'a').toString('base64') }]);
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('256 KiB') });
   });
 
   it('rejects an image over the model limit', () => {
