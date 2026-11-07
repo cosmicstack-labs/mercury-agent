@@ -267,7 +267,7 @@ export class EvalHarness {
     capabilities.registerAll();
     capabilities.setCwd(workDir);
     capabilities.permissions.addTempScope(workDir, true, true);
-    capabilities.permissions.setAutoApproveAll(true);
+    capabilities.permissions.setAutoApproveAll(fixture.autoApprove ?? true);
     capabilities.setChatCommandContext(chatCommandContext(config, tokenBudget, capabilities));
 
     const type = fixture.channel?.type ?? 'telegram';
@@ -322,7 +322,7 @@ export class EvalHarness {
     const eventStart = this.channel.events.length;
     const sessionStart = this.sessionMessages().length;
     const msg: ChannelMessage = {
-      id: `eval-${this.fixture.name}-${++this.seq}`,
+      id: turn.messageId ?? `eval-${this.fixture.name}-${++this.seq}`,
       channelId: this.channelId,
       channelType: this.channelType,
       senderId: 'eval-user',
