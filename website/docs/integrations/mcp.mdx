@@ -9,7 +9,7 @@ You stay in control. A server's tools are hidden until you allow them, every cal
 
 :::info[What is supported]
 
-MCP **tools** over **stdio** (a local command Mercury starts) and **Streamable HTTP** (a remote URL), with static headers for authentication. MCP resources, prompts, sampling, OAuth sign-in and legacy SSE servers are not supported yet. Mercury Bots do not get MCP tools.
+MCP **tools** and opt-in **text resources** over **stdio** (a local command Mercury starts) and **Streamable HTTP** (a remote URL), with static headers for authentication. Resource templates and subscriptions, prompts, sampling, OAuth sign-in and legacy SSE servers are not supported yet. Mercury Bots do not get MCP tools or resources.
 
 :::
 
@@ -138,8 +138,43 @@ mcp:
 | `tools.allow` | both | Tool names the agent may see; `"*"` means all. **Default: none.** |
 | `tools.deny` | both | Tool names that are always hidden; wins over `allow` |
 | `tools.autoApprove` | both | Exact tool names that run without asking (no wildcards) |
+| `resources.allow` | both | Resource URIs the agent may list and read; `"*"` allows all. **Default: none.** Independent of `tools.allow`. |
+| `resources.deny` | both | Resource URIs that stay hidden and cannot be read; wins over `allow` |
+| `resources.autoApprove` | both | Exact allowed URIs that may be read without asking, including unattended. No wildcards. |
 
 An invalid server entry is skipped with a warning in the log and in `mercury doctor --mcp`; the rest still load. A missing `${env:NAME}` variable marks that server as failed with `env NAME is not set`.
+
+## Reading resource context
+
+Some servers expose documents, database schemas or reference material as MCP resources. Enable the URIs you want in that server's configuration, then restart Mercury:
+
+```yaml
+mcp:
+  servers:
+    docs:
+      transport: http
+      url: https://mcp.example.com/mcp
+      headers:
+        Authorization: "Bearer ${env:DOCS_MCP_TOKEN}"
+      resources:
+        allow: ["docs://handbook", "docs://database-schema"]
+        autoApprove: ["docs://database-schema"]
+```
+
+`mercury mcp list` displays these filters. Existing tool allowlists never enable resources. A server that exposes only resources is supported too.
+
+Ask Mercury to consult the handbook or schema. Two tools become available when a connected server supports resources and has an explicit resource allowlist:
+
+- `list_mcp_resources` lists enabled resource servers without a network request. With `server`, it asks before listing one page of allowed resource metadata. Pass the returned `cursor` with the same server to continue. Listing does not read contents.
+- `read_mcp_resource` reads an exact `server` and `uri` through that server, including a resource link returned by one of its tools. The URI is never opened as a local file or fetched as an ordinary web URL. Results identify their server and source URI; text is untrusted data and cannot grant permissions.
+
+Resource approvals are separate from tool approvals. **Allow All still asks**, including in the web dashboard and attached terminal. **Always** on a read remembers only that server and exact URI in the current source chat; it never approves a different document or the catalog. Listing has its own approval. Unattended runs cannot list; they can only read exact allowed URIs named in `resources.autoApprove`. Bots, non-admin channel members and plan mode do not receive resource tools.
+
+Reads return at most 32,768 characters. Binary contents are omitted, registered secrets are redacted, and oversized text is marked as truncated. Catalog responses are capped at 8,192 characters and 50 entries; larger server pages continue through bounded metadata buffers. If a server exceeds those buffers, Mercury reports omitted metadata rather than silently claiming the catalog is complete. A known allowed URI can still be read directly. Cursors expire after five minutes or a reconnect.
+
+Read responses include only content whose returned source URI exactly matches the requested URI. Extra documents are omitted even if their URIs are otherwise allowed; they need their own read request and approval. Source URIs are server assertions: Mercury cannot verify whether an untrusted server mislabeled the bytes it returned. Retained resource helpers recheck the current caller's role and exact tool allowlist, including when listing server IDs locally.
+
+Catalog pagination is explicit: the SDK is not allowed to fetch every remote page automatically. Read results bypass its content cache. Requests use the server's existing timeout and cancellation signal. Disconnects reconnect the server without replaying the interrupted request. These caps limit retained catalog data and model context; the MCP SDK still parses the server's incoming response before Mercury formats it.
 
 ## How Mercury runs servers
 

@@ -1,12 +1,15 @@
 import { z } from 'zod';
 import { redactSecrets, registerSecretValue } from '../../utils/redact.js';
 import type { McpServerConfig } from './types.js';
+import { isResourceUri } from './resource-policy.js';
 
 export const SERVER_ID_PATTERN = /^[a-z][a-z0-9-]{0,23}$/;
 
 const ENV_REF = /\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 const toolNames = z.array(z.string().min(1)).optional();
+const resourceUri = z.string().refine(isResourceUri, 'expected an absolute resource URI (at most 2048 characters, no whitespace)');
+const resourcePatterns = z.array(z.union([z.literal('*'), resourceUri])).max(256).optional();
 
 const shared = {
   enabled: z.boolean().optional(),
@@ -15,6 +18,11 @@ const shared = {
     .object({ allow: toolNames, deny: toolNames, autoApprove: toolNames })
     .strict()
     .optional(),
+  resources: z.object({
+    allow: resourcePatterns,
+    deny: resourcePatterns,
+    autoApprove: z.array(resourceUri).max(256).optional(),
+  }).strict().optional(),
 };
 
 const stdioServer = z
@@ -89,14 +97,14 @@ function ownSecretWarnings(id: string, server: McpServerConfig): string[] {
   return [...named].map((name) => `mcp.servers.${id} is given ${name}, one of Mercury's own keys; the server "${id}" will see it. Use a separate key unless you mean this.`);
 }
 
-function hiddenAutoApproveWarnings(id: string, server: McpServerConfig): string[] {
-  const allow = server.tools?.allow ?? [];
-  const deny = server.tools?.deny ?? [];
-  const prefix = `mcp.servers.${id}.tools.autoApprove`;
-  return (server.tools?.autoApprove ?? []).flatMap((name) => {
-    if (deny.includes(name)) return [`${prefix}: "${name}" is in tools.deny, so the agent can't see it; remove it from tools.deny`];
+function hiddenAutoApproveWarnings(id: string, server: McpServerConfig, kind: 'tools' | 'resources' = 'tools'): string[] {
+  const allow = server[kind]?.allow ?? [];
+  const deny = server[kind]?.deny ?? [];
+  const prefix = `mcp.servers.${id}.${kind}.autoApprove`;
+  return (server[kind]?.autoApprove ?? []).flatMap((name) => {
+    if (deny.includes(name) || (kind === 'resources' && deny.includes('*'))) return [`${prefix}: "${name}" is in ${kind}.deny, so the agent can't see it; remove it from ${kind}.deny`];
     if (allow.includes('*') || allow.includes(name)) return [];
-    return [`${prefix}: "${name}" is not allowed, so the agent can't see it; add it to tools.allow`];
+    return [`${prefix}: "${name}" is not allowed, so the agent can't see it; add it to ${kind}.allow`];
   });
 }
 
@@ -129,6 +137,7 @@ export function validateMcpConfig(raw: unknown): McpConfigValidation {
       ...literalSecretWarnings(id, 'env', server.env),
       ...literalSecretWarnings(id, 'headers', server.headers),
       ...hiddenAutoApproveWarnings(id, server),
+      ...hiddenAutoApproveWarnings(id, server, 'resources'),
       ...ownSecretWarnings(id, server),
     );
   }

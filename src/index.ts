@@ -2721,6 +2721,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   // terminal attached to a live daemon must not start every stdio server twice.
   const mcpManager = daemonOwnsRuntime ? undefined : new McpManager(mcpConfig.servers, {
     gate: (request) => capabilities.permissions.checkMcpTool(request),
+    resourceGate: (request) => capabilities.permissions.checkMcpResource(request),
   });
   if (mcpManager) {
     capabilities.attachMcp(mcpManager);
@@ -3772,7 +3773,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     setWebSpotify(spotifyClient);
   }
 
-  capabilities.permissions.onAsk(async (prompt: string) => {
+  capabilities.permissions.onAsk(async (prompt: string, options) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
     const { channelId } = capabilities.getChannelContext();
     if (channelType === 'telegram' && tgChannel) {
@@ -3782,7 +3783,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       return (channels.get('signal') as SignalChannel).askPermission(prompt, channelId);
     }
     if (channelType === 'web' && webChannel) {
-      return webChannel.askPermission(prompt, channelId);
+      return webChannel.askPermission(prompt, channelId, options);
     }
     // Any other channel that can ask (plugin channels such as WhatsApp).
     const asking = channels.get(channelType as Parameters<typeof channels.get>[0]) as { askPermission?: (p: string, id?: string) => Promise<string> } | undefined;

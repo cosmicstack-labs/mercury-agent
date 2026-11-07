@@ -275,6 +275,7 @@
   - **Lifecycle.** The process that runs the Agent owns the connections: the daemon (ADR-024), or the terminal where no daemon runs. Servers connect in the background at boot with a timeout, so one broken server never blocks startup or other tools.
   - **Results.** Converted to strings, so the existing compaction can shrink them. Results are capped, and image and audio blocks become placeholders for now.
   - **Configuration.** Adding or enabling a server is an owner action through `mercury.yaml` or `mercury mcp …`. The agent has no tool for it.
+  - **Text resources.** Opt-in `resources.allow`/`deny` URI filters are independent of tool permissions. Two shared schemas list resource metadata and read bounded text through the existing connection. Each list asks; each read asks unless the exact URI is in `resources.autoApprove` or the owner remembered that URI in that source chat. Resource owner prompts bypass channel Allow All. Metadata continuations are bounded, expire and are invalidated on reconnect; resource contents are never cached by Mercury. No URI is opened locally or fetched separately. Resource-only servers work without advertising tools. Templates, subscriptions and binary reads remain out of scope.
 - **Spike results** (Windows x64, Node 22.12, Bun 1.3.8):
   - The v2 client connects, lists tools, calls them and receives `tools/list_changed` over stdio. Over Streamable HTTP it uses a caller-supplied `fetch` with static headers. These are covered by `src/capabilities/mcp/sdk-smoke.test.ts` against a dependency-free fixture server.
   - The same client works under Bun and inside a `bun build --compile` binary. In the binary it starts a server both directly and through a `.cmd` shim (how `npx` runs on Windows), and `npx.cmd` resolves under `getDefaultEnvironment()`.
@@ -289,7 +290,7 @@
 - **Consequence**: Owners can use the MCP ecosystem without a hand-written capability per integration. Every third-party call is visible in Ask Me mode unless the owner named the tool in `autoApprove`. The cost is a prompt per call for servers the owner hasn't pre-approved, even under Allow All. That is deliberate. Maintenance owned by Mercury:
   - Any new place that filters tools by name (plan mode, members, bots, sub-agents) must decide how it treats the `mcp__` prefix.
   - Text from an MCP server (descriptions, results, errors) is untrusted input and must never be used to make a permission decision.
-  - Resources, prompts, sampling, OAuth, images in results, bot access and the 2026-07-28 protocol (`versionNegotiation: 'auto'`) are follow-ups.
+  - Resource templates/subscriptions, prompts, sampling, OAuth, images in results, bot access and the 2026-07-28 protocol (`versionNegotiation: 'auto'`) are follow-ups.
 
 ## ADR-030: Mercury Desktop — a Tauri shell around the one dashboard, over a versioned API
 
