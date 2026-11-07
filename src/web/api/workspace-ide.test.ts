@@ -74,6 +74,37 @@ describe('workspace and git hardening', () => {
     expect(subject).toBe(message);
   });
 
+  it('runs terminal commands in a workspace path with spaces using the native shell', async () => {
+    const { default: ide } = await import('./workspace-ide.js');
+    const cwd = 'folder with spaces';
+    mkdirSync(join(repo, cwd));
+    const previousShell = process.env.SHELL;
+    const previousOverride = process.env.MERCURY_SHELL;
+    delete process.env.SHELL;
+    delete process.env.MERCURY_SHELL;
+    try {
+      const res = await ide.request('http://127.0.0.1/api/terminal/exec', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'echo mercury-terminal-ready', cwd }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        success: true, exitCode: 0, cwd: join(repo, cwd),
+        output: expect.stringContaining('mercury-terminal-ready'),
+      });
+      const denied = await ide.request('http://127.0.0.1/api/terminal/exec', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'echo must-not-run', cwd: '..' }),
+      });
+      expect(denied.status).toBe(403);
+    } finally {
+      if (previousShell === undefined) delete process.env.SHELL;
+      else process.env.SHELL = previousShell;
+      if (previousOverride === undefined) delete process.env.MERCURY_SHELL;
+      else process.env.MERCURY_SHELL = previousOverride;
+    }
+  });
+
   it('rejects an option-shaped branch and a path outside the workspace', async () => {
     const { default: ide } = await import('./workspace-ide.js');
     const checkout = await ide.request('http://127.0.0.1/api/git/checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: '--orphan=x' }) });
