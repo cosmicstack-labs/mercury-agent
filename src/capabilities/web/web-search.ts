@@ -18,6 +18,14 @@ import { guardedFetch } from '../../utils/ssrf.js';
  * links, snippets and dates; the model follows up with fetch_url to read a
  * page. Brave, Mojeek and Startpage refuse automated requests, and Bing's
  * web RSS serves unrelated pages, so none of them are used.
+ *
+ * Optional engine for web results, off unless WEB_SEARCH_PROVIDER names it:
+ *
+ *   keenable → Keenable's search API (api.keenable.ai), keyless
+ *              (KEENABLE_API_KEY only lifts the rate limit), asked before
+ *              Parallel; the engines above stay as the fallback
+ *
+ * News always uses the built-in engines.
  */
 
 export interface SearchResult {
@@ -173,6 +181,42 @@ async function parallel(query: string, max: number): Promise<SearchResult[]> {
   if (!query.trim()) return [];
   return parallelSearch(query, parallelQueries(query), max);
 }
+
+/**
+ * Keenable's search API: keyless POST /v1/search/public, or /v1/search with
+ * KEENABLE_API_KEY for a higher rate limit. A fixed public HTTPS endpoint,
+ * called directly like Parallel. The result text is in `snippet` (page text
+ * with markdown), flattened and capped like Parallel's excerpts.
+ */
+async function keenable(query: string, max: number): Promise<SearchResult[]> {
+  if (!query.trim()) return [];
+  const key = process.env.KEENABLE_API_KEY?.trim();
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(`https://api.keenable.ai/v1/search${key ? '' : '/public'}`, {
+      method: 'POST',
+      signal: ac.signal,
+      headers: { 'Content-Type': 'application/json', 'X-Keenable-Title': 'Mercury Agent', ...(key ? { 'X-API-Key': key } : {}) },
+      body: JSON.stringify({ query, max_results: max }),
+    });
+    if (res.status === 429) throw new Error('rate-limited (HTTP 429)');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json() as { results?: Array<{ title?: string; url?: string; snippet?: string }> };
+    return (data.results ?? []).filter((r) => r.url && /^https?:\/\//.test(r.url)).slice(0, max).map((r) => ({
+      title: (r.title || r.url!).replace(/\s+/g, ' ').trim(),
+      url: r.url!,
+      snippet: (r.snippet ?? '').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[#*>`_]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300),
+    }));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Engines WEB_SEARCH_PROVIDER can put in front of the built-in web chain. */
+const OPTIONAL_ENGINES = new Map<string, [string, (q: string, n: number) => Promise<SearchResult[]>]>([
+  ['keenable', ['Keenable', keenable]],
+]);
 
 /**
  * A link to one story rather than a section front ("/kashmir", "/latest-news"):
@@ -432,6 +476,9 @@ export async function webSearch(query: string, opts: { kind?: 'web' | 'news'; ma
   const engines: Array<[string, (q: string, n: number) => Promise<SearchResult[]>]> = opts.kind === 'news'
     ? [['Parallel', parallelNews], ['Bing News', bingNews], ['Google News', googleNews], ['Hacker News', hackerNews]]
     : [['Parallel', parallel], ['DuckDuckGo', ddgHtml], ['DuckDuckGo Lite', ddgLite]];
+  // An opt-in engine (WEB_SEARCH_PROVIDER) is asked first for web results.
+  const optional = OPTIONAL_ENGINES.get((process.env.WEB_SEARCH_PROVIDER ?? '').trim().toLowerCase());
+  if (optional && opts.kind !== 'news') engines.unshift(optional);
   const want = Math.min(ENOUGH, max);
   const trail: string[] = [];
   const used: string[] = [];

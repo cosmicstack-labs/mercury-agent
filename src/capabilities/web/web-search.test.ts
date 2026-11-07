@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /** Real pages, saved from html.duckduckgo.com and lite.duckduckgo.com for "pandoc epub to markdown". */
 const DDG_HTML_PAGE = readFileSync(join(__dirname, 'fixtures', 'ddg-html.html'), 'utf8');
@@ -234,5 +234,83 @@ describe('MCP reply parsing and search-page URLs', () => {
     expect(searchQueryFromUrl('https://www.bing.com/search?q=canberra&format=rss')).toBeNull();
     expect(searchQueryFromUrl('https://en.wikipedia.org/wiki/Canberra')).toBeNull();
     expect(searchQueryFromUrl('not a url')).toBeNull();
+  });
+});
+
+describe('WEB_SEARCH_PROVIDER=keenable', () => {
+  const KEENABLE_URL = 'https://api.keenable.ai/v1/search/public';
+  const hit = (n: number) => ({ title: `Canberra ${n}`, url: `https://example.org/canberra-${n}`, description: '', snippet: `Canberra is the capital of Australia (${n}).` });
+  // Keenable answers on its own host; Parallel stays down as in the rest of this file.
+  const keenableReply = (reply: object | number) => (async (url: string) => {
+    if (!String(url).startsWith('https://api.keenable.ai/')) return parallelDown();
+    return typeof reply === 'number' ? new Response('', { status: reply }) : new Response(JSON.stringify(reply), { status: 200 });
+  }) as never;
+  const fetched = () => fetchMock.mock.calls.map((c) => String((c as unknown as [string])[0]));
+
+  beforeEach(() => {
+    vi.stubEnv('WEB_SEARCH_PROVIDER', 'keenable');
+    vi.stubEnv('KEENABLE_API_KEY', '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is not asked unless configured', async () => {
+    vi.stubEnv('WEB_SEARCH_PROVIDER', '');
+    fetchMock.mockImplementation(keenableReply({ results: [hit(1)] }));
+    vi.mocked(guardedFetch).mockImplementation(routes({ 'html.duckduckgo.com': DDG_HTML_PAGE }) as never);
+    expect((await webSearch('pandoc epub to markdown')).engine).toBe('DuckDuckGo');
+    expect(fetched()).toEqual(['https://search.parallel.ai/mcp']);
+  });
+
+  it('answers web searches first: keyless endpoint, title header, text from snippet', async () => {
+    const page = { title: 'Canberra - Wikipedia', url: 'https://en.wikipedia.org/wiki/Canberra', description: '', snippet: '# Canberra\n\n  **Canberra** is the [capital](https://en.wikipedia.org/wiki/Capital_city) of Australia. ' + 'x'.repeat(400) };
+    fetchMock.mockImplementation(keenableReply({ results: [page, hit(2), hit(3), hit(4)] }));
+    const r = await webSearch('capital of australia', { max: 5 });
+    expect(r.engine).toBe('Keenable');
+    expect(r.trail).toEqual(['Keenable: 4 results']);
+    expect(r.results[0]).toEqual({ title: 'Canberra - Wikipedia', url: 'https://en.wikipedia.org/wiki/Canberra', snippet: expect.stringMatching(/^Canberra Canberra is the capital of Australia\. x+$/) });
+    expect(r.results[0].snippet).toHaveLength(300);
+    expect(fetched()).toEqual([KEENABLE_URL]); // enough results: Parallel and DuckDuckGo are not asked
+    expect(vi.mocked(guardedFetch)).not.toHaveBeenCalled();
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ query: 'capital of australia', max_results: 5 });
+    const headers = init.headers as Record<string, string>;
+    expect(headers['X-Keenable-Title']).toBe('Mercury Agent');
+    expect(headers['X-API-Key']).toBeUndefined();
+  });
+
+  it('uses the keyed endpoint when KEENABLE_API_KEY is set', async () => {
+    vi.stubEnv('KEENABLE_API_KEY', 'test-key');
+    fetchMock.mockImplementation(keenableReply({ results: [hit(1), hit(2), hit(3), hit(4)] }));
+    await webSearch('capital of australia');
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.keenable.ai/v1/search');
+    expect((init.headers as Record<string, string>)['X-API-Key']).toBe('test-key');
+  });
+
+  it('rate-limited: the built-in engines answer as before', async () => {
+    fetchMock.mockImplementation(keenableReply(429));
+    vi.mocked(guardedFetch).mockImplementation(routes({ 'html.duckduckgo.com': DDG_HTML_PAGE }) as never);
+    const r = await webSearch('pandoc epub to markdown');
+    expect(r.engine).toBe('DuckDuckGo');
+    expect(r.trail.slice(0, 2)).toEqual(['Keenable: blocked (rate-limited (HTTP 429))', 'Parallel: HTTP 503']);
+  });
+
+  it('too few results: the built-in engines fill in', async () => {
+    fetchMock.mockImplementation(keenableReply({ results: [{ title: 'Pandoc manual: EPUB to Markdown', url: 'https://pandoc.org/MANUAL.html', snippet: 'pandoc converts epub to markdown' }] }));
+    vi.mocked(guardedFetch).mockImplementation(routes({ 'html.duckduckgo.com': DDG_HTML_PAGE }) as never);
+    const r = await webSearch('pandoc epub to markdown');
+    expect(r.engine).toBe('Keenable + DuckDuckGo');
+    expect(r.results[0].url).toBe('https://pandoc.org/MANUAL.html');
+    expect(r.trail.slice(0, 2)).toEqual(['Keenable: 1 result', 'Parallel: HTTP 503']);
+  });
+
+  it('news keeps its own engines', async () => {
+    fetchMock.mockImplementation(keenableReply({ results: [hit(1)] }));
+    expect((await webSearch('', { kind: 'news' })).engine).toBe('Google News');
+    expect(fetched()).not.toContain(KEENABLE_URL);
   });
 });
