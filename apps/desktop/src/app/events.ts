@@ -86,7 +86,9 @@ function useSurfaceStream(enabled: boolean, surface: Surface, sessionId: string 
     const stream = openStream(`/api/chat/events${query}`, {
       onOpen: () => { if (tracksConnection) useRuntimeState.getState().setConnected(true); },
       onClose: (reason) => { if (tracksConnection && reason !== "closed") useRuntimeState.getState().setConnected(false); },
-      onEvent: (event, raw) => handleEvent(store, event, raw),
+      onEvent: (event, raw) => {
+        if (store.getState().activeId === sessionId) handleEvent(store, event, raw);
+      },
     });
     return () => stream.close();
   }, [enabled, surface, sessionId, tracksConnection]);
@@ -102,6 +104,8 @@ function safeJson<T>(raw: string): T | null {
 
 /** Artifacts that arrived before their reply did: attached when it lands. */
 const pendingArtifacts = new WeakMap<ConversationStore, ArtifactRef[]>();
+/** Only track resolutions while a pending-prompts snapshot is in flight. */
+const resolvedDuringPendingLoad = new WeakMap<ConversationStore, Set<string>>();
 
 /** Is a step's result a failure? The runtime says so now; older ones only by the text. */
 export function stepFailed(data: Record<string, unknown>, summary: string | undefined): boolean {
@@ -138,8 +142,11 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
   const conv = store.getState();
   const data = safeJson<Record<string, unknown>>(raw) ?? {};
   // A scoped stream may still carry another session's events on old runtimes.
-  const eventSession = typeof data.sessionId === "string" ? data.sessionId : null;
-  if (eventSession && conv.activeId && eventSession !== conv.activeId) return;
+  const eventSession = typeof data.sessionId === "string" ? data.sessionId : typeof data.targetId === "string" ? data.targetId : null;
+  const global = event === "connected" || event === "provider" || event === "status";
+  if (eventSession && eventSession !== conv.activeId) return;
+  if (!global && (!conv.activeId || !eventSession)) return;
+  if (!global) store.setState((state) => ({ eventVersion: state.eventVersion + 1 }));
   switch (event) {
     case "connected":
     case "provider":
@@ -167,6 +174,7 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       conv.setResearchPlan(data as unknown as ResearchPlanPrompt);
       break;
     case "research_plan_resolved":
+      if (typeof data.id === "string") resolvedDuringPendingLoad.get(store)?.add(data.id);
       if (conv.researchPlan?.id === data.id) conv.setResearchPlan(null);
       break;
     case "notice":
@@ -237,6 +245,7 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       pendingArtifacts.delete(store);
       conv.addMessage({ id: crypto.randomUUID(), role: "assistant", content: text, timestamp: new Date().toISOString(), ...(trace ? { trace } : {}), ...(artifacts?.length ? { artifacts } : {}) });
       conv.setStep(null);
+      conv.setStopping(false);
       store.getState().setAgent(store.getState().prompts.length ? "needs-you" : "idle");
       void refreshThreads();
       break;
@@ -252,9 +261,13 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       break;
     case "permission_resolved":
     case "choice_resolved":
-      if (typeof data.id === "string") conv.removePrompt(data.id);
+      if (typeof data.id === "string") {
+        resolvedDuringPendingLoad.get(store)?.add(data.id);
+        conv.removePrompt(data.id);
+      }
       break;
     case "error": {
+      pendingArtifacts.delete(store);
       conv.setWaiting(null);
       conv.setNotice(null);
       const message = typeof data.message === "string" ? data.message : raw || "Something went wrong";
@@ -332,9 +345,35 @@ export async function refreshBots(): Promise<void> {
   } catch { /* bots unavailable on this runtime */ }
 }
 
+/** Keep additions received during a history request, including their live trace.
+ * SSE replies on older runtimes have client IDs. Reconcile only an ordered tail
+ * created since this load began, never equal text elsewhere in the transcript.
+ */
+function mergeLoadedHistory(history: ChatMessage[], live: ChatMessage[], openedAt: number): ChatMessage[] {
+  const same = (saved: ChatMessage, current: ChatMessage) => saved.id === current.id || (
+    saved.role === current.role && saved.content === current.content && (saved.kind ?? "message") === (current.kind ?? "message")
+    && Date.parse(saved.timestamp) >= openedAt
+    && Math.abs(Date.parse(saved.timestamp) - Date.parse(current.timestamp)) <= 10_000
+  );
+  let overlap = Math.min(history.length, live.length);
+  while (overlap > 0 && !live.slice(0, overlap).every((message, index) => same(history[history.length - overlap + index], message))) overlap--;
+  const joined = history.slice(0, history.length - overlap);
+  for (let index = 0; index < overlap; index++) {
+    const saved = history[history.length - overlap + index];
+    const current = live[index];
+    joined.push({ ...saved, ...current, id: saved.id, timestamp: saved.timestamp, attachments: saved.attachments ?? current.attachments });
+  }
+  const ids = new Set(joined.map(message => message.id));
+  return [...joined, ...live.slice(overlap).filter(message => !ids.has(message.id))];
+}
+
 export async function openThread(surface: Surface, id: string | null): Promise<void> {
   const store = conversations[surface];
+  pendingArtifacts.delete(store);
   store.getState().setActive(id);
+  const { selectionVersion, eventVersion } = store.getState();
+  const openedAt = Date.now();
+  const selected = () => store.getState().activeId === id && store.getState().selectionVersion === selectionVersion;
   store.getState().clearStreaming();
   if (!id) {
     store.getState().setMessages([]);
@@ -342,22 +381,28 @@ export async function openThread(surface: Surface, id: string | null): Promise<v
   }
   store.getState().setLoading(true);
   useNotify.getState().seen(id);
-  // Prompts still waiting here (asked while you were elsewhere, perhaps from a notification).
+  // Keep unresolved prompts even if unrelated activity arrives during this request.
+  const resolvedPrompts = new Set<string>();
+  resolvedDuringPendingLoad.set(store, resolvedPrompts);
   void http.get<{ prompts?: Array<Record<string, unknown>> }>(`/api/chat/pending?sessionId=${encodeURIComponent(id)}`)
     .then((r) => {
-      if (store.getState().activeId !== id) return;
+      if (!selected()) return;
       for (const p of r.prompts ?? []) {
+        if (typeof p.id === "string" && resolvedPrompts.has(p.id)) continue;
         if (p.type === "research_plan") { store.getState().setResearchPlan(p as unknown as ResearchPlanPrompt); continue; }
         const kind = p.type === "choice_prompt" ? "choice" : p.type === "permission_continue" ? "continue" : "permission";
         store.getState().addPrompt(toPrompt(kind, p, String(p.prompt ?? p.question ?? "")));
       }
     })
-    .catch(() => { /* older Mercury */ });
+    .catch(() => { /* older Mercury */ })
+    .finally(() => { if (resolvedDuringPendingLoad.get(store) === resolvedPrompts) resolvedDuringPendingLoad.delete(store); });
   // Still waiting in line behind another chat? (Opened after the message was sent.)
   store.getState().setWaiting(null);
   void http.get<{ state: string; position?: number; busyWith?: string; busySessionId?: string }>(`/api/chat/threads/${encodeURIComponent(id)}/queue`)
     .then((q) => {
-      if (store.getState().activeId !== id || q.state !== "queued") return;
+      if (!selected() || store.getState().eventVersion !== eventVersion) return;
+      if (q.state === "running") { store.getState().setAgent("working"); return; }
+      if (q.state !== "queued") return;
       store.getState().setWaiting({ position: q.position ?? 1, busyWith: q.busyWith, busySessionId: q.busySessionId });
       store.getState().setAgent("thinking");
     })
@@ -365,22 +410,34 @@ export async function openThread(surface: Surface, id: string | null): Promise<v
   // Research here: on for the next message, or a run going (opened mid-run, it picks up live).
   void api.chat.research(id)
     .then((r) => {
-      if (store.getState().activeId !== id) return;
+      if (!selected() || store.getState().eventVersion !== eventVersion) return;
       if (r.armed || r.run) store.getState().setResearch(() => ({ armed: r.armed, planFirst: r.planFirst, topic: r.topic ?? null, run: r.run }));
       if (r.run?.state === "running") store.getState().setAgent("working");
     })
     .catch(() => { /* older Mercury */ });
   // The plan Mercury was working through in this conversation, if any.
   void http.get<{ plan: { steps: Array<{ label: string; status: "pending" | "active" | "done" }>; updatedAt: number } | null }>(`/api/chat/plan?sessionId=${encodeURIComponent(id)}`)
-    .then((r) => { if (store.getState().activeId === id && r.plan?.steps?.length) store.getState().setPlan(r.plan); })
+    .then((r) => { if (selected() && store.getState().eventVersion === eventVersion && r.plan?.steps?.length) store.getState().setPlan(r.plan); })
     .catch(() => { /* older Mercury: no plans */ });
   try {
-    const thread = await api.chat.thread(id);
-    store.getState().setMessages(thread.messages ?? []);
+    let version = eventVersion;
+    let messages = store.getState().messages;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const thread = await api.chat.thread(id);
+      if (!selected()) return;
+      const current = store.getState();
+      if (attempt === 0 && (current.eventVersion !== version || current.messages !== messages)) {
+        version = current.eventVersion;
+        messages = current.messages;
+        continue;
+      }
+      current.setMessages(mergeLoadedHistory(thread.messages ?? [], current.messages, openedAt));
+      break;
+    }
   } catch {
-    store.getState().setMessages([]);
+    // A failed history request must not erase a reply received in the meantime.
   } finally {
-    store.getState().setLoading(false);
+    if (selected()) store.getState().setLoading(false);
   }
 }
 
@@ -392,11 +449,16 @@ export interface CodeTurn {
 export async function sendMessage(surface: Surface, content: string, attachments: Array<{ name: string; data: string; mime?: string }> = [], code?: CodeTurn): Promise<void> {
   const store = conversations[surface];
   let id = store.getState().activeId;
+  let selectionVersion = store.getState().selectionVersion;
+  const selected = () => store.getState().activeId === id && store.getState().selectionVersion === selectionVersion;
   if (!id) {
     const thread = await api.chat.createThread(surface === "code" ? `Code · ${content.slice(0, 40)}` : undefined);
+    const stillSelected = selected();
     id = thread.id;
-    store.getState().setActive(id);
-    store.getState().setMessages([]);
+    if (stillSelected) {
+      store.getState().setActive(id);
+      selectionVersion = store.getState().selectionVersion;
+    }
     if (surface === "code") useCodeSessions.getState().upsert({ id, folder: code?.folder ?? null, createdAt: new Date().toISOString() });
   }
   const shown = content || `(Attached: ${attachments.map((a) => a.name).join(", ")})`;
@@ -409,9 +471,11 @@ export async function sendMessage(surface: Surface, content: string, attachments
       ? { attachments: attachments.map((a) => ({ name: a.name, kind: a.mime?.startsWith("image/") ? "image" : "document", mime: a.mime, src: a.mime?.startsWith("image/") ? `data:${a.mime};base64,${a.data}` : undefined })) }
       : {}),
   };
-  store.getState().addMessage(optimistic);
-  store.getState().setAgent("thinking");
-  store.getState().setLive(() => ({ reasoning: "", steps: [], startedAt: Date.now() }));
+  if (selected()) {
+    store.getState().addMessage(optimistic);
+    store.getState().setAgent("thinking");
+    store.getState().setLive(() => ({ reasoning: "", steps: [], startedAt: Date.now() }));
+  }
   await api.chat.send(content, id, attachments.map(({ name, data }) => ({ name, data })), code ? { programming: code.mode, cwd: code.folder ?? undefined } : undefined);
   void refreshThreads();
 }
@@ -427,18 +491,27 @@ export function isStopNote(text: string): boolean {
  * the turn when its confirmation arrives, or after a few seconds if it
  * never does (an older runtime, or the turn ended on its own meanwhile).
  */
+const stopRequests = new WeakMap<ConversationStore, symbol>();
+
 export async function stopTurn(store: ConversationStore): Promise<void> {
   const s = store.getState();
-  if (s.stopping) return;
+  if (s.stopping || !s.activeId) return;
+  const sessionId = s.activeId;
+  const selectionVersion = s.selectionVersion;
+  const request = Symbol();
+  stopRequests.set(store, request);
+  const current = () => store.getState().activeId === sessionId
+    && store.getState().selectionVersion === selectionVersion && stopRequests.get(store) === request;
   s.setStopping(true);
   if (s.live) s.setLive((l) => ({ ...l, steps: l.steps.map((st) => (st.status === "running" ? { ...st, status: "stopped" as const, endedAt: Date.now() } : st)) }));
   try {
-    await api.chat.stop();
+    await api.chat.stop(sessionId);
   } catch (err) {
+    if (!current()) return;
     store.getState().setStopping(false);
     throw err;
   }
-  setTimeout(() => { if (store.getState().stopping) finishStopped(store); }, 8000);
+  setTimeout(() => { if (current() && store.getState().stopping) finishStopped(store); }, 8000);
 }
 
 /** Is Mercury working on this conversation right now (or still stopping)? */
@@ -482,6 +555,7 @@ export async function undoLast(store: ConversationStore, message: ChatMessage): 
 
 /** End the current turn as stopped: keep the partial answer, mark the trace, say so. */
 function finishStopped(store: ConversationStore): void {
+  pendingArtifacts.delete(store);
   const s = store.getState();
   const partial = s.streaming;
   const live = s.live;
@@ -491,6 +565,7 @@ function finishStopped(store: ConversationStore): void {
   s.clearLive();
   s.setStep(null);
   s.setStopping(false);
+  s.setWaiting(null);
   // Nothing was running any more (the answer finished first): nothing to mark.
   if (!busy && !partial && !live) return;
   const trace = live && (live.reasoning || live.steps.length)
@@ -502,5 +577,6 @@ function finishStopped(store: ConversationStore): void {
 
 export async function answerPrompt(store: ConversationStore, prompt: PendingPrompt, value: string | null): Promise<void> {
   await api.chat.answer(prompt.id, value ?? "", prompt.targetId);
+  resolvedDuringPendingLoad.get(store)?.add(prompt.id);
   store.getState().removePrompt(prompt.id);
 }

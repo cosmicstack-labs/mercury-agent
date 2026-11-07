@@ -10,7 +10,6 @@ import { logger } from '../../utils/logger.js';
 import { pulseProgress, TOOL_PULSE_INTERVAL_MS } from '../../core/progress-pulse.js';
 import { planArgvExecution, minimalEnv, type ArgvPlan } from './argv-lane.js';
 
-const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_BUFFER = 1024 * 1024;
 /** Bound echoed stdout so per-step conversation clones stay small. */
 const MAX_OUTPUT_CHARS = 64 * 1024;
@@ -40,42 +39,54 @@ export function executeCommand(command: string, cwd: string, timeoutMs: number, 
   return superviseChild(() => spawn(command, [], {
     cwd,
     shell: true,
+    detached: process.platform !== 'win32',
+    windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
   }), timeoutMs, options);
 }
 
 /**
- * Argv-lane executor: `execFile(absBinary, args)` with no shell and a
- * minimal environment (pinned PATH, no secrets). Used only for commands the
- * argv lane auto-approved.
+ * Argv-lane executor: the pinned absolute binary and literal arguments, with
+ * no shell and a minimal environment. spawn exposes POSIX process groups;
+ * execFile does not forward detached and buffers another copy of all output.
  */
 export function executeArgv(file: string, args: readonly string[], cwd: string, timeoutMs: number, options: ExecOptions = {}): Promise<ExecResult> {
-  return superviseChild(() => execFile(file, [...args], {
+  return superviseChild(() => spawn(file, [...args], {
     cwd,
     env: minimalEnv(),
     shell: false,
+    detached: process.platform !== 'win32',
     windowsHide: true,
-    // Output is bounded by the stream handlers below; execFile's own buffer
-    // limit would kill a long but legitimate listing.
-    maxBuffer: Number.MAX_SAFE_INTEGER,
-  }, () => { /* results are collected from the streams */ }), timeoutMs, options);
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }), timeoutMs, options);
 }
 
 function superviseChild(start: () => ChildProcess, timeoutMs: number, options: ExecOptions): Promise<ExecResult> {
-  return new Promise((resolve) => {
+  return new Promise((resolveResult) => {
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let terminationReason: 'timeout' | 'abort' | undefined;
+    let closed = false;
+    let processError = false;
+    let closeCode: number | null = null;
+    let forced = false;
+    let windowsCleanupFinished = false;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     let sigkillHandle: ReturnType<typeof setTimeout> | undefined;
     let pulseHandle: ReturnType<typeof setInterval> | undefined;
     const { signal, onActivity } = options;
 
+    if (signal?.aborted) {
+      resolveResult({ stdout, stderr, exitCode: null, timedOut: false, aborted: true });
+      return; // An already-cancelled turn must not start a new process.
+    }
+
     let child: ChildProcess;
     try {
       child = start();
     } catch (err: any) {
-      resolve({ stdout: '', stderr: `Process error: ${err?.message ?? String(err)}`, exitCode: null, timedOut: false, aborted: false });
+      resolveResult({ stdout: '', stderr: `Process error: ${err?.message ?? String(err)}`, exitCode: null, timedOut: false, aborted: false });
       return;
     }
 
@@ -88,48 +99,98 @@ function superviseChild(start: () => ChildProcess, timeoutMs: number, options: E
       if (sigkillHandle) clearTimeout(sigkillHandle);
       if (pulseHandle) clearInterval(pulseHandle);
       signal?.removeEventListener('abort', onAbort);
-      resolve({ stdout, stderr, exitCode, timedOut, aborted });
+      resolveResult({ stdout, stderr, exitCode, timedOut, aborted });
     };
 
-    // SIGTERM, then SIGKILL after a grace period. Used for both the tool's
-    // own timeout and an abort from the agent loop — previously an aborted
-    // turn left the child running to completion.
+    const signalGroup = (kind: NodeJS.Signals) => {
+      if (!child.pid) return;
+      try { process.kill(-child.pid, kind); }
+      catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
+          stderr += `\nProcess termination error: ${(err as Error).message}`;
+          child.kill(kind);
+        }
+      }
+    };
+    const maybeFinish = () => {
+      if (!closed) return; // 'exit' can precede the last stdout/stderr bytes.
+      if (!terminationReason) { finish(processError ? null : closeCode, false); return; }
+      if (process.platform === 'win32') {
+        if (!windowsCleanupFinished) return;
+      } else if (!forced) {
+        // The leader and its output have closed, so it can no longer shut down
+        // any children gracefully. Stop remaining group members before releasing
+        // the turn, including descendants that redirected their output.
+        signalGroup('SIGKILL');
+      }
+      finish(null, terminationReason === 'timeout', terminationReason === 'abort');
+    };
+
+    // Latch the first reason and keep ownership until the child closes. Merely
+    // sending a signal (child.killed) does not mean the process has stopped.
     const terminate = (reason: 'timeout' | 'abort') => {
-      if (settled) return;
-      child.kill('SIGTERM');
-      sigkillHandle = setTimeout(() => {
-        if (!child.killed || child.exitCode === null) child.kill('SIGKILL');
-      }, SIGTERM_GRACE_MS);
-      finish(null, reason === 'timeout', reason === 'abort');
+      if (settled || terminationReason) return;
+      terminationReason = reason;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (process.platform === 'win32') {
+        if (!child.pid) {
+          windowsCleanupFinished = true;
+          maybeFinish();
+          return;
+        }
+        // Windows has no POSIX process groups. Kill the tree before the shell
+        // leader, since killing only cmd.exe can leave its command running.
+        const taskkill = resolve(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+        execFile(taskkill, ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: SIGTERM_GRACE_MS }, (err) => {
+          if (err) {
+            stderr += `\nProcess tree termination error: ${err.message}`;
+            child.kill('SIGKILL');
+          }
+          windowsCleanupFinished = true;
+          maybeFinish();
+        });
+      } else {
+        sigkillHandle = setTimeout(() => {
+          signalGroup('SIGKILL');
+          forced = true;
+          maybeFinish();
+        }, SIGTERM_GRACE_MS);
+        signalGroup('SIGTERM');
+        maybeFinish();
+      }
     };
 
     child.stdout?.on('data', (chunk: Buffer) => {
-      onActivity?.();
       if (stdout.length < MAX_BUFFER) {
         stdout += chunk.toString();
         if (stdout.length > MAX_BUFFER) {
           stdout = stdout.slice(stdout.length - MAX_BUFFER);
         }
       }
+      onActivity?.();
     });
 
     child.stderr?.on('data', (chunk: Buffer) => {
-      onActivity?.();
       if (stderr.length < MAX_BUFFER) {
         stderr += chunk.toString();
         if (stderr.length > MAX_BUFFER) {
           stderr = stderr.slice(stderr.length - MAX_BUFFER);
         }
       }
+      onActivity?.();
     });
 
     child.on('error', (err) => {
+      processError = true;
       stderr += `\nProcess error: ${err.message}`;
-      finish(null, false);
+      // Node emits close after a spawn error too. A kill error must not
+      // release the turn while the process is still alive.
     });
 
-    child.on('exit', (code) => {
-      finish(code, false);
+    child.on('close', (code) => {
+      closed = true;
+      closeCode = code;
+      maybeFinish();
     });
 
     if (signal) {
@@ -173,7 +234,7 @@ The optional timeout parameter sets how long (in seconds) the command can run be
 
       const timeoutMs = (timeout ?? 120) * 1000;
 
-      // Any command the argv lane can express runs through execFile, whichever
+      // Any command the argv lane can express runs without a shell, whichever
       // lane approved it; only commands that need a shell reach one.
       const plan = planArgvExecution(command);
       if (plan?.kind === 'builtin') {
@@ -239,7 +300,7 @@ The optional timeout parameter sets how long (in seconds) the command can run be
         detectCd(command, cwd, setCwd);
         return redactedOutput;
       } catch (err: any) {
-        let msg = `Command failed: ${err.message || String(err)}`;
+        const msg = `Command failed: ${err.message || String(err)}`;
         return msg;
       }
     },

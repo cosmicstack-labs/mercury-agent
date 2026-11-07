@@ -1,7 +1,10 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { drainToolExecutions } from '../capabilities/tool-execution-scope.js';
+import { makeContext, type PermissionContext } from '../capabilities/permission-context.js';
 import { homedir } from 'node:os';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { getHeapStatistics } from 'node:v8';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -572,8 +575,104 @@ export function looksLikeCodingTask(text: string): boolean {
 }
 
 
+interface TurnState {
+  lifecycle: Lifecycle;
+  currentMessage: ChannelMessage | null;
+  currentAbort: AbortController | null;
+  currentAbortReason: 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted' | null;
+  lastProgressAt: number;
+  currentActivity: string;
+  completedStepCount: number;
+  stepNarrative: NarrativeStep[];
+  lastTypingAt: number;
+  programmingMode: ProgrammingMode;
+  researchMode: ResearchMode;
+  saverMode: SaverMode;
+  currentWorkKey: string | null;
+  lastInjectedBeliefIds: string[];
+  lastFallbackNoticeKey: string | null;
+  finished: boolean;
+}
+
+function freshTurnState(): TurnState {
+  return {
+    lifecycle: new Lifecycle(),
+    currentMessage: null,
+    currentAbort: null,
+    currentAbortReason: null,
+    lastProgressAt: 0,
+    currentActivity: '',
+    completedStepCount: 0,
+    stepNarrative: [],
+    lastTypingAt: 0,
+    programmingMode: new ProgrammingMode(),
+    researchMode: new ResearchMode(),
+    saverMode: undefined as unknown as SaverMode,
+    currentWorkKey: null,
+    lastInjectedBeliefIds: [],
+    lastFallbackNoticeKey: null,
+    finished: false,
+  };
+}
+
+interface ActiveTurn {
+  message: ChannelMessage;
+  state: TurnState;
+  exclusive: boolean;
+  workspace?: string;
+  done?: Promise<void>;
+  controller: AbortController;
+}
+
 export class Agent {
-  readonly lifecycle: Lifecycle;
+  private turnStorage = new AsyncLocalStorage<TurnState>();
+  private rootTurn?: TurnState;
+  private activeTurns = new Map<string, ActiveTurn>();
+  private dispatching = false;
+  private providerMutation = false;
+  private readonly sessionPermissions = new Map<string, { context: PermissionContext; defaults: PermissionContext }>();
+  private readonly routing = new Map<string, Promise<void>>();
+  private readonly pendingAdmissions = new Map<string, ChannelMessage>();
+  private readonly sessionCwds = new Map<string, string>();
+  private readonly pendingBeliefs = new Map<string, { ids: string[]; sessionId?: string }>();
+
+  private get turnState(): TurnState {
+    return this.turnStorage?.getStore() ?? (this.rootTurn ??= freshTurnState());
+  }
+
+  private get coordinatorState(): TurnState {
+    return this.rootTurn ??= freshTurnState();
+  }
+
+  private sessionKey(msg: ChannelMessage): string {
+    return msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : `${msg.channelType}:${msg.channelId}`);
+  }
+
+  private hasActiveModelWork(): boolean {
+    if (!this.activeTurns?.size) return this.processing;
+    const current = this.turnStorage?.getStore();
+    return [...this.activeTurns.values()].some((turn) => turn.state !== current || !turn.message.content.trim().startsWith('/'));
+  }
+
+  private incomingCwd(msg: ChannelMessage): string {
+    const supplied = typeof msg.metadata?.programmingCwd === 'string' ? msg.metadata.programmingCwd : msg.metadata?.workCwd;
+    if (typeof supplied === 'string') return supplied;
+    const bound = this.sessions?.getByBinding(msg.channelType, msg.channelType === 'cli' ? 'current' : msg.channelId);
+    return this.sessionCwds.get(msg.sessionId ?? bound?.id ?? this.sessionKey(msg)) ?? this.capabilities.getDefaultCwd();
+  }
+
+  private workspaceFor(message: ChannelMessage): string | undefined {
+    if (typeof message.metadata?.programmingCwd !== 'string') return undefined;
+    const folder = path.resolve(message.metadata.programmingCwd);
+    try { return realpathSync(folder); } catch { return folder; }
+  }
+
+  private activeFor(id: string): ActiveTurn | undefined {
+    return this.activeTurns?.get(id) ?? [...(this.activeTurns?.values() ?? [])].find((turn) => turn.message.channelId === id);
+  }
+
+  get lifecycle(): Lifecycle { return this.turnState.lifecycle; }
+  set lifecycle(value: Lifecycle) { this.turnState.lifecycle = value; }
   readonly scheduler: Scheduler;
   readonly capabilities: CapabilityRegistry;
   private running = false;
@@ -581,16 +680,24 @@ export class Agent {
   private queuedWorkKeys = new Set<string>();
   processing = false;
   telegramStreaming: boolean;
-  currentMessage: ChannelMessage | null = null;
-  currentAbort: AbortController | null = null;
-  currentAbortReason: 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted' | null = null;
-  private lastProgressAt = 0;
-  currentActivity = '';
-  completedStepCount = 0;
-  stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
+  get currentMessage(): ChannelMessage | null { return this.turnState.currentMessage; }
+  set currentMessage(value: ChannelMessage | null) { this.turnState.currentMessage = value; }
+  get currentAbort(): AbortController | null { return this.turnState.currentAbort; }
+  set currentAbort(value: AbortController | null) { this.turnState.currentAbort = value; }
+  get currentAbortReason(): 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted' | null { return this.turnState.currentAbortReason; }
+  set currentAbortReason(value: 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted' | null) { this.turnState.currentAbortReason = value; }
+  private get lastProgressAt(): number { return this.turnState.lastProgressAt; }
+  private set lastProgressAt(value: number) { this.turnState.lastProgressAt = value; }
+  get currentActivity(): string { return this.turnState.currentActivity; }
+  set currentActivity(value: string) { this.turnState.currentActivity = value; }
+  get completedStepCount(): number { return this.turnState.completedStepCount; }
+  set completedStepCount(value: number) { this.turnState.completedStepCount = value; }
+  get stepNarrative(): NarrativeStep[] { return this.turnState.stepNarrative; }
+  set stepNarrative(value: NarrativeStep[]) { this.turnState.stepNarrative = value; }
   supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   botManager?: import('../bots/bot-manager.js').BotManager;
-  private lastTypingAt = 0;
+  private get lastTypingAt(): number { return this.turnState.lastTypingAt; }
+  private set lastTypingAt(value: number) { this.turnState.lastTypingAt = value; }
   /** Bot awaiting a persona from the next message (post-create setup flow). */
   /**
    * A terminal beside a live daemon (ADR-024): the daemon owns persisted
@@ -614,9 +721,12 @@ export class Agent {
   readonly lastNotedBeliefId = new Map<string, string>();
   /** When the last "☿ Noted" went out per channel: at most one every few minutes, so an upgrade's backlog never floods a chat. */
   private readonly lastNotedAt = new Map<string, number>();
-  readonly programmingMode: ProgrammingMode;
-  readonly researchMode: ResearchMode;
-  readonly saverMode: SaverMode;
+  get programmingMode(): ProgrammingMode { return this.turnState.programmingMode; }
+  set programmingMode(value: ProgrammingMode) { this.turnState.programmingMode = value; }
+  get researchMode(): ResearchMode { return this.turnState.researchMode; }
+  set researchMode(value: ResearchMode) { this.turnState.researchMode = value; }
+  get saverMode(): SaverMode { return this.turnState.saverMode; }
+  set saverMode(value: SaverMode) { this.turnState.saverMode = value; }
   spotifyClient?: SpotifyClient;
   private skillBatcher: SkillBatcher | null = null;
   private skillLoader?: SkillLoader;
@@ -629,16 +739,17 @@ export class Agent {
   private statusVerbsDisabled = false;
   sessionSyncEnabled = false;
   private readonly workLedger: WorkLedger;
-  private currentWorkKey: string | null = null;
+  private get currentWorkKey(): string | null { return this.turnState.currentWorkKey; }
+  private set currentWorkKey(value: string | null) { this.turnState.currentWorkKey = value; }
   private outboxRetryTimer: ReturnType<typeof setInterval> | null = null;
   private replayingOutbox = false;
   /** Beliefs injected into the current turn's prompt (set by retrieveMemoryContext, ADR-026). */
-  lastInjectedBeliefIds: string[] = [];
+  get lastInjectedBeliefIds(): string[] { return this.turnState.lastInjectedBeliefIds; }
+  set lastInjectedBeliefIds(value: string[]) { this.turnState.lastInjectedBeliefIds = value; }
   /** "About {owner}" / "How to work with {owner}", recomputed only when the beliefs change (keeps the prompt prefix cacheable). */
   private readonly ownerSections = createOwnerSectionsMemo();
   private reflectionInFlight: Promise<void> | null = null;
   /** Beliefs the previous turn acted on; credited as "acted on without objection" once the next owner message shows no correction. */
-  private pendingActedOn: { ids: string[]; sessionId?: string } | null = null;
 
   constructor(
     public config: MercuryConfig,
@@ -960,6 +1071,12 @@ export class Agent {
       }
     }
 
+    // Stops from a chat target that chat; global CLI controls remain explicit.
+    if (msg.channelType === 'web' && /^\/(stop|halt)$/.test(trimmed)) {
+      void this.stopSessionWork(msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : msg.channelId)).then((note) => this.channels.getChannelForMessage(msg)?.send(note, msg.channelId));
+      return;
+    }
+
     // /stop is asynchronous: the abort lands, the turn unwinds, THEN
     // processing clears. A command typed in that window used to be answered
     // "Agent is busy" — wait for the stop to finish and route it normally.
@@ -971,18 +1088,29 @@ export class Agent {
       return;
     }
 
-    if (this.processing && trimmed.startsWith('/')) {
+    if (this.processing && trimmed.startsWith('/') && msg.channelType !== 'web') {
       this.handleFastPathCommand(msg).catch((err) => {
         logger.error({ err, content: trimmed.slice(0, 50) }, 'Fast-path command failed');
       });
       return;
     }
 
+    // Resolve before durable acceptance and asynchronous prompts: aliases
+    // share admission order, cancellation, and recovery identity.
+    const external = msg.channelType === 'cli' ? 'current'
+      : typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
+    try {
+      msg.sessionId = this.sessions.getOrCreateBound(msg.channelType, external,
+        msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined)).id;
+    } catch (error) {
+      void this.channels.getChannelForMessage(msg)?.send('This conversation could not be opened. Start a new chat and try again.', msg.channelId);
+      return;
+    }
     let workKey: string | undefined;
     if (!trimmed.startsWith('/')) {
       msg.metadata = {
         ...msg.metadata,
-        workCwd: typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : this.capabilities.getCwd(),
+        workCwd: this.incomingCwd(msg),
       };
       const accepted = this.workLedger.accept(msg);
       workKey = accepted.entry.key;
@@ -992,33 +1120,32 @@ export class Agent {
       }
     }
 
-    // Research-y message prompt: when research mode is off and the message looks
-    // like a deep-research request, ask whether to run a full research pass.
-    // Never prompt in Mercury Code (the coding TUI) — its questions are about
-    // the repo, not web research, so the prompt is pure friction there.
-    const isUserMessage = msg.channelType !== 'internal' && msg.senderId !== 'system' && !trimmed.startsWith('/');
-    const promptChannel = this.channels.getChannelForMessage(msg);
-    const inMercuryCode = promptChannel instanceof CLIChannel && promptChannel.getTuiState().mercuryCode != null;
-    // The word filter only decides whether to ask the model; the model
-    // decides whether the owner actually wants a research article. An
-    // instruction ("do X with the latest file") or a quick question never
-    // gets the prompt, and a failed or slow check means no prompt.
-    if (isUserMessage && !inMercuryCode && !this.researchMode.isActive() && looksResearchy(trimmed)) {
-      void this.wantsResearch(trimmed).then((wanted) => {
-        if (!wanted) {
-          this.routeIncoming(msg, workKey, trimmed, isUserMessage, inMercuryCode, promptChannel);
+    const key = this.sessionKey(msg);
+    if (workKey) this.pendingAdmissions.set(workKey, msg);
+    const cancelled = () => !!workKey && this.workLedger.get(workKey)?.status === 'cancelled';
+    const route = async (): Promise<void> => {
+      if (cancelled()) return;
+      const isUserMessage = msg.channelType !== 'internal' && msg.senderId !== 'system' && !trimmed.startsWith('/');
+      const promptChannel = this.channels.getChannelForMessage(msg);
+      const inMercuryCode = promptChannel instanceof CLIChannel && promptChannel.getTuiState().mercuryCode != null;
+      if (isUserMessage && !inMercuryCode && !this.coordinatorState.researchMode.isActive() && looksResearchy(trimmed)) {
+        const wanted = await this.wantsResearch(trimmed);
+        if (cancelled()) return;
+        if (wanted) {
+          await this.promptResearchMode(msg, workKey);
           return;
         }
-        this.promptResearchMode(msg, workKey).catch((err) => {
-          logger.warn({ err: err.message }, 'Research-mode prompt failed — proceeding with normal message');
-          this.queueMessage(msg, workKey);
-          this.processQueue();
-        });
-      });
-      return;
-    }
-
-    this.routeIncoming(msg, workKey, trimmed, isUserMessage, inMercuryCode, promptChannel);
+      }
+      this.routeIncoming(msg, workKey, trimmed, isUserMessage, inMercuryCode, promptChannel);
+    };
+    const pending = (this.routing.get(key) ?? Promise.resolve()).then(route).catch((error) => {
+      logger.warn({ error }, 'Message routing failed');
+      if (!cancelled()) { this.queueMessage(msg, workKey); void this.processQueue(); }
+    }).finally(() => {
+      if (workKey) this.pendingAdmissions.delete(workKey);
+      if (this.routing.get(key) === pending) this.routing.delete(key);
+    });
+    this.routing.set(key, pending);
   }
 
   /** After the research check: the Mercury Code hand-off, then the queue. */
@@ -1145,6 +1272,18 @@ export class Agent {
 
   queueMessage(message: ChannelMessage, workKey?: string): void {
     if (workKey && this.queuedWorkKeys.has(workKey)) return;
+    if (this.sessions) {
+      const external = message.channelType === 'cli' ? 'current'
+        : typeof message.metadata?.externalConversationId === 'string' ? message.metadata.externalConversationId : message.channelId;
+      const supplied = message.sessionId ?? (typeof message.metadata?.sessionId === 'string' ? message.metadata.sessionId : undefined);
+      try {
+        message.sessionId = this.sessions.getOrCreateBound(message.channelType, external, supplied).id;
+      } catch (error) {
+        if (workKey) this.workLedger.markFailed(workKey, error);
+        void this.channels.getChannelForMessage(message)?.send('This conversation could not be opened. Start a new chat and try again.', message.channelId);
+        return;
+      }
+    }
     // Someone is waiting on the line: a question asked on a call goes ahead
     // of queued chat work (behind earlier call questions, in order).
     if (message.metadata?.voiceCall === true) {
@@ -1163,7 +1302,7 @@ export class Agent {
    * and the turn running now (which chat, and what it's doing). Without this
    * a waiting chat showed "Thinking" for a turn that hadn't started.
    */
-  private announceQueue(running: ChannelMessage | null = this.processing ? this.currentMessage : null): void {
+  private announceQueue(running: ChannelMessage | null = this.activeTurns?.values().next().value?.message ?? (this.processing ? this.currentMessage : null)): void {
     if (!running) return;
     const web = this.channels.get('web') as unknown as { sendQueued?: (t: string, d: { position: number; busyWith?: string; busySessionId?: string }) => void } | undefined;
     if (!web?.sendQueued) return;
@@ -1179,10 +1318,11 @@ export class Agent {
 
   /** Where one chat's work stands, for a chat opened while it waits. */
   queueStateFor(channelId: string): { state: 'running' | 'queued' | 'none'; position?: number; busyWith?: string; busySessionId?: string } {
-    if (this.processing && this.currentMessage?.channelId === channelId) return { state: 'running' };
-    const at = this.messageQueue.findIndex((i) => i.message.channelId === channelId);
+    if (this.activeFor(channelId) || (this.processing && this.currentMessage?.channelId === channelId)) return { state: 'running' };
+    const at = this.messageQueue.findIndex((i) => i.message.channelId === channelId || this.sessionKey(i.message) === channelId);
+    if (at === -1 && [...(this.pendingAdmissions?.values() ?? [])].some((message) => message.channelId === channelId || this.sessionKey(message) === channelId)) return { state: 'queued', position: 1 };
     if (at === -1) return { state: 'none' };
-    const running = this.processing ? this.currentMessage : null;
+    const running = this.activeTurns?.values().next().value?.message ?? (this.processing ? this.currentMessage : null);
     return {
       state: 'queued',
       position: at + 1,
@@ -1208,8 +1348,8 @@ export class Agent {
 
   isBusyWith(sessionId: string): boolean {
     const of = (m: ChannelMessage | null | undefined) => m?.sessionId ?? (typeof m?.metadata?.sessionId === 'string' ? m.metadata.sessionId : undefined);
-    if (this.processing && of(this.currentMessage) === sessionId) return true;
-    return this.messageQueue.some((i) => of(i.message) === sessionId);
+    if (this.activeFor(sessionId) || (this.processing && of(this.currentMessage) === sessionId)) return true;
+    return this.messageQueue.some((i) => of(i.message) === sessionId) || [...(this.pendingAdmissions?.values() ?? [])].some((message) => this.sessionKey(message) === sessionId);
   }
 
   /**
@@ -1217,6 +1357,7 @@ export class Agent {
    * or neither; and what Mercury is busy with when it's something else.
    */
   workStateFor(channelId: string): { state: 'running' | 'queued' | 'none'; busyWith?: string } {
+    if (this.activeFor(channelId)) return { state: 'running' };
     const current = this.currentMessage?.channelId;
     if (this.processing && current === channelId) return { state: 'running' };
     const busyWith = this.processing && current ? (this.currentActivity || 'another task').replace(/^\W+/u, '').trim() || 'another task' : undefined;
@@ -1352,13 +1493,15 @@ export class Agent {
    * what was read. False when there's no research running in that chat.
    */
   finishResearch(sessionId: string): { ok: boolean; reason?: string } {
-    const run = this.researchMode.currentRun();
+    const turn = this.activeFor(sessionId);
+    const state = turn?.state ?? this.turnState;
+    const run = state.researchMode.currentRun();
     if (!run || run.sessionId !== sessionId || run.outcome !== 'running') return { ok: false, reason: 'No research is running in this chat.' };
     if (run.readCount() === 0) return { ok: false, reason: 'Nothing has been read yet, so there is nothing to write from. Stop it instead, or let it read a few sources.' };
-    if (!this.currentAbort || this.currentAbort.signal.aborted) return { ok: false, reason: 'The research is already finishing.' };
+    if (!state.currentAbort || state.currentAbort.signal.aborted) return { ok: false, reason: 'The research is already finishing.' };
     run.finishRequested = true;
-    this.currentAbortReason = 'stopped';
-    this.currentAbort.abort();
+    state.currentAbortReason = 'stopped';
+    state.currentAbort.abort();
     return { ok: true };
   }
 
@@ -1405,9 +1548,10 @@ export class Agent {
       0, // unanswered = Quick answer (not remembered — nobody chose)
     );
 
+    if (workKey && this.workLedger.get(workKey)?.status === 'cancelled') return;
     if (choice.toLowerCase().startsWith('full')) {
       const planFirst = /plan first/i.test(choice);
-      this.researchMode.setOn(msg.content.trim().slice(0, 160), { sessionId: msg.channelId, planFirst });
+      msg.metadata = { ...msg.metadata, requestedResearch: { topic: msg.content.trim().slice(0, 160), planFirst } };
       if (channel instanceof WebChannel) {
         // The research chip says it from here on (state, phase, sources).
         channel.sendResearchArmed(true, msg.channelId, { topic: msg.content.trim().slice(0, 160), planFirst });
@@ -1425,6 +1569,7 @@ export class Agent {
    * exactly like typing /stop locally. Returns the confirmation note.
    */
   async stopAllWork(reason: 'stopped' | 'halted'): Promise<string> {
+    this.stopMatchingWork(() => true, reason, 'Stopped by the owner.');
     if (this.currentAbort && !this.currentAbort.signal.aborted) {
       this.currentAbortReason = reason;
       this.currentAbort.abort();
@@ -1455,7 +1600,8 @@ export class Agent {
   }
 
   private async handleFastPathCommand(msg: ChannelMessage): Promise<void> {
-    return handleFastPathCommandImpl(this, msg);
+    const active = this.activeFor(this.sessionKey(msg)) ?? this.activeFor(msg.channelId);
+    return active ? this.turnStorage.run(active.state, () => handleFastPathCommandImpl(this, msg)) : handleFastPathCommandImpl(this, msg);
   }
 
   async handleFastPathSpotify(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
@@ -1885,6 +2031,7 @@ export class Agent {
   }
 
   private markProgress(activity?: string): void {
+    if (this.turnStorage?.getStore()?.finished) return;
     this.lastProgressAt = Date.now();
     if (activity) {
       this.currentActivity = activity;
@@ -2100,7 +2247,7 @@ export class Agent {
    * Session-scoped coding. A message that names a programming mode (Mercury
    * Desktop's Code surface) runs with THAT session's mode, plan and folder;
    * everything else (terminal, chat, other sessions) keeps the global mode.
-   * Turns are serial (processQueue), so a swap-run-restore is race-free.
+   * Each admitted turn has its own mode and capability context.
    */
   private readonly sessionProgramming = new Map<string, ProgrammingSnapshot>();
 
@@ -2136,44 +2283,88 @@ export class Agent {
   }
 
   private async processQueue(): Promise<void> {
-    if (this.processing) return;
-    if (this.messageQueue.length === 0) return;
-    if (!this.running) return;
-    if (!this.lifecycle.is('idle')) return;
-
-    this.processing = true;
-
+    // Retry timers may inherit an old turn's ALS. Admission uses only the coordinator.
+    if (this.dispatching || !this.running || this.providerMutation || !this.coordinatorState.lifecycle.is('idle')) return;
+    this.dispatching = true;
     try {
-      while (this.messageQueue.length > 0) {
-        const item = this.messageQueue.shift()!;
-        const msg = item.message;
+      while (this.activeTurns.size < 2 && this.messageQueue.length) {
+        const at = this.messageQueue.findIndex(({ message }, index) => {
+          const key = this.sessionKey(message);
+          if (this.activeTurns.has(key)) return false;
+          // Preserve FIFO within a canonical conversation, including transport aliases.
+          if (this.messageQueue.slice(0, index).some((item) => this.sessionKey(item.message) === key)) return false;
+          const exclusive = message.channelType !== 'web' || message.content.trim().startsWith('/');
+          if (exclusive) return index === 0 && this.activeTurns.size === 0;
+          // An earlier global command gets the next idle slot; it cannot starve.
+          if (this.messageQueue.slice(0, index).some((item) => item.message.channelType !== 'web' || item.message.content.trim().startsWith('/'))) return false;
+          const workspace = this.workspaceFor(message);
+          return ![...this.activeTurns.values()].some((turn) => turn.exclusive || (workspace && turn.workspace && (turn.workspace === workspace || turn.workspace.startsWith(workspace + path.sep) || workspace.startsWith(turn.workspace + path.sep))));
+        });
+        if (at < 0) break;
+        const item = this.messageQueue.splice(at, 1)[0];
         if (item.workKey) this.queuedWorkKeys.delete(item.workKey);
-        // The line moved: everyone still waiting learns their new place and what runs now.
-        this.announceQueue(msg);
-        this.currentWorkKey = item.workKey ?? null;
-        try {
-          if (item.workKey) this.workLedger.markRunning(item.workKey);
-          await this.withSessionProgramming(msg, () => this.handleMessage(msg));
-          if (item.workKey && this.workLedger.get(item.workKey)?.status === 'running') {
-            this.workLedger.markFailed(item.workKey, 'Work ended without producing a durable final response');
-          }
-        } catch (err) {
-          if (item.workKey) {
-            const entry = this.workLedger.get(item.workKey);
-            if (entry?.status === 'completed') this.workLedger.markDeliveryError(item.workKey, err);
-            else this.workLedger.markFailed(item.workKey, err);
-          }
-          logger.error({ err, msg: msg.content.slice(0, 50) }, 'Failed to handle message');
-        } finally {
-          this.currentWorkKey = null;
-          if (!this.lifecycle.is('idle') && this.lifecycle.canTransitionTo('idle')) {
-            this.lifecycle.transition('idle');
-          }
+        const msg = item.message;
+        const key = this.sessionKey(msg);
+        const root = this.coordinatorState;
+        const state = freshTurnState();
+        const exclusive = msg.channelType !== 'web' || msg.content.trim().startsWith('/');
+        state.lifecycle.transition('birthing');
+        state.lifecycle.transition('onboarding');
+        state.lifecycle.transition('idle');
+        state.programmingMode.restore(root.programmingMode.snapshot());
+        state.researchMode = exclusive ? root.researchMode : root.researchMode.forkForSession(msg.channelId);
+        const requestedResearch = msg.metadata?.requestedResearch as { topic?: unknown; planFirst?: unknown } | undefined;
+        if (requestedResearch && typeof requestedResearch.topic === 'string') {
+          state.researchMode.setOn(requestedResearch.topic, { sessionId: msg.channelId, planFirst: requestedResearch.planFirst === true });
         }
+        state.saverMode = exclusive ? root.saverMode : root.saverMode.fork();
+        state.currentMessage = msg;
+        state.currentAbort = new AbortController();
+        state.currentWorkKey = item.workKey ?? null;
+        const turn: ActiveTurn = { message: msg, state, exclusive, controller: state.currentAbort,
+          workspace: this.workspaceFor(msg) };
+        this.activeTurns.set(key, turn);
+        this.processing = true;
+        const defaults = this.capabilities.permissions.sessionContext();
+        const savedPermissions = this.sessionPermissions.get(key);
+        // A changed root policy invalidates remembered grants for future turns.
+        const base = savedPermissions?.defaults === defaults ? savedPermissions.context : defaults;
+        const context = makeContext({ ...base, channelType: msg.channelType, channelId: msg.channelId, senderRole: msg.senderRole, elevated: [] });
+        turn.done = this.turnStorage.run(state, () => this.capabilities.permissions.withContext(context, () =>
+          this.capabilities.withExecutionContext(async () => {
+            try {
+              if (item.workKey) this.workLedger.markRunning(item.workKey);
+              await this.withSessionProgramming(msg, () => this.handleMessage(msg));
+              if (item.workKey && this.workLedger.get(item.workKey)?.status === 'running') {
+                this.workLedger.markFailed(item.workKey, 'Work ended without producing a durable final response');
+              }
+            } catch (err) {
+              if (item.workKey) {
+                const entry = this.workLedger.get(item.workKey);
+                if (entry?.status === 'completed') this.workLedger.markDeliveryError(item.workKey, err);
+                else if (entry?.status !== 'cancelled') this.workLedger.markFailed(item.workKey, err);
+              }
+              logger.error({ err, sessionId: key }, 'Failed to handle message');
+            } finally {
+              this.sessionCwds.set(key, this.capabilities.getCwd());
+              if (this.sessionCwds.size > 200) this.sessionCwds.delete(this.sessionCwds.keys().next().value!);
+              const permissions = this.capabilities.permissions.currentContext();
+              this.sessionPermissions.set(key, { defaults, context: makeContext({ ...permissions, elevated: [] }) });
+              if (this.sessionPermissions.size > 200) this.sessionPermissions.delete(this.sessionPermissions.keys().next().value!);
+              if (exclusive) root.programmingMode.restore(state.programmingMode.snapshot());
+              state.finished = true;
+            }
+          }, { signal: state.currentAbort!.signal, cwd: this.capabilities.getDefaultCwd(), toolsDisabled: false }),
+        )).catch((error) => { logger.error({ error, sessionId: key }, 'Turn cleanup failed'); }).finally(() => {
+          this.activeTurns.delete(key);
+          this.processing = this.activeTurns.size > 0;
+          this.announceQueue();
+          void this.processQueue();
+        });
       }
+      this.announceQueue();
     } finally {
-      this.processing = false;
-      if (this.messageQueue.length > 0) void this.processQueue();
+      this.dispatching = false;
     }
   }
 
@@ -2382,7 +2573,8 @@ export class Agent {
 
   private channelProviderOverrides = new Map<string, { providerName: string; modelName: string; provider: BaseProvider }>();
   /** Dedupes the "served by a fallback provider" notice — one per (default → served) pair per runtime. */
-  private lastFallbackNoticeKey: string | null = null;
+  private get lastFallbackNoticeKey(): string | null { return this.turnState.lastFallbackNoticeKey; }
+  private set lastFallbackNoticeKey(value: string | null) { this.turnState.lastFallbackNoticeKey = value; }
   /** Mercury Code hand-off preference, remembered PER SESSION (like the
    * session permission modes): 'code' = auto-switch on coding tasks, 'chat' =
    * never ask in this session. Only EXPLICIT answers are remembered — a
@@ -2430,37 +2622,48 @@ export class Agent {
       return { ok: false, message: `Provider \`${providerName}\` is not configured for this local agent.` };
     }
 
-    const provider = await createProvider(
-      { ...config, model: modelName || config.model },
-      providerName === 'mercuryCloud' ? getCloudTokenStore() : undefined,
-    );
-    if (!provider) {
-      return { ok: false, message: `Provider \`${providerName}\` is not available in the running registry.` };
+    if (options.persist && (this.hasActiveModelWork() || this.providerMutation)) {
+      return { ok: false, message: 'Finish or stop active chats before changing the default provider.' };
     }
+    if (options.persist) this.providerMutation = true;
+    try {
+      const provider = await createProvider(
+        { ...config, model: modelName || config.model },
+        providerName === 'mercuryCloud' ? getCloudTokenStore() : undefined,
+      );
+      if (!provider) {
+        return { ok: false, message: `Provider \`${providerName}\` is not available in the running registry.` };
+      }
 
-    const previousOverride = this.channelProviderOverrides.get(channelId)?.provider as (BaseProvider & { destroy?: () => void }) | undefined;
-    if (previousOverride !== provider && this.providers.get(previousOverride?.name) !== previousOverride) {
-      previousOverride?.destroy?.();
+      const previousOverride = this.channelProviderOverrides.get(channelId)?.provider as (BaseProvider & { destroy?: () => void }) | undefined;
+      if (previousOverride !== provider && this.providers.get(previousOverride?.name) !== previousOverride) {
+        if (this.processing) {
+          void Promise.allSettled([...(this.activeTurns?.values() ?? [])].map((turn) => turn.done)).then(() => previousOverride?.destroy?.());
+        } else previousOverride?.destroy?.();
+      }
+      this.channelProviderOverrides.set(channelId, { providerName, modelName: provider.getModel(), provider });
+
+      if (options.persist && providerName in this.config.providers) {
+        const providerKey = providerName as ProviderName;
+        const providerConfig = this.config.providers[providerKey];
+        providerConfig.model = provider.getModel();
+        providerConfig.enabled = true;
+        this.config.providers.default = providerName as ProviderName;
+        this.providers.set(providerName, provider);
+        this.providers.setDefault(providerName);
+        saveConfig(this.config);
+        updateCliProviderStatus(this.channels.get('cli'), providerName, provider.getModel());
+      }
+
+      const saved = options.persist ? ' Saved as the default for future sessions.' : '';
+      return { ok: true, message: `This chat will use **${providerName}** · **${provider.getModel()}**.${saved}`, provider: providerName, model: provider.getModel() };
+    } finally {
+      if (options.persist) { this.providerMutation = false; void this.processQueue(); }
     }
-    this.channelProviderOverrides.set(channelId, { providerName, modelName: provider.getModel(), provider });
-
-    if (options.persist && providerName in this.config.providers) {
-      const providerKey = providerName as ProviderName;
-      const providerConfig = this.config.providers[providerKey];
-      providerConfig.model = provider.getModel();
-      providerConfig.enabled = true;
-      this.config.providers.default = providerName as ProviderName;
-      this.providers.set(providerName, provider);
-      this.providers.setDefault(providerName);
-      saveConfig(this.config);
-      updateCliProviderStatus(this.channels.get('cli'), providerName, provider.getModel());
-    }
-
-    const saved = options.persist ? ' Saved as the default for future sessions.' : '';
-    return { ok: true, message: `This chat will use **${providerName}** · **${provider.getModel()}**.${saved}`, provider: providerName, model: provider.getModel() };
   }
 
   async switchSessionProvider(providerName: string): Promise<{ ok: boolean; message: string }> {
+    if (this.hasActiveModelWork() || this.providerMutation) return { ok: false, message: 'Finish or stop active chats before changing the default provider.' };
     const active = getActiveProviders(this.config).map((p) => p.name);
     if (!active.includes(providerName)) {
       return { ok: false, message: `Provider \`${providerName}\` is not configured. Run \`mercury doctor\` to add/configure models.` };
@@ -2469,7 +2672,9 @@ export class Agent {
     this.config.providers.default = providerName as any;
     // In place: bots, kanban and the IDE hold this same registry, so a new
     // instance would leave them on the old (destroyed) providers.
-    await this.providers.reload(this.config, getCloudTokenStore());
+    this.providerMutation = true;
+    try { await this.providers.reload(this.config, getCloudTokenStore()); }
+    finally { this.providerMutation = false; void this.processQueue(); }
     const selected = this.providers.getDefault();
     const model = selected.getModel();
 
@@ -2496,6 +2701,7 @@ export class Agent {
 
   /** Public wrapper for web API model switching. */
   async switchProvider(providerName: string, model?: string): Promise<{ ok: boolean; message: string }> {
+    if (this.hasActiveModelWork() || this.providerMutation) return { ok: false, message: 'Finish or stop active chats before changing the default provider.' };
     // Providers like Ollama Local serve many models; pin the requested one
     // before the registry is rebuilt from config. Both values come from the
     // web API, so validate before writing: an unchecked key such as
@@ -2523,11 +2729,18 @@ export class Agent {
    * registry in place.
    */
   async reloadProviders(): Promise<{ ok: boolean; providers: string[]; default: string; model: string }> {
+    if (this.hasActiveModelWork() || this.providerMutation) {
+      const current = this.getCurrentProvider();
+      return { ok: false, providers: this.providers.listAvailable(), default: current.name, model: current.model };
+    }
     const fresh = loadConfig();
     Object.assign(this.config.providers, fresh.providers);
     this.config.memory.learning = { ...this.config.memory.learning, provider: fresh.memory.learning?.provider };
     if (fresh.bots?.fleets && this.config.bots?.fleets) this.config.bots.fleets.crewProvider = fresh.bots.fleets.crewProvider;
-    const { registered } = await this.providers.reload(this.config, getCloudTokenStore());
+    this.providerMutation = true;
+    let registered: string[];
+    try { ({ registered } = await this.providers.reload(this.config, getCloudTokenStore())); }
+    finally { this.providerMutation = false; void this.processQueue(); }
     const current = this.getCurrentProvider();
     updateCliProviderStatus(this.channels.get('cli'), current.name, current.model);
     return { ok: registered.length > 0, providers: registered, default: current.name, model: current.model };
@@ -2842,7 +3055,7 @@ export class Agent {
     const startTime = Date.now();
     // Short id printed on every terminal message and resolvable with /trace.
     const traceId = (msg.id || '').replace(/[^a-z0-9]/gi, '').slice(-8) || Date.now().toString(36);
-    let loopAbortController = new AbortController();
+    let loopAbortController = this.currentAbort ?? new AbortController();
     this.currentMessage = msg;
     this.currentAbort = loopAbortController;
     this.currentAbortReason = null;
@@ -3045,7 +3258,7 @@ export class Agent {
         return;
       }
 
-      if (this.tokenBudget.isOverBudget()) {
+      if (this.tokenBudget.isOverBudget(`${msg.channelType}:${msg.channelId}`)) {
         const channel = this.channels.getChannelForMessage(msg);
         if (channel && msg.channelType !== 'internal') {
           if (msg.channelType === 'cli') {
@@ -4885,6 +5098,7 @@ export class Agent {
       } catch { /* best effort */ }
       this.lifecycle.transition('idle');
     } finally {
+      await drainToolExecutions();
       if (chatFolder) {
         if (cwdBeforeChatFolder && this.capabilities.getCwd() === chatFolder) this.capabilities.setCwd(cwdBeforeChatFolder);
         this.chatFolders().close(chatFolder);
@@ -5216,11 +5430,12 @@ export class Agent {
     // Validation loop (§3.1): the beliefs the previous turn acted on earn
     // weak support once the owner's next message in the same session shows
     // no correction. Then remember what this turn acted on.
-    const pending = this.pendingActedOn;
+    const pending = ctx.sessionId ? this.pendingBeliefs.get(ctx.sessionId) : undefined;
     if (pending && pending.ids.length > 0 && pending.sessionId && pending.sessionId === ctx.sessionId && !signals.correction.detected) {
       try { beliefs.actedOnOk(pending.ids, pending.sessionId); } catch (err) { logger.debug({ err }, 'actedOnOk failed'); }
     }
-    this.pendingActedOn = ctx.sessionId ? { ids: [...(this.lastInjectedBeliefIds ?? [])], sessionId: ctx.sessionId } : null;
+    if (ctx.sessionId) this.pendingBeliefs.set(ctx.sessionId, { ids: [...this.lastInjectedBeliefIds], sessionId: ctx.sessionId });
+    if (this.pendingBeliefs.size > 200) this.pendingBeliefs.delete(this.pendingBeliefs.keys().next().value!);
 
     try {
       const ops = await extractBeliefOperations({
@@ -5285,24 +5500,60 @@ export class Agent {
    * queued for it. Other chats keep going. Returns whether anything stopped.
    */
   stopWorkFor(channelPrefix: string, reason = 'Stopped by the owner.'): boolean {
-    const dropped = this.messageQueue.filter((i) => i.message.channelId.startsWith(channelPrefix));
-    this.messageQueue = this.messageQueue.filter((i) => !i.message.channelId.startsWith(channelPrefix));
-    // Never started: cancel them, or a restart would run them after all.
+    return this.stopMatchingWork((message) => message.channelId.startsWith(channelPrefix), 'stopped', reason);
+  }
+
+  /** Stop only this canonical conversation, including queued transport aliases. */
+  async stopSessionWork(sessionId: string): Promise<string> {
+    const bound = this.sessions?.getByBinding('web', sessionId);
+    const target = this.activeFor(sessionId);
+    sessionId = bound?.id ?? (target ? this.sessionKey(target.message) : sessionId);
+    const aliases: Array<{ channelId: string; channelType: string }> = [];
+    try {
+      for (const binding of this.sessions.get(sessionId).bindings) {
+        aliases.push({ channelId: binding.externalConversationId, channelType: binding.channelType });
+      }
+    } catch { /* an unknown session must never become a global stop */ }
+    const matches = (message: ChannelMessage): boolean => this.sessionKey(message) === sessionId
+      || (!message.sessionId && aliases.some((alias) => alias.channelId === message.channelId && alias.channelType === message.channelType));
+    const stopped = this.stopMatchingWork(matches, 'stopped', 'Stopped by the owner in this chat.');
+    const children = await this.supervisor?.haltForSession(sessionId, aliases);
+    return stopped || children?.length ? 'This chat was stopped.' : 'This chat has no active work.';
+  }
+
+  private stopMatchingWork(matches: (message: ChannelMessage) => boolean, abortReason: 'stopped' | 'halted', reason: string): boolean {
+    const dropped = this.messageQueue.filter((item) => matches(item.message));
+    this.messageQueue = this.messageQueue.filter((item) => !matches(item.message));
     for (const item of dropped) {
       if (!item.workKey) continue;
       this.queuedWorkKeys.delete(item.workKey);
       try { this.workLedger.markCancelled(item.workKey, reason); } catch { /* entry may not exist */ }
     }
     let stopped = dropped.length > 0;
-    if (this.currentMessage?.channelId.startsWith(channelPrefix) && this.currentAbort && !this.currentAbort.signal.aborted) {
-      this.currentAbortReason = 'stopped';
-      this.currentAbort.abort();
-      if (this.currentWorkKey) {
-        try { this.workLedger.markCancelled(this.currentWorkKey, reason); } catch { /* entry may not exist */ }
-      }
+    if (this.workLedger.cancelMatching(matches, reason) > 0) stopped = true;
+    for (const [key, message] of this.pendingAdmissions ?? []) {
+      if (!matches(message)) continue;
+      try { this.workLedger.markCancelled(key, reason); } catch { /* entry may not exist */ }
+      const channel = this.channels.getChannelForMessage(message);
+      if (channel instanceof WebChannel) channel.cancelInteractionsFor(message.channelId);
       stopped = true;
     }
-    if (stopped) logger.info({ channelPrefix }, 'Work stopped for one channel');
+    const stop = (message: ChannelMessage, state: TurnState, controller = state.currentAbort): void => {
+      if (!matches(message)) return;
+      state.currentAbortReason = abortReason;
+      controller?.abort();
+      state.currentAbort?.abort();
+      if (state.currentWorkKey && ['queued', 'running', 'paused'].includes(this.workLedger.get(state.currentWorkKey)?.status ?? '')) {
+        try { this.workLedger.markCancelled(state.currentWorkKey, reason); } catch { /* entry may not exist */ }
+      }
+      const channel = this.channels?.getChannelForMessage(message);
+      if (channel instanceof WebChannel) channel.cancelInteractionsFor(message.channelId);
+      stopped = true;
+    };
+    for (const turn of this.activeTurns?.values() ?? []) stop(turn.message, turn.state, turn.controller);
+    // Compatibility for a directly managed CLI turn (and pre-dispatch callers).
+    if (!this.activeTurns?.size && this.currentMessage) stop(this.currentMessage, this.turnState);
+    if (stopped) this.announceQueue();
     return stopped;
   }
 
@@ -5316,6 +5567,10 @@ export class Agent {
   }
 
   async shutdown(): Promise<void> {
+    // Stop admission and drain tools before destroying their providers.
+    this.running = false;
+    await this.stopAllWork('stopped');
+    await Promise.allSettled([...(this.activeTurns?.values() ?? [])].map((turn) => turn.done));
     // Deliberate shutdown: never resume this work on restart.
     try { this.workLedger.cancelActive('Mercury was shut down.'); } catch { /* best effort */ }
     if (this.supervisor) {
@@ -5419,6 +5674,8 @@ Is this productive iteration or a stuck loop?`,
   }
 
   async presentChoice(question: string, choices: string[], channelId: string, channelType: string): Promise<string> {
+    const signal = this.currentAbort?.signal;
+    signal?.throwIfAborted();
     const channel = this.channels.get(channelType as any);
 
     if (channelType === 'cli' && channel instanceof CLIChannel) {
@@ -5428,6 +5685,7 @@ Is this productive iteration or a stuck loop?`,
       }));
 
       const selected = await channel.presentChoicePrompt(question, options);
+      signal?.throwIfAborted();
       const index = parseInt(selected, 10);
       return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
     }
@@ -5439,6 +5697,7 @@ Is this productive iteration or a stuck loop?`,
       }));
 
       const selected = await channel.presentChoicePrompt(question, options, channelId);
+      signal?.throwIfAborted();
       const index = parseInt(selected, 10);
       return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
     }
@@ -5450,6 +5709,7 @@ Is this productive iteration or a stuck loop?`,
       }));
 
       const selected = await channel.presentChoicePrompt(question, options, channelId);
+      signal?.throwIfAborted();
       const index = parseInt(selected, 10);
       return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
     }
@@ -5474,7 +5734,7 @@ Is this productive iteration or a stuck loop?`,
     const action = parts[0]?.toLowerCase();
 
     if (action === 'override' || action === '1') {
-      this.tokenBudget.forceAllowNext();
+      this.tokenBudget.forceAllowNext(`${channelType}:${channelId}`);
       await channel.send('Budget override applied — your next request will proceed.', channelId);
     } else if (action === 'reset' || action === '2') {
       this.tokenBudget.resetUsage();

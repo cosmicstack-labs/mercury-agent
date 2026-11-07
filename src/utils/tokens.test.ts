@@ -133,4 +133,30 @@ describe('TokenBudget hardening', () => {
     expect(budget.isOverBudget()).toBe(true);
     expect(budget.getRemaining()).toBe(0);
   });
+
+  it('lets only the named session consume its one-request override', () => {
+    const budget = new TokenBudget(configWith(1));
+    budget.recordUsage({ provider: 'test', model: 'test', inputTokens: 1, outputTokens: 0, totalTokens: 1, channelType: 'web' });
+    budget.forceAllowNext('web:a');
+    expect(budget.isOverBudget('web:b')).toBe(true);
+    expect(budget.isOverBudget()).toBe(true);
+    expect(budget.isOverBudget('web:a')).toBe(false);
+    expect(budget.isOverBudget('web:a')).toBe(true);
+  });
+
+  it('keeps legacy CLI and multiple session allowances independent and single-use', () => {
+    const budget = new TokenBudget(configWith(1));
+    budget.recordUsage({ provider: 'test', model: 'test', inputTokens: 1, outputTokens: 0, totalTokens: 1, channelType: 'web' });
+    budget.forceAllowNext();
+    budget.forceAllowNext('web:a');
+    budget.forceAllowNext('web:b');
+    budget.forceAllowNext('web:a'); // Repeated approval is still one next request.
+    expect(budget.isOverBudget('web:c')).toBe(true);
+    expect(budget.isOverBudget('web:b')).toBe(false);
+    expect(budget.isOverBudget('web:b')).toBe(true);
+    expect(budget.isOverBudget()).toBe(false);
+    expect(budget.isOverBudget()).toBe(true);
+    expect(budget.isOverBudget('web:a')).toBe(false);
+    expect(budget.isOverBudget('web:a')).toBe(true);
+  });
 });

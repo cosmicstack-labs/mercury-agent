@@ -325,6 +325,22 @@ export class WebChannel extends BaseChannel {
     return true;
   }
 
+  /** Stop waits belonging to one conversation; other sessions keep their prompts. */
+  cancelInteractionsFor(sessionId: string): void {
+    for (const [id, interaction] of this.pendingInteractions) {
+      if (interaction.sessionId !== sessionId) continue;
+      if (this.cancelInteraction(id, interaction.targetId)) {
+        this.broadcast({
+          type: interaction.kind === 'choice' ? 'choice_resolved' : 'permission_resolved',
+          data: { id, status: 'cancelled', targetId: sessionId },
+        });
+      }
+    }
+    for (const [id, plan] of this.researchPlans) {
+      if (plan.sessionId === sessionId) this.answerResearchPlan(id, 'cancel');
+    }
+  }
+
   private resolveInteraction(id: string, value: string, targetId: string | undefined, kinds: PendingInteractionKind[]): boolean {
     const interaction = this.pendingInteractions.get(id);
     if (!interaction || !kinds.includes(interaction.kind) || !interaction.allowedValues.has(value)) return false;

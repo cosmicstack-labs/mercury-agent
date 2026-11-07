@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 
 /**
  * Argv-lane execution: an auto-approved command must run through
- * execFile(absBinary, argv, { env: minimal }) — never spawn(..., {shell}).
+ * spawn(absBinary, argv, { shell: false, env: minimal }) — never a shell.
  */
 vi.mock('node:child_process', () => {
   const fakeChild = (stdoutText: string) => {
@@ -18,12 +18,15 @@ vi.mock('node:child_process', () => {
       child.stdout.write(stdoutText);
       child.exitCode = 0;
       child.emit('exit', 0);
+      child.stdout.end();
+      child.stderr.end();
+      child.emit('close', 0);
     }, 1);
     return child;
   };
   return {
     execFile: vi.fn(() => fakeChild('argv-output\n')),
-    spawn: vi.fn(() => fakeChild('shell-output\n')),
+    spawn: vi.fn((_file, _args, options) => fakeChild(options.shell ? 'shell-output\n' : 'argv-output\n')),
   };
 });
 
@@ -46,15 +49,15 @@ beforeEach(() => {
 });
 
 describe('run_command argv lane', () => {
-  it('executes an auto-approved command with execFile, the pinned absolute binary and a minimal env', async () => {
+  it('executes an auto-approved command with the pinned absolute binary, literal argv and a minimal env', async () => {
     const permissions = fakePermissions({ allowed: true, lane: 'argv' });
     const tool = createRunCommandTool(permissions, () => '/work', () => {});
     const out = await run(tool, { command: 'cat "my file.txt" other' });
 
     expect(out).toBe('argv-output');
-    expect(spawn).not.toHaveBeenCalled();
-    expect(execFile).toHaveBeenCalledTimes(1);
-    const [file, args, opts] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], any];
+    expect(execFile).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const [file, args, opts] = vi.mocked(spawn).mock.calls[0] as unknown as [string, string[], any];
     expect(file).toBe('/usr/bin/cat');
     expect(args).toEqual(['my file.txt', 'other']);
     expect(opts.cwd).toBe('/work');
@@ -67,8 +70,9 @@ describe('run_command argv lane', () => {
   it('a user-approved command that the argv lane can express still runs without a shell', async () => {
     const tool = createRunCommandTool(fakePermissions({ allowed: true, lane: 'shell' }), () => '/work', () => {});
     await run(tool, { command: 'git log --oneline' });
-    expect(spawn).not.toHaveBeenCalled();
-    const [file, args] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[]];
+    expect(execFile).not.toHaveBeenCalled();
+    const [file, args, opts] = vi.mocked(spawn).mock.calls[0] as unknown as [string, string[], { shell: boolean }];
+    expect(opts.shell).toBe(false);
     expect(file).toBe('/usr/bin/git');
     expect(args.slice(-1)).toEqual(['--oneline']);
     expect(args).toContain('core.fsmonitor=false');

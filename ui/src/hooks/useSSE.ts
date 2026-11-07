@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useChatStore } from "@/stores/chat";
 import { createEventStream, type EventStream } from "@/lib/sse";
+import { acceptsSessionEvent } from "../lib/chat-session";
 
 interface SSEResult {
   connected: boolean;
@@ -25,12 +26,26 @@ export function useSSE(): SSEResult {
     const es = createEventStream(`/api/chat/events${query}`);
     esRef.current = es;
 
+    const current = () => esRef.current === es && store.getState().activeThreadId === activeSessionId;
+    const on = (type: string, listener: (event: MessageEvent) => void, global = false) => {
+      es.addEventListener(type, (event) => {
+        if (!current()) return;
+        let data: unknown;
+        try { data = JSON.parse(event.data); } catch { data = null; }
+        if (!acceptsSessionEvent(activeSessionId, data, global)) return;
+        if (!global) store.setState((state) => ({ eventVersion: state.eventVersion + 1 }));
+        listener(event);
+      });
+    };
+
     es.onopen = () => {
+      if (!current()) return;
       setConnected(true);
       setReconnecting(false);
     };
 
     es.onerror = () => {
+      if (!current()) return;
       setConnected(false);
       es.close();
       esRef.current = null;
@@ -41,27 +56,27 @@ export function useSSE(): SSEResult {
       }, 3000);
     };
 
-    es.addEventListener("connected", (e) => {
+    on("connected", (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);
         store.getState().setProvider(data.provider ?? "");
         store.getState().setModel(data.model ?? "");
       } catch { /* ignore */ }
-    });
+    }, true);
 
-    es.addEventListener("thinking", () => {
+    on("thinking", () => {
       store.getState().setWaiting(true);
     });
 
-    es.addEventListener("provider", (e) => {
+    on("provider", (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);
         store.getState().setProvider(data.provider ?? "");
         store.getState().setModel(data.model ?? "");
       } catch { /* ignore */ }
-    });
+    }, true);
 
-    es.addEventListener("step_start", (e) => {
+    on("step_start", (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);
         store.getState().setSteps(
@@ -72,7 +87,7 @@ export function useSSE(): SSEResult {
       } catch { /* ignore */ }
     });
 
-    es.addEventListener("step_done", (e) => {
+    on("step_done", (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);
         store.getState().setSteps(
@@ -83,7 +98,7 @@ export function useSSE(): SSEResult {
       } catch { /* ignore */ }
     });
 
-    es.addEventListener("text_delta", (e) => {
+    on("text_delta", (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);
         store.getState().setWaiting(false);
@@ -91,7 +106,7 @@ export function useSSE(): SSEResult {
       } catch { /* ignore */ }
     });
 
-    es.addEventListener("text_done", (e) => {
+    on("text_done", (e) => {
       try {
         const raw = (e as MessageEvent).data;
         const data = JSON.parse(raw);
@@ -115,7 +130,7 @@ export function useSSE(): SSEResult {
       }
     });
 
-    es.addEventListener("permission_request", (e) => {
+    on("permission_request", (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);
         store.getState().addMessage({
@@ -127,19 +142,19 @@ export function useSSE(): SSEResult {
       } catch { /* ignore */ }
     });
 
-    es.addEventListener("permission_continue", () => {
+    on("permission_continue", () => {
       // Permission resolved, no special action needed
     });
 
-    es.addEventListener("permission_mode", () => {
+    on("permission_mode", () => {
       // Informational, no action needed
     });
 
-    es.addEventListener("loop_warning", () => {
+    on("loop_warning", () => {
       // Could surface a warning in the future
     });
 
-    es.addEventListener("error", (e) => {
+    on("error", (e) => {
       const msg = (e as MessageEvent).data ?? "An error occurred";
       store.getState().setWaiting(false);
       store.getState().clearStreaming();

@@ -146,7 +146,7 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
       <ResearchBar />
       {/* While research runs, its bar shows the questions (and Details the checklist): one progress display, not two. */}
       {!researching && <PlanCard surface={composer.surface} />}
-      <Composer {...composer} />
+      <Composer key={activeId ?? "new"} {...composer} />
     </section>
   );
 }

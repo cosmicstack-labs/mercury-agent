@@ -9,7 +9,7 @@ import { ConfirmButton } from "~/components/ui/kit";
 
 /**
  * In place of "Thinking" while this chat's message waits its turn: Mercury
- * works on one thing at a time, and another chat is ahead. Says which one and
+ * has no available slot, and another chat is ahead. Says which one and
  * what it's doing, and offers to open it or to go first (which stops it).
  */
 export function WaitingNotice({ threadId, waiting }: { threadId: string | null; waiting: { position: number; busyWith?: string; busySessionId?: string } }) {
@@ -21,12 +21,12 @@ export function WaitingNotice({ threadId, waiting }: { threadId: string | null; 
   const ahead = waiting.position > 1 ? ` ${waiting.position - 1} more ${waiting.position - 1 === 1 ? "message is" : "messages are"} ahead of yours.` : " Yours is next.";
 
   async function goFirst() {
-    if (!threadId) return;
+    if (!threadId || !waiting.busySessionId) return;
     setBusy(true);
     setProblem(null);
     try {
       await api.chat.queueFirst(threadId);
-      await api.chat.stop();
+      await api.chat.stop(waiting.busySessionId);
     } catch (e) {
       setProblem(e instanceof Error ? e.message : String(e));
     } finally {
@@ -47,13 +47,13 @@ export function WaitingNotice({ threadId, waiting }: { threadId: string | null; 
       <div className="flex items-start gap-2.5">
         <Clock size={15} className="mt-0.5 shrink-0 text-ink3" aria-hidden="true" />
         <p className="text-sm text-ink2">
-          <span className="font-medium text-ink">Waiting.</span> Mercury works on one thing at a time and is finishing{" "}
+          <span className="font-medium text-ink">Waiting for an available slot.</span> Mercury is finishing{" "}
           {waiting.busyWith ? <>“{waiting.busyWith}”</> : "something"} in <span className="text-ink">{otherName}</span>.{ahead}
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2 pl-[25px]">
         {waiting.busySessionId && <Button size="sm" variant="ghost" onClick={openOther}>Open that chat</Button>}
-        {threadId && (
+        {threadId && waiting.busySessionId && (
           <ConfirmButton size="sm" variant="ghost" confirmLabel="Stop it and start yours?" loading={busy} onConfirm={() => void goFirst()}>
             Do mine first
           </ConfirmButton>

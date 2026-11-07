@@ -7,8 +7,7 @@ import { Agent } from './agent.js';
 import { WorkLedger } from './work-ledger.js';
 
 /**
- * Two chats at once on the desktop: Mercury runs one turn at a time, so the
- * second waits. It must say so (its place in line, and what's ahead of it)
+ * A chat waiting for capacity or an exclusive turn needs its place in line. It must say so (its place in line, and what's ahead of it)
  * instead of showing "Thinking" for a turn that hasn't started — and the
  * owner can put it first.
  */

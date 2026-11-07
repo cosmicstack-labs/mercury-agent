@@ -31,12 +31,12 @@ describe("research on the desktop", () => {
   it("follows a run, and puts the finished run's card on its answer", () => {
     const store = conversations.chat;
     store.setState({ activeId: "t1", messages: [{ id: "u", role: "user", content: "q", timestamp: "" }], research: null, agent: "working" });
-    handleEvent(store, "research", JSON.stringify({ state: "armed", planFirst: true, topic: "solar storms" }));
+    handleEvent(store, "research", JSON.stringify({ targetId: "t1", state: "armed", planFirst: true, topic: "solar storms" }));
     expect(store.getState().research).toMatchObject({ armed: true, planFirst: true });
-    handleEvent(store, "research", JSON.stringify(snap()));
+    handleEvent(store, "research", JSON.stringify({ ...snap(), targetId: "t1" }));
     expect(store.getState().research).toMatchObject({ armed: false, run: { runId: "r1", state: "running" } });
-    handleEvent(store, "text_done", JSON.stringify({ fullText: "# Solar storms\n\nReport" }));
-    handleEvent(store, "research", JSON.stringify(snap({ state: "done", cited: 2 })));
+    handleEvent(store, "text_done", JSON.stringify({ targetId: "t1", fullText: "# Solar storms\n\nReport" }));
+    handleEvent(store, "research", JSON.stringify({ ...snap({ state: "done", cited: 2 }), targetId: "t1" }));
     const last = store.getState().messages[store.getState().messages.length - 1];
     expect(last.research).toMatchObject({ runId: "r1", state: "done", cited: 2 });
   });
@@ -44,19 +44,19 @@ describe("research on the desktop", () => {
   it("a stall notice is a note, not the answer", () => {
     const store = conversations.chat;
     store.setState({ activeId: "t1", messages: [], notice: null });
-    handleEvent(store, "notice", JSON.stringify({ message: "Mercury detected a stalled provider", level: "warning" }));
+    handleEvent(store, "notice", JSON.stringify({ targetId: "t1", message: "Mercury detected a stalled provider", level: "warning" }));
     expect(store.getState().notice).toMatchObject({ level: "warning" });
     expect(store.getState().messages).toHaveLength(0);
-    handleEvent(store, "text_done", JSON.stringify({ fullText: "done" }));
+    handleEvent(store, "text_done", JSON.stringify({ targetId: "t1", fullText: "done" }));
     expect(store.getState().notice).toBeNull();
   });
 
   it("a research plan waits for an answer and goes when it's resolved", () => {
     const store = conversations.chat;
     store.setState({ activeId: "t1", researchPlan: null });
-    handleEvent(store, "research_plan", JSON.stringify({ id: "rplan_1", runId: "r1", topic: "t", questions: ["a?", "b?"], expiresAt: 1 }));
+    handleEvent(store, "research_plan", JSON.stringify({ targetId: "t1", id: "rplan_1", runId: "r1", topic: "t", questions: ["a?", "b?"], expiresAt: 1 }));
     expect(store.getState().researchPlan?.questions).toEqual(["a?", "b?"]);
-    handleEvent(store, "research_plan_resolved", JSON.stringify({ id: "rplan_1", action: "start" }));
+    handleEvent(store, "research_plan_resolved", JSON.stringify({ targetId: "t1", id: "rplan_1", action: "start" }));
     expect(store.getState().researchPlan).toBeNull();
   });
 });

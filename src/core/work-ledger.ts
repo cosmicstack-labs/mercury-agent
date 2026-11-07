@@ -182,20 +182,27 @@ export class WorkLedger {
    * entries survive and recoverInterrupted() resumes them.
    */
   cancelActive(reason = 'Mercury was stopped by the user'): number {
+    return this.cancelMatching(() => true, reason);
+  }
+
+  /** Include durable retries waiting outside the in-memory queue. */
+  cancelMatching(matches: (message: ChannelMessage) => boolean, reason = 'Stopped by the user'): number {
     let count = 0;
     for (const entry of this.entries.values()) {
       if (entry.status !== 'queued' && entry.status !== 'running') continue;
+      if (!matches(entry.message)) continue;
       this.markCancelled(entry.key, reason);
       count += 1;
     }
     if (count > 0) {
-      logger.info({ count }, 'Deliberate shutdown: active work marked cancelled (no auto-resume)');
+      logger.info({ count }, 'Matching work marked cancelled (no auto-resume)');
     }
     return count;
   }
 
   markRetry(key: string, error: unknown, nextAttemptAt: number, context: WorkContinuationContext = {}): WorkEntry {
     return this.update(key, (entry) => {
+      if (entry.status === 'cancelled') return;
       entry.status = 'queued';
       entry.error = error instanceof Error ? error.message : String(error);
       entry.nextAttemptAt = nextAttemptAt;
