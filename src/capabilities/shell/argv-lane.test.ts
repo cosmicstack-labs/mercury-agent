@@ -178,7 +178,11 @@ describe('pinned binaries and minimal env (#103)', () => {
 
   it.skipIf(process.platform === 'win32')('keeps the canonical executable and the allowlisted applet name separate', () => {
     root = realpathSync(mkdtempSync(join(tmpdir(), 'mercury-multicall-')));
-    const binary = realpathSync(process.execPath);
+    // Hosted Node toolcaches can be world-writable, which this resolver must
+    // reject. Own the executable's permissions instead of relying on the host.
+    const binary = join(root, 'multicall');
+    writeFileSync(binary, '#!/bin/sh\n');
+    chmodSync(binary, 0o755);
     symlinkSync(binary, join(root, 'cat'));
     const dir = root;
     const plan = planArgvExecution('cat "my file.txt"', (program) => resolveFromDirs(program, [dir]));
@@ -187,6 +191,10 @@ describe('pinned binaries and minimal env (#103)', () => {
     for (const command of ['sh', 'busybox sh', 'coreutils --coreutils-prog=rm', '/bin/cat "my file.txt"']) {
       expect(planArgvExecution(command, () => binary)).toBeNull();
     }
+    // Following a trusted-looking applet symlink must still check its target.
+    chmodSync(binary, 0o777);
+    expect(resolveFromDirs('cat', [dir])).toBeUndefined();
+    expect(planArgvExecution('cat "my file.txt"', (program) => resolveFromDirs(program, [dir]))).toBeNull();
   });
 
   it('minimal env carries the pinned PATH and drops secrets and loader/config vars', () => {
