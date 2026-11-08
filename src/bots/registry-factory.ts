@@ -180,7 +180,7 @@ export function filterBotTools(all: Record<string, any>, manifest: BotManifest, 
   const deny = new Set(gate.deny ?? []);
   const out: Record<string, any> = {};
   for (const [name, tool] of Object.entries(all)) {
-    if (ALWAYS_STRIPPED.has(name) || isMcpToolName(name)) continue;
+    if (ALWAYS_STRIPPED.has(name) || isMcpToolName(name) || name.startsWith('browser_')) continue;
     if (deny.has(name)) continue;
     // Plugin tools are opt-in for bots (fail-closed): only an explicit allow
     // entry ("<plugin>__<tool>" or "<plugin>__*") lets a bot see one. A

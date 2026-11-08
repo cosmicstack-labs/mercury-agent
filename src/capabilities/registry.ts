@@ -72,6 +72,8 @@ import type { UserMemoryStore } from '../memory/user-memory.js';
 import { logger } from '../utils/logger.js';
 import type { McpManager } from './mcp/manager.js';
 import type { McpServerStatus } from './mcp/types.js';
+import { IsolatedBrowserReader } from './browser/reader.js';
+import { createBrowserTools } from './browser/tools.js';
 
 export interface ChatCommandContext {
   toolNames: () => string[];
@@ -105,6 +107,7 @@ export class CapabilityRegistry {
   private currentCwd = process.cwd();
   private researchModeGetter: (() => boolean) | null = null;
   private mcp?: McpManager;
+  private browser?: IsolatedBrowserReader;
 
   /**
    * Mercury Bots dispatch handler — set once the BotManager exists
@@ -149,8 +152,8 @@ export class CapabilityRegistry {
    * sub-agent (running under its own context) never overwrites the main
    * agent's channel, and its prompts route to its own source channel.
    */
-  setChannelContext(channelId: string, channelType: string): void {
-    this.permissions.setCurrentContext(channelType, channelId);
+  setChannelContext(channelId: string, channelType: string, sessionId?: string): void {
+    this.permissions.setCurrentContext(channelType, channelId, sessionId);
   }
 
   getChannelContext(): { channelId: string; channelType: string } {
@@ -218,6 +221,10 @@ export class CapabilityRegistry {
 
   registerAll(): void {
     const manifest = this.permissions.getManifest();
+
+    if (manifest.capabilities.browser?.enabled && !this.permissions.isFailClosed()) {
+      this.browser ??= new IsolatedBrowserReader({ executable: manifest.capabilities.browser.executable });
+    }
 
     if (manifest.capabilities.filesystem.enabled) {
       this.tools.read_file = createReadFileTool(this.permissions, () => this.getCwd());
@@ -317,12 +324,14 @@ export class CapabilityRegistry {
     this.mcp = manager;
   }
 
+  async closeBrowserSessions(): Promise<void> { await this.browser?.closeAll(); }
+
   getMcpManager(): McpManager | undefined {
     return this.mcp;
   }
 
   private allTools(): Record<string, Tool> {
-    return this.mcp ? { ...this.tools, ...this.mcp.getTools() } : this.tools;
+    return { ...this.tools, ...this.mcp?.getTools(), ...(this.browser ? createBrowserTools(this.permissions, this.browser) : {}) };
   }
 
   getTools(): Record<string, Tool> {
@@ -342,7 +351,7 @@ export class CapabilityRegistry {
     if (this.permissions.getCurrentSenderRole() === 'member') {
       const filtered: Record<string, Tool> = {};
       for (const [name, tool] of Object.entries(this.tools)) {
-        if (name !== 'install_skill' && name !== 'create_skill') filtered[name] = tool;
+        if (name !== 'install_skill' && name !== 'create_skill' && !name.startsWith('browser_')) filtered[name] = tool;
       }
       return filtered;
     }
@@ -374,6 +383,7 @@ export class CapabilityRegistry {
       'git_add', 'git_commit', 'git_push',
       'create_pr', 'create_issue',
       'delegate_task',
+      'browser_navigate', 'browser_snapshot', 'browser_close',
     ]);
     const filtered: Record<string, Tool> = {};
     for (const [name, tool] of Object.entries(this.tools)) {

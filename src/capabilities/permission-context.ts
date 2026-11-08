@@ -27,6 +27,8 @@ export interface ContextScope {
 export interface PermissionContext {
   readonly channelType: string;
   readonly channelId: string;
+  /** Canonical repository session, supplied by the agent, never tool arguments. */
+  readonly sessionId?: string;
   readonly senderRole: 'admin' | 'member' | undefined;
   /** Allow-all: approved-scope actions and non-blocked commands run without prompts. */
   readonly autoApprove: boolean;
@@ -52,6 +54,7 @@ export function makeContext(fields: Partial<PermissionContext> = {}): Permission
   return Object.freeze({
     channelType: fields.channelType ?? 'cli',
     channelId: fields.channelId ?? 'cli',
+    ...(fields.sessionId ? { sessionId: fields.sessionId } : {}),
     senderRole: fields.senderRole,
     autoApprove: fields.autoApprove ?? false,
     autoApproveOrigin: fields.autoApprove ? (fields.autoApproveOrigin ?? 'session') : null,

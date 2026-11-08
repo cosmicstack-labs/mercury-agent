@@ -24,7 +24,7 @@ export const ORCHESTRATION_TOOLS: readonly string[] = ['delegate_task', 'list_ag
 export function resolveChildTools<T>(all: Record<string, T>, allowed?: readonly string[]): Record<string, T> {
   const granted = new Set(allowed ?? []);
   const withoutOrchestration = Object.fromEntries(
-    Object.entries(all).filter(([name]) => !ORCHESTRATION_TOOLS.includes(name) || granted.has(name)),
+    Object.entries(all).filter(([name]) => !name.startsWith('browser_') && (!ORCHESTRATION_TOOLS.includes(name) || granted.has(name))),
   );
   return filterToolsByAllowlist(withoutOrchestration, allowed);
 }

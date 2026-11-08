@@ -3220,7 +3220,7 @@ export class Agent {
         this.markProgress();
       }
 
-      this.capabilities.setChannelContext(msg.channelId, msg.channelType);
+      this.capabilities.setChannelContext(msg.channelId, msg.channelType, canonicalSession.id);
       this.capabilities.permissions.setCurrentChannelType(msg.channelType);
       this.capabilities.permissions.setCurrentSenderRole(msg.senderRole);
 
@@ -5322,6 +5322,7 @@ export class Agent {
       await this.supervisor.haltAll();
     }
     this.backgroundTasks.destroy();
+    await this.capabilities.closeBrowserSessions();
     this.providers.destroy();
     await this.sleep();
     logger.info('Mercury has shut down');

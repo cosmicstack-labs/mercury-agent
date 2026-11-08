@@ -25,6 +25,11 @@ import type { McpGateRequest, McpGateResult } from './mcp/types.js';
 
 export type { PermissionContext } from './permission-context.js';
 
+/** Owner-only approvals must not be answered by a channel's Allow All mode. */
+export interface AskOptions {
+  alwaysAsk?: boolean;
+}
+
 /**
  * Arguments as the owner sees them in an approval prompt. Up to 4,000
  * characters are shown whole. Longer ones keep the start AND the end, with
@@ -133,6 +138,8 @@ export interface PermissionsManifest {
     filesystem: FsPermissions;
     shell: ShellPermissions;
     git: GitPermissions;
+    /** Installed-browser read-only rendering is opt-in; no engine is bundled. */
+    browser?: { enabled: boolean; executable?: string };
   };
 }
 
@@ -389,7 +396,7 @@ export function splitShellSegments(command: string): string[] {
 export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
-  private askHandler?: (prompt: string) => Promise<string>;
+  private askHandler?: (prompt: string, options?: AskOptions) => Promise<string>;
   private turnAnswers: Array<{ action: string; answer: 'yes' | 'no' | 'always' }> = [];
   /**
    * The main agent's (root) context: replaced, never mutated, by the
@@ -547,8 +554,8 @@ export class PermissionManager {
     this.updateContext(() => ({ channelType: type }));
   }
 
-  setCurrentContext(type: string, id: string): void {
-    this.updateContext(() => ({ channelType: type, channelId: id }));
+  setCurrentContext(type: string, id: string, sessionId?: string): void {
+    this.updateContext(() => ({ channelType: type, channelId: id, sessionId }));
   }
 
   getCurrentChannelType(): string {
@@ -567,11 +574,11 @@ export class PermissionManager {
     return this.ctx().senderRole;
   }
 
-  onAsk(handler: (prompt: string) => Promise<string>): void {
+  onAsk(handler: (prompt: string, options?: AskOptions) => Promise<string>): void {
     // Every answer the owner gives is evidence for the Owner Model (autonomy,
     // risk per action type); the learning loop drains it once per turn.
-    this.askHandler = async (prompt: string) => {
-      const answer = await handler(prompt);
+    this.askHandler = async (prompt: string, options?: AskOptions) => {
+      const answer = await (options ? handler(prompt, options) : handler(prompt));
       if (answer === 'yes' || answer === 'no' || answer === 'always') {
         const action = prompt.split('\n')[0].replace(/:.*$/, '').trim().slice(0, 40) || 'action';
         this.turnAnswers.push({ action, answer });
@@ -588,13 +595,13 @@ export class PermissionManager {
     return out;
   }
 
-  async requestApproval(prompt: string): Promise<boolean> {
+  async requestApproval(prompt: string, options?: AskOptions): Promise<boolean> {
     const ctx = this.ctx();
     // No one can answer on the internal channel: only an allow-all context
     // (the internal turn's own grant) approves; a child of it does not.
     if (ctx.channelType === 'internal') return ctx.autoApprove;
     if (!this.askHandler) return false;
-    const result = await this.askHandler(prompt);
+    const result = await (options ? this.askHandler(prompt, options) : this.askHandler(prompt));
     return result === 'yes' || result === 'always';
   }
 
@@ -1366,6 +1373,10 @@ export class PermissionManager {
 
     return {
       capabilities: {
+        ...(parsed.capabilities?.browser ? { browser: {
+          enabled: parsed.capabilities.browser.enabled === true,
+          ...(typeof parsed.capabilities.browser.executable === 'string' ? { executable: parsed.capabilities.browser.executable } : {}),
+        } } : {}),
         filesystem: {
           enabled: parsed.capabilities?.filesystem?.enabled ?? DEFAULT_MANIFEST.capabilities.filesystem.enabled,
           scopes: parsed.capabilities?.filesystem?.scopes ?? DEFAULT_MANIFEST.capabilities.filesystem.scopes,
