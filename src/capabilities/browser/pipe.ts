@@ -19,6 +19,7 @@ export class BrowserPipe {
     const read = child.stdio[4] as Readable;
     read.setEncoding('utf8');
     read.on('data', (chunk: string) => {
+      if (this.closed) return;
       this.buffer += chunk;
       if (this.buffer.length > 8_000_000) { this.fail(); return; }
       let at: number;
@@ -88,6 +89,7 @@ export class BrowserPipe {
   fail(): void {
     if (this.closed) return;
     this.closed = true;
+    this.buffer = '';
     this.writes = [];
     this.queuedBytes = 0;
     for (const entry of this.pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('Browser closed unexpectedly.')); }

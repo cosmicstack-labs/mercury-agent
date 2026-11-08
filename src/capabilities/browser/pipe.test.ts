@@ -51,6 +51,23 @@ describe('private CDP pipe bounds and failure handling', () => {
     expect(failure).toHaveBeenCalledOnce();
   });
 
+  it('discards partial and late browser output once the transport is closed', async () => {
+    const { pipe, output } = connection();
+    const event = vi.fn();
+    pipe.onEvent = event;
+    const pending = expect(pipe.send('Page.enable')).rejects.toThrow('closed');
+    output.write('{"id":1,"res');
+    pipe.fail();
+    await pending;
+    const buffered = () => (pipe as unknown as { buffer: string }).buffer;
+    expect(buffered()).toBe('');
+    output.write('{"method":"Fetch.requestPaused","params":{}}\0');
+    output.write('x'.repeat(8_000_001));
+    output.write('y'.repeat(8_000_001));
+    expect(event).not.toHaveBeenCalled();
+    expect(buffered()).toBe('');
+  });
+
   it('rejects oversized or malformed messages and process exit while a command is pending', async () => {
     for (const fail of [(c: ReturnType<typeof connection>) => c.output.write('x'.repeat(8_000_001)),
       (c: ReturnType<typeof connection>) => c.output.write('invalid-json\0'),
