@@ -1,6 +1,6 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
-import { spawn, execFile, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve, isAbsolute } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -26,6 +26,8 @@ interface ExecResult {
 }
 
 interface ExecOptions {
+  /** Validated applet name, kept separate from the canonical executable path. */
+  argv0?: string;
   /** Abort from the agent loop; the child is terminated when it fires. */
   signal?: AbortSignal;
   /** Called on output and periodically while the child is alive. */
@@ -45,20 +47,19 @@ export function executeCommand(command: string, cwd: string, timeoutMs: number, 
 }
 
 /**
- * Argv-lane executor: `execFile(absBinary, args)` with no shell and a
- * minimal environment (pinned PATH, no secrets). Used only for commands the
- * argv lane auto-approved.
+ * Argv-lane executor: the pinned absolute binary and literal arguments, with
+ * no shell and a minimal environment. spawn forwards argv0 so a canonical
+ * multicall binary (Termux coreutils, BusyBox) selects the validated applet.
  */
 export function executeArgv(file: string, args: readonly string[], cwd: string, timeoutMs: number, options: ExecOptions = {}): Promise<ExecResult> {
-  return superviseChild(() => execFile(file, [...args], {
+  return superviseChild(() => spawn(file, [...args], {
     cwd,
+    argv0: options.argv0,
     env: minimalEnv(),
     shell: false,
     windowsHide: true,
-    // Output is bounded by the stream handlers below; execFile's own buffer
-    // limit would kill a long but legitimate listing.
-    maxBuffer: Number.MAX_SAFE_INTEGER,
-  }, () => { /* results are collected from the streams */ }), timeoutMs, options);
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }), timeoutMs, options);
 }
 
 function superviseChild(start: () => ChildProcess, timeoutMs: number, options: ExecOptions): Promise<ExecResult> {
@@ -173,7 +174,7 @@ The optional timeout parameter sets how long (in seconds) the command can run be
 
       const timeoutMs = (timeout ?? 120) * 1000;
 
-      // Any command the argv lane can express runs through execFile, whichever
+      // Any command the argv lane can express runs without a shell, whichever
       // lane approved it; only commands that need a shell reach one.
       const plan = planArgvExecution(command);
       if (plan?.kind === 'builtin') {
@@ -189,7 +190,7 @@ The optional timeout parameter sets how long (in seconds) the command can run be
         logger.info({ cmd: command, cwd, timeoutMs, lane: plan ? 'argv' : 'shell' }, 'Executing command');
         const execOptions = { signal: toolOptions?.abortSignal, onActivity: pulseProgress };
         const result = plan
-          ? await executeArgv(plan.file, plan.args, cwd, timeoutMs, execOptions)
+          ? await executeArgv(plan.file, plan.args, cwd, timeoutMs, { ...execOptions, argv0: plan.argv[0] })
           : await executeCommand(command, cwd, timeoutMs, execOptions);
 
         if (result.stdout || result.stderr) {
