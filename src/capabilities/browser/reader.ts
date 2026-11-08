@@ -96,7 +96,16 @@ class ReaderPage {
     this.pipe = new BrowserPipe(this.child);
     this.pipe.onFailure = () => this.closeInBackground();
     this.pipe.onEvent = (event) => { void this.handleEvent(event).catch(() => this.closeInBackground()); };
-    const { targetInfos } = await this.pipe.send<{ targetInfos: Array<{ type: string; targetId: string }> }>('Target.getTargets');
+    // A cold installed browser can need longer than an already-running CDP
+    // command. Only bootstrap gets 30 seconds, and cancellation stays prompt.
+    const cancelStartup = () => this.pipe!.fail();
+    this.lifetime.signal.addEventListener('abort', cancelStartup, { once: true });
+    let targetInfos: Array<{ type: string; targetId: string }>;
+    try {
+      ({ targetInfos } = await this.pipe.send<{ targetInfos: Array<{ type: string; targetId: string }> }>('Target.getTargets', {}, undefined, 30_000));
+    } finally {
+      this.lifetime.signal.removeEventListener('abort', cancelStartup);
+    }
     this.targetId = targetInfos.find((t) => t.type === 'page')?.targetId ?? '';
     if (!this.targetId) throw new Error('Browser did not create an empty page.');
     ({ sessionId: this.sessionId } = await this.pipe.send<{ sessionId: string }>('Target.attachToTarget', { targetId: this.targetId, flatten: true }));
@@ -241,7 +250,8 @@ class ReaderPage {
 
   close(): Promise<void> {
     if (this.closing) return this.closing;
-    this.closing = this.finishClose().catch((error) => { this.closing = undefined; throw error; });
+    // Set the promise before aborting: a startup pipe failure can reenter close.
+    this.closing = Promise.resolve().then(() => this.finishClose()).catch((error) => { this.closing = undefined; throw error; });
     return this.closing;
   }
 

@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { createServer, type Server } from 'node:http';
 import { stat, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import type { Readable } from 'node:stream';
 import { IsolatedBrowserReader } from './reader.js';
 import { BrowserPipe } from './pipe.js';
 import { browserUrl, requestPublicResource, type BrowserTransport } from './public-request.js';
@@ -100,7 +101,7 @@ describe.skipIf(process.env.MERCURY_TEST_BROWSER !== '1')('installed browser aga
       await writeFile(join(process.env.MERCURY_BROWSER_EVIDENCE_DIR, 'isolated-reader.jpg'), Buffer.from(result!.image, 'base64'));
       await writeFile(join(process.env.MERCURY_BROWSER_EVIDENCE_DIR, 'snapshot.txt'), result!.text);
     }
-  }, 30_000);
+  }, 45_000); // Includes the bounded 30-second cold-browser startup allowance.
 
   it('isolates two sessions, enforces capacity and removes profiles on explicit close', async () => {
     const browser = reader();
@@ -172,6 +173,32 @@ describe.skipIf(process.env.MERCURY_TEST_BROWSER !== '1')('installed browser aga
     await rejection;
     await expect(browser.run('session-a', 'snapshot')).rejects.toThrow('No isolated page');
   }, 30_000);
+
+  it('cancels a blocked startup without waiting for the longer bootstrap deadline', async () => {
+    const browser = reader();
+    const controller = new AbortController();
+    let started!: () => void;
+    const startup = new Promise<void>((resolve) => { started = resolve; });
+    const send = BrowserPipe.prototype.send;
+    const spy = vi.spyOn(BrowserPipe.prototype, 'send').mockImplementation(function (this: BrowserPipe, ...args: Parameters<BrowserPipe['send']>) {
+      const pending = send.apply(this, args);
+      if (args[0] === 'Target.getTargets') {
+        // Hold the real browser's reply in its owned pipe. Cancellation must
+        // reject the queued request and close the process, not wait 30 seconds.
+        (launched.at(-1)!.stdio[4] as Readable).pause();
+        started();
+      }
+      return pending;
+    } as never);
+    try {
+      const pending = browser.run('cancel-startup', 'navigate', 'https://fixture.public.example/a', controller.signal);
+      const rejection = expect(pending).rejects.toThrow('closed');
+      await startup;
+      controller.abort();
+      await rejection;
+      await expect(browser.run('cancel-startup', 'snapshot')).rejects.toThrow('No isolated page');
+    } finally { spy.mockRestore(); }
+  }, 10_000);
 
   it('expires idle sessions', async () => {
     const browser = reader({ idleMs: 100 });
