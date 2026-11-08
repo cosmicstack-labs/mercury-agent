@@ -3,7 +3,7 @@ import { dirname, join, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import chalk from 'chalk';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { isStandaloneBinary, getDaemonStatus, tryAutoDaemonize } from './daemon.js';
@@ -27,6 +27,33 @@ const WIN_TASK_XML_FILE = 'MercuryAgent.task.xml';
  *     which spawns the hidden daemon and exits.
  */
 export type WindowsServiceMode = 'task' | 'run-key';
+
+/** TASK_STATE values are numeric and independent of the Windows UI language.
+ * https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state */
+export type WindowsTaskState = 'unknown' | 'disabled' | 'queued' | 'ready' | 'running';
+const WINDOWS_TASK_STATES: readonly WindowsTaskState[] = ['unknown', 'disabled', 'queued', 'ready', 'running'];
+const WINDOWS_TASK_STATE_SCRIPT = "$ErrorActionPreference = 'Stop'; $scheduler = New-Object -ComObject Schedule.Service; $scheduler.Connect(); [Console]::Out.Write([int]$scheduler.GetFolder('\\').GetTask($env:MERCURY_STATUS_TASK_NAME).State)";
+
+export function parseWindowsTaskState(output: string): WindowsTaskState | null {
+  const value = output.trim();
+  return /^[0-4]$/.test(value) ? WINDOWS_TASK_STATES[Number(value)] : null;
+}
+
+/** Query one task without interpolating its name into a shell/script. */
+export function getWindowsTaskState(taskName: string = WIN_TASK_NAME): WindowsTaskState | null {
+  try {
+    const output = execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_TASK_STATE_SCRIPT], {
+      encoding: 'utf8', windowsHide: true, timeout: 5000, maxBuffer: 4096,
+      env: { ...process.env, MERCURY_STATUS_TASK_NAME: taskName },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return parseWindowsTaskState(output);
+  } catch {
+    // Missing task, denied access, unavailable PowerShell, timeout, or malformed
+    // output means unknown status, never a guessed localized-text match.
+    return null;
+  }
+}
 
 export function isServiceInstalled(): boolean {
   const platform = process.platform;
@@ -64,8 +91,7 @@ export function isServiceRunning(): boolean {
         // The Run entry only launches the daemon; its liveness is the pid file.
         return getDaemonStatus().running;
       }
-      const output = execSync(`schtasks /query /tn "${WIN_TASK_NAME}" /fo list /v`, { encoding: 'utf-8', shell: 'cmd.exe' });
-      return /^Status:\s+Running\s*$/im.test(output);
+      return getWindowsTaskState() === 'running';
     }
   } catch {}
   return false;
@@ -1198,18 +1224,11 @@ function uninstallWindows(): void {
 function showWindowsStatus(): void {
   const mode = getWindowsServiceMode();
   if (mode === 'task') {
-    try {
-      const output = execSync(`schtasks /query /tn "${WIN_TASK_NAME}" /fo list`, {
-        encoding: 'utf-8',
-        shell: 'cmd.exe',
-      }).trim();
-      console.log(`  ${chalk.green('Autostart: Task Scheduler logon task')}`);
-      console.log(output);
-      console.log('');
-      return;
-    } catch {
-      // fall through to the generic message
-    }
+    const state = getWindowsTaskState();
+    console.log(`  ${chalk.green('Autostart: Task Scheduler logon task')}`);
+    console.log(`  State: ${state === 'running' ? chalk.green(state) : chalk.yellow(state ?? 'unavailable')}`);
+    console.log('');
+    return;
   }
   if (mode === 'run-key') {
     const daemon = getDaemonStatus();

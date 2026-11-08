@@ -3,11 +3,12 @@
 //! without a login. Mirrors src/cli/service.ts and src/web/auth.ts in the
 //! runtime; keep the paths in step.
 
+pub(crate) use super::runtime_launch::quiet_command;
+use super::runtime_launch::{find_runtime, RuntimeLaunch};
 use serde::Serialize;
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 #[derive(Serialize)]
@@ -46,14 +47,6 @@ pub(crate) fn mercury_home() -> PathBuf {
         .join(".mercury")
 }
 
-fn binary_name() -> &'static str {
-    if cfg!(windows) {
-        "mercury.exe"
-    } else {
-        "mercury"
-    }
-}
-
 fn platform() -> &'static str {
     if cfg!(target_os = "macos") {
         "macos"
@@ -66,38 +59,26 @@ fn platform() -> &'static str {
     }
 }
 
-/// A Command that never flashes a console window on Windows.
-pub(crate) fn quiet_command(program: &Path) -> Command {
-    #[allow(unused_mut)]
-    let mut command = Command::new(program);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    command
-}
-
-fn find_binary(home: &Path) -> Option<PathBuf> {
-    let mut candidates = vec![home.join("bin").join(binary_name())];
+fn find_binary(home: &Path) -> Option<RuntimeLaunch> {
+    let mut directories = vec![home.join("bin")];
     if let Some(user) = dirs::home_dir() {
-        candidates.push(user.join(".local").join("bin").join(binary_name()));
+        directories.push(user.join(".local").join("bin"));
     }
     if !cfg!(windows) {
-        candidates.push(PathBuf::from("/opt/homebrew/bin/mercury"));
-        candidates.push(PathBuf::from("/usr/local/bin/mercury"));
+        directories.push(PathBuf::from("/opt/homebrew/bin"));
+        directories.push(PathBuf::from("/usr/local/bin"));
+    } else if let Some(appdata) = env::var_os("APPDATA") {
+        directories.push(PathBuf::from(appdata).join("npm"));
     }
-    if let Some(path) = env::var_os("PATH") {
-        for dir in env::split_paths(&path) {
-            candidates.push(dir.join(binary_name()));
-        }
-    }
-    candidates.into_iter().find(|p| p.is_file())
+    let node_directories: Vec<PathBuf> = env::var_os("PATH")
+        .map(|path| env::split_paths(&path).collect())
+        .unwrap_or_default();
+    directories.extend(node_directories.iter().cloned());
+    find_runtime(&directories, &node_directories, cfg!(windows))
 }
 
-fn binary_version(bin: &Path) -> Option<String> {
-    let output = quiet_command(bin).arg("--version").output().ok()?;
+fn binary_version(bin: &RuntimeLaunch) -> Option<String> {
+    let output = bin.command().arg("--version").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -171,10 +152,10 @@ fn service_installed() -> bool {
 pub fn detect_local_runtime() -> LocalRuntime {
     let home = mercury_home();
     let binary = find_binary(&home);
-    let version = binary.as_deref().and_then(binary_version);
+    let version = binary.as_ref().and_then(binary_version);
     LocalRuntime {
         mercury_home: home.to_string_lossy().into_owned(),
-        binary_path: binary.map(|p| p.to_string_lossy().into_owned()),
+        binary_path: binary.map(|launch| launch.detected_path.to_string_lossy().into_owned()),
         binary_version: version,
         port: web_port(&home),
         attach_token_present: home.join("attach-token").is_file(),
@@ -239,7 +220,7 @@ pub async fn run_mercury(args: Vec<String>) -> Result<CommandOutput, String> {
         .ok_or_else(|| "Mercury is not installed on this computer".to_string())?;
 
     let output = tauri::async_runtime::spawn_blocking(move || {
-        quiet_command(&bin).args(&args).output()
+        bin.command().args(&args).output()
     })
     .await
     .map_err(|e| e.to_string())?
