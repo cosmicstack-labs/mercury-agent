@@ -1,0 +1,119 @@
+---
+id: event-triggers
+title: Authenticated event triggers
+---
+
+An event trigger runs an owner-configured task when a signed JSON delivery arrives. For example, a local build script can ask Mercury to summarize a failed build in a chosen conversation. Triggers are optional and disabled by default. They use Mercury's existing loopback web server; enabling them does not open a listener or make Mercury publicly reachable.
+
+## Configure a trigger
+
+Create `event-triggers.yaml` in your Mercury home directory (`~/.mercury` by default, or `MERCURY_HOME`). This file is owner-managed and protected from Mercury's tools and configuration API.
+
+```yaml
+enabled: true
+triggers:
+  - id: build-result
+    secretEnv: MERCURY_BUILD_EVENT_KEY
+    task: Summarize the build result, identify failures, and suggest the next check.
+    destination:
+      channelType: web
+      sessionId: 00000000-0000-4000-8000-000000000001
+    allowTools: false
+```
+
+Replace the example session ID with the canonical UUID of an existing active conversation. The authenticated `GET /api/chat/threads` dashboard endpoint lists these IDs. `channelType` accepts `web` or `desktop`; Desktop Chat uses the same web conversation transport. This does not target Desktop voice/control or external messaging channels, and it does not activate Code mode. The response stays in the configured conversation, but the event does not receive that conversation's earlier messages or tool traces. Payload fields cannot choose a task, destination, or approval policy.
+
+Generate a separate random secret for each trigger, for example with this command on Linux, macOS, or Windows with Node installed:
+
+```sh
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+```
+
+Provide that value as the named environment variable to the Mercury process and the sending process. Keep it out of the YAML file, source control, URLs, and logs. Secrets must be 32–1024 UTF-8 bytes. Restart Mercury after changing the configuration. Missing, invalid, or disabled configuration leaves ingress off; a missing secret makes that trigger unavailable. At most 32 triggers can be configured.
+
+Tools default to off. With `allowTools: true`, normal tool permission checks still apply in a fresh Ask Me context; the trigger does not inherit an interactive turn's Allow All setting or temporary scope grants. Existing explicit manifest policy remains in effect. Remembered conversation approvals are ignored, and an Always answer during an event applies only to that action. The owner may need to approve an action in Mercury. Event turns cannot use owner-memory mutation, permission-policy, skill installation/elevation, scheduling, delegation, or direct outbound-message built-ins. Reviewed filesystem, shell, Git, and read tools remain available, along with permission-gated plugin/MCP tools explicitly named in an optional `integrationTools` list (for example, `integrationTools: [mcp__builds__get_status]`). Unlisted integrations and future unknown built-ins stay unavailable. Owner-memory tools and automatic memory retrieval are disabled. The JSON is untrusted source data, even when its sender knows the signing secret.
+
+Existing Host, proxy, and remote-access restrictions still apply. Dashboard credentials cannot replace an event signature. If you independently expose the existing server through a trusted reverse proxy, use HTTPS and configure Mercury's existing remote-access policies; this feature does not configure a tunnel or proxy.
+
+## Send and inspect a delivery
+
+`POST /api/event-triggers/{triggerId}` accepts a JSON body and these headers:
+
+| Header | Value |
+| --- | --- |
+| `Content-Type` | `application/json` |
+| `X-Mercury-Delivery` | Unique ID, 1–128 letters, digits, underscores, or hyphens |
+| `X-Mercury-Timestamp` | Current Unix time in seconds |
+| `X-Mercury-Signature` | `sha256=` followed by lowercase HMAC-SHA256 hex |
+
+The HMAC covers the following UTF-8 prefix, followed immediately by the exact request body bytes. Every displayed line ends in a newline, including the timestamp line:
+
+```text
+mercury-event-v1
+POST
+{triggerId}
+{deliveryId}
+{timestamp}
+```
+
+This Node `.mjs` example uses the existing local server (adjust the port to yours). Store the delivery ID and serialized body in your sending job before its first attempt. Retry an uncertain HTTP delivery with the **same ID and exact body**, generating a fresh timestamp and signature each time.
+
+```js
+import { createHmac, randomUUID } from 'node:crypto';
+
+const base = 'http://127.0.0.1:6174';
+const triggerId = 'build-result';
+const deliveryId = randomUUID(); // Persist and reuse this ID when retrying.
+const body = Buffer.from(JSON.stringify({ build: 'example', result: 'failed' }));
+const secret = process.env.MERCURY_BUILD_EVENT_KEY;
+if (!secret) throw new Error('Missing signing secret');
+
+function headers(method, bytes) {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = createHmac('sha256', secret)
+    .update(`mercury-event-v1\n${method}\n${triggerId}\n${deliveryId}\n${timestamp}\n`)
+    .update(bytes).digest('hex');
+  return {
+    'content-type': 'application/json',
+    'x-mercury-delivery': deliveryId,
+    'x-mercury-timestamp': timestamp,
+    'x-mercury-signature': `sha256=${signature}`,
+  };
+}
+
+const response = await fetch(`${base}/api/event-triggers/${triggerId}`, {
+  method: 'POST', headers: headers('POST', body), body,
+});
+console.log(response.status, await response.json());
+
+// A separate signed GET returns status, without the task, payload, or response.
+const status = await fetch(
+  `${base}/api/event-triggers/${triggerId}/deliveries/${deliveryId}`,
+  { headers: headers('GET', Buffer.alloc(0)) },
+);
+console.log(status.status, await status.json());
+```
+
+Timestamps must be within five minutes of Mercury's clock. Signatures bind the HTTP method, trigger, delivery ID, timestamp, and exact body, so a signature for one trigger cannot authorize another. JSON parsing and work admission happen only after signature verification.
+
+| HTTP result | Meaning |
+| --- | --- |
+| `202`, `accepted: true` | Work and its receipt were durably recorded. Execution has not necessarily completed. |
+| `200`, `accepted: false` | This delivery was already accepted; its current status is returned without starting a second run. |
+| `409` | The ID has a different payload, or the configured conversation is unavailable. |
+| `429` | A rate, outstanding-work, or receipt limit was reached; this attempt was not accepted. |
+| `503` | Runtime, transport, secret, or durable storage is unavailable. Inspect status before retrying an uncertain response. |
+
+Invalid authentication returns `401`; disabled or unknown triggers return `404`. Invalid JSON returns `400`, oversized bodies `413`, and unsupported media types or compressed bodies `415`.
+
+## Recovery and limits
+
+Delivery states are `queued`, `running`, `completed`, `failed`, `cancelled`, or `paused`. A queued delivery can resume after a crash because execution has not started. Work interrupted while running becomes paused with `reviewRequired: true`. It is never automatically replayed, retried through another provider, or resumed by a duplicate delivery. Cancellation is also terminal for that delivery ID. Use Mercury's existing stop controls to cancel active work.
+
+Before starting a new delivery after an interruption, inspect the conversation and any external effects. A remote write may have succeeded before the process stopped; a local receipt cannot guarantee exactly-once effects in another service. A new delivery ID authorizes new work. Removing or disabling a trigger prevents new admission; it does not cancel previously accepted work.
+
+The body limit is 64 KiB, including requests without `Content-Length`; compressed bodies are rejected. At most four bodies are read concurrently, with a five-second read deadline. Limits are 120 structurally authenticated requests per minute globally and 10 signed JSON submissions per minute per trigger, including retries. Rate counters reset on process restart. There can be at most 100 outstanding event jobs, including pauses and completed responses awaiting delivery.
+
+Compact deduplication receipts persist for at least 24 hours from acceptance, independently of ordinary conversation-work history. Queued, running, and paused receipts do not expire. A maximum of 10,000 receipts is enforced by refusing new work, never by evicting live replay evidence. Do not resend old IDs after the retention window; retain the sender's completed-delivery records too. Status may disappear after receipt expiry.
+
+Damaged or inconsistent work-ledger data is preserved in a `.corrupt-*` file and blocks new event acceptance across restarts. An owner must inspect and restore consistent recovery evidence before enabling admission again; deleting the ledger also deletes duplicate protection. If the damaged file cannot be preserved, startup stops before overwriting it.

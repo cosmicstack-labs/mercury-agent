@@ -85,6 +85,7 @@ const sidebars: SidebarsConfig = {
         'reference/second-brain',
         'reference/provider-fallback',
         'reference/scheduling',
+        'reference/event-triggers',
         'reference/skills',
         'reference/token-saver',
       ],

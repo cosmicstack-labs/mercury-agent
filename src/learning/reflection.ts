@@ -13,6 +13,7 @@
  * Assistant text is never an input: only the owner's own turns, tool traces
  * (what Mercury did) and permission answers.
  */
+import { isEventTriggerMessage } from '../core/event-triggers.js';
 import { parseJsonLenient } from './json.js';
 import { looksLikeIdentity, looksLikeSecret, ownerWords } from './text.js';
 import { generateText } from 'ai';
@@ -192,7 +193,7 @@ export function collectSince(sessions: Session[], since: number): { turns: Owner
     if (session.updatedAt <= since) continue;
     let any = false;
     for (const m of session.messages) {
-      if (m.timestamp <= since) continue;
+      if (m.timestamp <= since || isEventTriggerMessage(m)) continue;
       const channel = typeof m.metadata?.channelType === 'string' ? m.metadata.channelType : 'unknown';
       if (m.role === 'user' && m.kind === 'message') {
         if (channel === 'internal') continue;

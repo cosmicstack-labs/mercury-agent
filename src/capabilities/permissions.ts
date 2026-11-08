@@ -25,6 +25,11 @@ import type { McpGateRequest, McpGateResult } from './mcp/types.js';
 
 export type { PermissionContext } from './permission-context.js';
 
+/** Owner-only approvals must not be answered by a channel's Allow All mode. */
+export interface AskOptions {
+  alwaysAsk?: boolean;
+}
+
 /**
  * Arguments as the owner sees them in an approval prompt. Up to 4,000
  * characters are shown whole. Longer ones keep the start AND the end, with
@@ -389,7 +394,7 @@ export function splitShellSegments(command: string): string[] {
 export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
-  private askHandler?: (prompt: string) => Promise<string>;
+  private askHandler?: (prompt: string, options?: AskOptions) => Promise<string>;
   private turnAnswers: Array<{ action: string; answer: 'yes' | 'no' | 'always' }> = [];
   /**
    * The main agent's (root) context: replaced, never mutated, by the
@@ -567,11 +572,19 @@ export class PermissionManager {
     return this.ctx().senderRole;
   }
 
-  onAsk(handler: (prompt: string) => Promise<string>): void {
+  onAsk(handler: (prompt: string, options?: AskOptions) => Promise<string>): void {
     // Every answer the owner gives is evidence for the Owner Model (autonomy,
     // risk per action type); the learning loop drains it once per turn.
-    this.askHandler = async (prompt: string) => {
-      const answer = await handler(prompt);
+    this.askHandler = async (prompt: string, options?: AskOptions) => {
+      const rememberApprovals = this.ctx().rememberApprovals;
+      // The web transport has its own Allow All state. An external event
+      // must require a fresh decision there too, not just in this manager.
+      const askOptions = rememberApprovals ? options : { ...options, alwaysAsk: true };
+      const response = await (askOptions ? handler(prompt, askOptions) : handler(prompt));
+      // External event consent is for this action only, even if a channel's
+      // standard prompt offers an Always button. Keep routing unchanged.
+      if (!rememberApprovals) return response === 'always' ? 'yes' : response;
+      const answer = response;
       if (answer === 'yes' || answer === 'no' || answer === 'always') {
         const action = prompt.split('\n')[0].replace(/:.*$/, '').trim().slice(0, 40) || 'action';
         this.turnAnswers.push({ action, answer });
@@ -622,7 +635,7 @@ export class PermissionManager {
     if (this.turnPluginGrants.has(toolKey)) return true;
     if (ctx.channelType === 'internal') return ctx.autoApprove;
     if (this.isGlobalAutoApproveActive()) return true;
-    if (this.approvedPluginToolsByContext.get(ctx.channelId)?.has(toolKey)) return true;
+    if (ctx.rememberApprovals && this.approvedPluginToolsByContext.get(ctx.channelId)?.has(toolKey)) return true;
     if (!this.askHandler) return false;
     const result = await this.askHandler(prompt);
     if (result === 'always') {
@@ -806,7 +819,7 @@ export class PermissionManager {
     if (nlink === undefined || nlink <= 1 || this.isGlobalAutoApproveActive()) return described.result;
 
     const channelId = this.ctx().channelId;
-    const approvedAliases = this.approvedHardlinkReadsByContext.get(channelId);
+    const approvedAliases = this.ctx().rememberApprovals ? this.approvedHardlinkReadsByContext.get(channelId) : undefined;
     if (approvedAliases?.has(canonical)) return described.result;
 
     const reason = `Permission denied for read access to ${path}: the file has ${nlink} hard links and may alias a file outside the approved scopes`;
@@ -882,7 +895,7 @@ export class PermissionManager {
     // Write access: in auto-approve-all mode, allow if scope covers it
     const channelId = this.ctx().channelId;
     const channelType = this.ctx().channelType;
-    const contextWriteApproved = this.approvedWritesByContext.get(channelId)?.has(resolved) === true;
+    const contextWriteApproved = this.ctx().rememberApprovals && this.approvedWritesByContext.get(channelId)?.has(resolved) === true;
     if (mode === 'write' && (this.isGlobalAutoApproveActive() || contextWriteApproved)) {
       if (scope && scope.write) return { allowed: true };
       if (tempScope && tempScope.write) return { allowed: true };
@@ -1006,7 +1019,7 @@ export class PermissionManager {
       return { allowed: true, needsApproval: false, lane: 'shell' };
     }
 
-    if (this.approvedCommandsByContext.get(ctx.channelId)?.has(trimmed)) {
+    if (ctx.rememberApprovals && this.approvedCommandsByContext.get(ctx.channelId)?.has(trimmed)) {
       logger.info({ cmd: trimmed }, 'Shell command auto-approved for this interaction context');
       return { allowed: true, needsApproval: false, lane: 'shell' };
     }
@@ -1049,7 +1062,7 @@ export class PermissionManager {
 
     // "Always" on an earlier prompt in this chat covers the same command
     // family (every segment), after the hard blocks and the cwd gate above.
-    const families = this.familyApprovalAllowed(ctx) ? this.approvedFamiliesByContext.get(ctx.channelId) : undefined;
+    const families = ctx.rememberApprovals && this.familyApprovalAllowed(ctx) ? this.approvedFamiliesByContext.get(ctx.channelId) : undefined;
     if (families && families.size > 0) {
       const needsApprovalList = shell.needsApproval ?? [];
       const covered = segments.every((segment) => {
@@ -1118,7 +1131,7 @@ export class PermissionManager {
       return { allowed: false, reason: `Fail-closed: MCP tool ${label} is not in tools.autoApprove` };
     }
     const ctx = this.ctx();
-    if (this.approvedMcpByContext.get(ctx.channelId)?.has(label)) return { allowed: true };
+    if (ctx.rememberApprovals && this.approvedMcpByContext.get(ctx.channelId)?.has(label)) return { allowed: true };
     if (!this.askHandler || ctx.channelType === 'internal') {
       return {
         allowed: false,

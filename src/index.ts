@@ -98,6 +98,8 @@ import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
+import { loadEventTriggers } from './core/event-triggers.js';
+import { configureEventTriggers } from './web/api/event-triggers.js';
 import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setResearchControls as setWebResearchControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
 import { validateApiKey, validateBaseUrl, validateModelName } from './providers/provider-meta.js';
 import { setFirstProviderHandler, setProvidersReload } from './web/api/providers.js';
@@ -2739,6 +2741,12 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   agent.setSkillLoader(skillLoader);
   agent.terminalOnly = daemonOwnsRuntime;
+  if (!daemonOwnsRuntime) {
+    configureEventTriggers(loadEventTriggers(), {
+      accept: (input) => agent.acceptEventTrigger(input),
+      status: (triggerId, deliveryId) => agent.getEventTriggerDelivery(triggerId, deliveryId),
+    });
+  }
 
   if (supervisor) {
     agent.setSupervisor(supervisor);
@@ -3772,7 +3780,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     setWebSpotify(spotifyClient);
   }
 
-  capabilities.permissions.onAsk(async (prompt: string) => {
+  capabilities.permissions.onAsk(async (prompt: string, options) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
     const { channelId } = capabilities.getChannelContext();
     if (channelType === 'telegram' && tgChannel) {
@@ -3782,7 +3790,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       return (channels.get('signal') as SignalChannel).askPermission(prompt, channelId);
     }
     if (channelType === 'web' && webChannel) {
-      return webChannel.askPermission(prompt, channelId);
+      return webChannel.askPermission(prompt, channelId, options);
     }
     // Any other channel that can ask (plugin channels such as WhatsApp).
     const asking = channels.get(channelType as Parameters<typeof channels.get>[0]) as { askPermission?: (p: string, id?: string) => Promise<string> } | undefined;

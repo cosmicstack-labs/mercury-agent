@@ -329,9 +329,16 @@ export class CapabilityRegistry {
     if (this.toolsDisabled) return {};
     // Scheduled calls (when a calling channel plugin is running): owner only.
     if (this.permissions.getCurrentSenderRole() !== 'member' && activeCallScheduler()) {
-      return { ...this.getToolsInner(), ...callTools() };
+      return this.filterContextTools({ ...this.getToolsInner(), ...callTools() });
     }
-    return this.getToolsInner();
+    return this.filterContextTools(this.getToolsInner());
+  }
+
+  private filterContextTools(tools: Record<string, Tool>): Record<string, Tool> {
+    const allowed = this.permissions.currentContext().allowedTools;
+    if (allowed === undefined) return tools;
+    const names = new Set(allowed);
+    return Object.fromEntries(Object.entries(tools).filter(([name]) => names.has(name)));
   }
 
   private getToolsInner(): Record<string, Tool> {
@@ -380,12 +387,12 @@ export class CapabilityRegistry {
       if (!blocked.has(name)) filtered[name] = tool;
     }
     // Plan mode: only plugin tools their manifest declares read-only.
-    if (this.permissions.getCurrentSenderRole() === 'member') return filtered;
-    return this.withPluginTools(filtered, true);
+    if (this.permissions.getCurrentSenderRole() === 'member') return this.filterContextTools(filtered);
+    return this.filterContextTools(this.withPluginTools(filtered, true));
   }
 
   getToolNames(): string[] {
-    return Object.keys(this.allTools());
+    return Object.keys(this.filterContextTools(this.allTools()));
   }
 
   getSkillContext(): string {
