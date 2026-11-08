@@ -35,6 +35,11 @@ mcp-server-patterns, image-pdf-production, file-organization and
 agent-workstation-backup-recovery workflows are independently authored
 Cosmic Stack instructions; no unresolved-license source payloads are bundled.
 
+video-editing is an independently authored Cosmic Stack instruction that drives the
+host's own ffmpeg and ffprobe. It is a rewrite of a general capability, not a port
+of the PolyForm-Noncommercial-1.0.0 hermes-video-editor plugin, and bundles none of
+that plugin's code, presets, schemas or assets.
+
 The adaptations are rewritten for Mercury and are not upstream-endorsed or
 claims of complete compatibility. Original author attribution is retained in
 each skill's metadata. The Hardlight upstream copyright notice is retained above.

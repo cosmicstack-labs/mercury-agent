@@ -1,7 +1,9 @@
 # Mercury adapted skills
 
-Thirty-nine opt-in instruction skills: curated Mercury adaptations and twelve
+Forty opt-in instruction skills: curated Mercury adaptations alongside
 independently written native workflows. They use Mercury tools, not Hermes APIs.
+Per-skill origin is recorded in each skill's `author` and `attribution` frontmatter;
+`LICENSE` lists the credited upstream sources, so no count here can drift out of date.
 `src/skills/hermes-adapted.test.ts` checks discovery, metadata, safety contracts
 and isolated install/reload. Shipping this pack does not install it into a profile.
 
@@ -43,14 +45,14 @@ maintains the index. Keep local sources at a stable location. These are local
 `mercury skills update` is registry-oriented. Installation normally targets
 `~/.mercury/skills`, or `$MERCURY_HOME/skills` if overridden.
 
-A fresh profile should list exactly 39 pack skills; an existing profile may have
+A fresh profile should list exactly 40 pack skills; an existing profile may have
 more. Doctor checks index health and registry reachability, so registry outages
 do not establish local installation failure. `mercury skills view <category/slug>
 --raw` reads installed content. Invoke names use the `mercury-` prefix, e.g.
 `#mercury-grounded-citations`, independently of their directory names.
 
 `node scripts/verify-package.cjs` builds and installs the npm tarball, then uses
-its CLI in a temporary Mercury home to install all 39 skills and compare loaded
+its CLI in a temporary Mercury home to install all 40 skills and compare loaded
 bytes with source. It also validates and installs the two optional plugins in
 that temporary profile; it does not change your live profile.
 
@@ -72,12 +74,21 @@ is described as bounded manual routes rather than a bundled recovery tool. The
 evaluator-optimizer revision gate was merged into the existing review reception and
 verification workflows instead of adding a near-duplicate.
 
+The fourth addition is `video-editing`, a native FFmpeg procedure for cutting,
+cropping, captioning, loudness-matching and exporting local footage. It is an
+independent rewrite, not a port of the noncommercial `hermes-video-editor` plugin:
+no upstream tool, preset or script is bundled, and it drives only the host's own
+`ffmpeg` and `ffprobe`. Its key commands were executed against a generated test clip
+before shipping, which is where the measured figures in it (keyframe snapping,
+full-decode exit status, loudness offsets) come from.
+
 Inventory triage covered 347 active source cards, with 46 archived cards excluded.
 This is not a claim that all source workflows have been implemented or audited in
 depth: specialist workflows, duplicate tool wrappers, platform-specific integrations
 and file-backed memory architectures remain deferred. Generic deferral is not a
-security verdict. The plugin inventory contains 25 logical candidates: 23 YAML
-manifests and two JSON packages. No additional runtime plugin is enabled by this
+security verdict. The plugin inventory contains 24 logical candidates: 22 with a
+`plugin.yaml` manifest (23 manifest files, since `model-providers` ships two) and two
+with a JSON manifest. No additional runtime plugin is enabled by this
 expansion; external services, incompatible hooks and unresolved licensing require
 separate integration review and approval.
 
@@ -87,6 +98,52 @@ separate integration review and approval.
 `hardlight` provides contrast and declared navigation-graph checks, not full
 upstream parity or rendered UI certification. See their READMEs. Neither is required
 for skill discovery, and installing skills never silently enables a plugin.
+
+### Why no further plugin is ported
+
+The source inventory holds 24 logical plugin candidates: 22 directories with a
+`plugin.yaml` (23 manifest files, because `model-providers` ships two) and two with
+a JSON manifest (`parallel-search`, `rea`). Each candidate was checked for licence
+file, declared hooks, credentials and overlap. All 24 are accounted for below; a
+candidate can fail more than one gate.
+
+Four gates decide it:
+
+1. **No hook API in Mercury.** Mercury's plugin contract contributes only `tools`,
+   `commands` and `channel`; there is no `provides_hooks` equivalent. Eight
+   candidates declare hooks (`barehands-ring`, `camofox`, `jev-gate`, `live-time`,
+   `prompt-optimizer`, `reaction-feedback`, `rudr9-guard`, `tinyfish`). Their core
+   behaviour is a call hook, not a tool.
+2. **Missing licence file.** Ten ship no licence file, so their text cannot be
+   redistributed here: `barehands-ring`, `better-session-appearance`, `jev-gate`,
+   `markdown-new`, `model-providers`, `prompt-enhance`, `reaction-feedback`,
+   `rss-reader`, `rudr9-guard`, `tmg-agentic-engineering`.
+3. **Licence incompatible with this MIT repository.** `hermes-video-editor` is
+   PolyForm-Noncommercial-1.0.0, so its ~9k lines of FFmpeg tooling cannot be
+   bundled into an MIT repo even though it needs no key and declares no hooks. The
+   `video-editing` skill covers that capability as an independent rewrite instead, so
+   this is a replaced candidate rather than a lost one.
+4. **Credentials or unexposed internals.** `homeassistant` (`HASS_TOKEN`), `spotify`
+   (developer client id), `openmail` (`OPENMAIL_API_KEY`) and `tinyfish`
+   (`TINYFISH_API_KEY`) each need an external account, so they cannot be exercised
+   without one. `camofox` needs a running server. `claude-subscription-directsdk-experimental`
+   drives auth tokens. `model-providers` and `advanced-delegation` hook into provider
+   and delegation routing that Mercury does not expose.
+
+Two are already covered by native rewrites: `live-time` and `hardlight` provide the
+`live-time` and `hardlight-ui` capability as on-demand tools, because point 1 means
+neither could inject context on every call the way its Hermes original did.
+`markdown-new` and `rss-reader` would also be duplicates of `web-search` and
+`rss-feeds`. `prompt-enhancer` and `better-session-appearance` are Desktop composer
+and session-chrome features, not tools.
+
+Two are configuration rather than code: `parallel-search` is a remote MCP endpoint
+and `rea` runs `npx -y rea-agents`. Both need an owner's explicit approval.
+`parallel-search` only duplicates the built-in `web_search` and `fetch_url` while
+sending every query to a third party, so it is not worth enabling. `rea` adds real
+capability but needs a reverse-engineering use case and executes third-party code on
+start. Nothing here enables either.
+
 
 ## Provenance and limitations
 

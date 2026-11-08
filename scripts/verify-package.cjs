@@ -134,14 +134,14 @@ function cli(...args) {
   });
 }
 
-check('all 39 packaged skills install and reload byte-identically via the CLI', () => {
+check('all 40 packaged skills install and reload byte-identically via the CLI', () => {
   const sourceRoot = join(ROOT, 'skills', 'mercury-adapted');
   const shippedRoot = join(modDir, 'skills', 'mercury-adapted');
   for (const name of ['README.md', 'LICENSE']) {
     assert.equal(readFileSync(join(shippedRoot, name), 'utf8'), readFileSync(join(sourceRoot, name), 'utf8'));
   }
   const slugs = readdirSync(sourceRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
-  assert.equal(slugs.length, 39);
+  assert.equal(slugs.length, 40);
   assert.deepEqual(readdirSync(shippedRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort(), slugs);
   const ids = [];
   for (const slug of slugs) {
@@ -156,7 +156,7 @@ check('all 39 packaged skills install and reload byte-identically via the CLI', 
   }
   const listed = JSON.parse(cli('skills', '--json', 'list'));
   assert.deepEqual(listed.skills.map((skill) => skill.id).sort(), ids.sort());
-  assert.equal(new Set(ids).size, 39);
+  assert.equal(new Set(ids).size, 40);
 });
 
 check('both packaged plugins validate, install and validate again from their installed paths', () => {
