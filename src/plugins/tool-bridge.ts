@@ -191,7 +191,15 @@ function wrap(t: LiveTool, permissions: PermissionManager): Tool {
       };
     },
     execute: async (input, options) => {
-      const args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+      let args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+      // Models sometimes fill the optional zoom with []. Optimus 0.5.1 treats
+      // that as a crop of a previous screenshot, so the first look fails and
+      // repeated attempts can trip the plugin circuit breaker. Empty means no
+      // crop; preserve real (including invalid nonempty) crops for the plugin.
+      if (t.pluginId === 'optimus' && t.name === 'look' && Array.isArray(args.zoom) && args.zoom.length === 0) {
+        args = { ...args };
+        delete args.zoom;
+      }
       if (!t.readOnly) {
         const approved = await permissions.approvePluginTool(full, `Run plugin tool ${t.pluginName} → ${t.name} with ${describeArgs(args)}`);
         if (!approved) return `Not run: the plugin tool ${full} was not approved.`;
