@@ -20,7 +20,7 @@ const { McpManager } = await import('./manager.js');
 const { CapabilityRegistry } = await import('../registry.js');
 const { WebChannel } = await import('../../channels/web.js');
 const { filterBotTools } = await import('../../bots/registry-factory.js');
-const { makeContext } = await import('../permission-context.js');
+const { makeContext, deriveChildContext, isSubsetContext } = await import('../permission-context.js');
 const { validateMcpConfig } = await import('./config.js');
 const { registerSecretValue } = await import('../../utils/redact.js');
 const FIXTURE = fileURLToPath(new URL('./fixtures/resource-fixture-server.mjs', import.meta.url));
@@ -259,6 +259,56 @@ describe('bounded MCP resources through the real SDK', () => {
     expect(web.resolveApproval(pending[0].data!.id as string, 'no', 'web-session')).toBe(true);
     expect(await reading).toContain('denied');
     expect(h.calls().some((c) => c.method === 'resources/read')).toBe(false);
+  });
+
+  it.each(['list_mcp_resources', 'read_mcp_resource'] as const)('isolates non-remembering %s consent from the owner and other event turns', async (tool) => {
+    const h = await harness({}, { answer: 'always' });
+    const pm = h.registry.permissions;
+    const args = tool === 'read_mcp_resource' ? { server: 'docs', uri: 'docs://alpha' } : { server: 'docs' };
+    const run = (context: ReturnType<typeof makeContext>) => pm.withContext(context, () => h.run(tool, args));
+    const requests = () => h.calls().filter((call) => call.method === (tool === 'read_mcp_resource' ? 'resources/read' : 'resources/list')).length;
+    const owner = makeContext({ channelType: 'web', channelId: 'shared' });
+    expect(owner.rememberApprovals).toBe(true);
+    expect(await run(owner)).not.toContain('denied');
+    h.ask.mockResolvedValue('no');
+    expect(await run(owner)).not.toContain('denied');
+    expect(h.ask).toHaveBeenCalledTimes(1);
+    expect(requests()).toBe(2);
+
+    const external = makeContext({ ...owner, rememberApprovals: false });
+    const child = deriveChildContext(external);
+    expect(child.rememberApprovals).toBe(false);
+    expect(isSubsetContext(child, external)).toBe(true);
+    expect(isSubsetContext(owner, external)).toBe(false);
+    expect(await run(external)).toContain('denied');
+    expect(await run(child)).toContain('denied');
+    expect(h.ask).toHaveBeenCalledTimes(3);
+    expect(requests()).toBe(2);
+
+    const fresh = () => makeContext({ channelType: 'web', channelId: 'event-only', rememberApprovals: false });
+    h.ask.mockResolvedValue('always');
+    expect(await run(fresh())).not.toContain('denied');
+    expect(await run(fresh())).not.toContain('denied');
+    expect(h.ask).toHaveBeenCalledTimes(5);
+    expect(requests()).toBe(4);
+    h.ask.mockResolvedValue('no');
+    expect(await run(fresh())).toContain('denied');
+    expect(await run(makeContext({ channelType: 'web', channelId: 'event-only' }))).toContain('denied');
+    expect(h.ask).toHaveBeenCalledTimes(7);
+    expect(requests()).toBe(4);
+    expect(await run(owner)).not.toContain('denied');
+    expect(h.ask).toHaveBeenCalledTimes(7);
+    expect(requests()).toBe(5);
+  });
+
+  it('preserves exact configured URI approval in a non-remembering context', async () => {
+    const h = await harness({ resources: { allow: ['*'], autoApprove: ['docs://alpha'] } });
+    await h.registry.permissions.withContext(makeContext({ channelType: 'web', channelId: 'event', rememberApprovals: false }), async () => {
+      expect(await h.run('read_mcp_resource', { server: 'docs', uri: 'docs://alpha' })).toContain('Reference text');
+      expect(h.ask).not.toHaveBeenCalled();
+      expect(await h.run('read_mcp_resource', { server: 'docs', uri: 'docs://beta' })).toContain('denied');
+    });
+    expect(h.calls().filter((call) => call.method === 'resources/read').map((call) => call.params?.uri)).toEqual(['docs://alpha']);
   });
 
   it('times out once without retrying a read', async () => {

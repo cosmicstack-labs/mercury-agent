@@ -1166,7 +1166,7 @@ export class PermissionManager {
     // used, so concurrent turns retain their own approval identity.
     const channel = JSON.stringify([ctx.channelType, ctx.channelId]);
     const key = JSON.stringify([serverId, operation, operation === 'read' ? uri : null]);
-    if (this.approvedMcpResourcesByContext.get(channel)?.has(key)) return { allowed: true };
+    if (ctx.rememberApprovals && this.approvedMcpResourcesByContext.get(channel)?.has(key)) return { allowed: true };
     if (!this.askHandler || ctx.channelType === 'internal') {
       return { allowed: false, reason: 'MCP resources need owner approval; unattended reads require the exact URI in resources.autoApprove' };
     }
@@ -1175,7 +1175,7 @@ export class PermissionManager {
       { alwaysAsk: true },
     );
     if (signal?.aborted) return { allowed: false, reason: 'MCP resource request was cancelled' };
-    if (answer === 'always') {
+    if (answer === 'always' && ctx.rememberApprovals) {
       const approved = this.approvedMcpResourcesByContext.get(channel) ?? new Set<string>();
       approved.add(key);
       this.approvedMcpResourcesByContext.set(channel, approved);
