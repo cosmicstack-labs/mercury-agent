@@ -73,9 +73,13 @@ describe('workspace permission boundary', () => {
     permissions.getManifest().capabilities.shell.cwdOnly = true;
     permissions.getManifest().capabilities.filesystem.scopes = [];
     permissions.setBinaryResolver(() => process.execPath);
-    const path = join(ws, 'plain.txt').replaceAll('\\', '/');
-    const operand = /\s/.test(path) ? JSON.stringify(path) : path;
-    expect(await permissions.checkShellCommand(`cat ${operand}`, { cwd: ws })).toMatchObject({ allowed: true, lane: 'argv' });
+    // Windows TEMP commonly contains RUNNER~1. Exercise a literal tilde
+    // only in this operand, so other boundary checks keep their own causes.
+    const path = join(ws, 'plain~1.txt').replaceAll('\\', '/');
+    writeFileSync(path, 'inside-marker');
+    const operand = JSON.stringify(path);
+    const checked = await permissions.checkShellCommand(`cat ${operand}`, { cwd: ws });
+    expect(checked, JSON.stringify(checked)).toMatchObject({ allowed: true, lane: 'argv' });
     // An execute grant for cwd must not accidentally cover ../outside.
     permissions.getManifest().capabilities.filesystem.scopes = [{ path: ws, read: true, write: true, execute: true }];
     expect(await permissions.checkShellCommand('node ../outside/program.js', { cwd: ws })).toMatchObject({ allowed: false });
