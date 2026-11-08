@@ -1,6 +1,6 @@
 import '../eval/env.js';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { LanguageModelV3CallOptions, LanguageModelV3StreamPart } from '@ai-sdk/provider';
 import { EvalHarness } from '../eval/runner.js';
@@ -270,8 +270,11 @@ describe('bounded concurrent web sessions through the real Agent', () => {
       return textStep(`Answer ${label}.`);
     });
     const holdA = gate();
-    const privateDir = join(dirname(h.workDir), 'private-alpha');
-    mkdirSync(privateDir);
+    const privateAlias = join(dirname(h.workDir), 'private-alpha');
+    mkdirSync(privateAlias);
+    // Exercise per-session approval here, not the separate symlink-escape
+    // denial. macOS temporary directories commonly contain an alias.
+    const privateDir = realpathSync(privateAlias);
     const a = h.sessions.create();
     const b = h.sessions.create();
     const prompts: Array<{ channel: string; prompt: string }> = [];
