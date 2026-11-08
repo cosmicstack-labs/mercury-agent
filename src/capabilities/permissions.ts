@@ -755,7 +755,7 @@ export class PermissionManager {
       if (nlink !== undefined && nlink > 1 && !this.isGlobalAutoApproveActive()) {
         const ctx = this.ctx();
         const channelId = JSON.stringify([ctx.channelType, ctx.channelId]);
-        const approved = this.approvedHardlinkWritesByContext.get(channelId);
+        const approved = ctx.rememberApprovals ? this.approvedHardlinkWritesByContext.get(channelId) : undefined;
         if (!approved?.has(canonical)) {
           const reason = `Permission denied for write access to ${path}: the file has ${nlink} hard links and may modify a file outside the approved scopes`;
           if (this.failClosed || !this.askHandler || this.ctx().channelType === 'internal') {
@@ -763,7 +763,7 @@ export class PermissionManager {
           }
           const answer = await this.askHandler(`Write hard-linked file: ${canonical}\n(${nlink} links — this also changes every alias, including any outside the approved scopes)`);
           if (answer !== 'yes' && answer !== 'always') return { allowed: false, reason, code: 'hardlink', canonical };
-          if (answer === 'always') {
+          if (answer === 'always' && ctx.rememberApprovals) {
             const aliases = approved ?? new Set<string>();
             aliases.add(canonical);
             this.approvedHardlinkWritesByContext.set(channelId, aliases);

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { PermissionManager } from '../permissions.js';
+import { makeContext, deriveChildContext, isSubsetContext } from '../permission-context.js';
 import { createRunCommandTool } from '../shell/run-command.js';
 import { evaluateArgvPolicy, pinnedBinary } from '../shell/argv-lane.js';
 import { createReadFileTool } from './read-file.js';
@@ -183,6 +184,38 @@ describe('workspace permission boundary', () => {
     expect(await run(tool, { path: 'hard.txt', content: 'web-overwrite' })).toContain('hard links');
     expect(ask).toHaveBeenCalledTimes(1);
     expect(readFileSync(join(outside, 'marker.txt'), 'utf8')).toBe('cli-approved');
+  });
+
+  it('fresh approval contexts neither reuse nor retain hardlink write Always grants', async () => {
+    permissions.setFailClosed(false);
+    const owner = makeContext({ channelType: 'web', channelId: 'shared-owner' });
+    const fresh = makeContext({ ...owner, rememberApprovals: false });
+    const child = deriveChildContext(fresh);
+    expect(owner.rememberApprovals).toBe(true);
+    expect(child.rememberApprovals).toBe(false);
+    expect(isSubsetContext(child, fresh)).toBe(true);
+    expect(isSubsetContext(owner, fresh)).toBe(false);
+    const ask = vi.fn().mockResolvedValue('always');
+    permissions.onAsk(ask);
+    const tool = createWriteFileTool(permissions, () => ws);
+    const write = (context: typeof owner, path: string, content: string) => permissions.withContext(context, () => run(tool, { path, content }));
+    expect(await write(owner, 'hard.txt', 'owner-approved')).toContain('Successfully');
+    ask.mockResolvedValue('no');
+    expect(await write(owner, 'hard.txt', 'remembered-owner')).toContain('Successfully');
+    ask.mockClear();
+    expect(await write(fresh, 'hard.txt', 'must-not-write')).toContain('hard links');
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(outside, 'marker.txt'), 'utf8')).toBe('remembered-owner');
+
+    writeFileSync(join(outside, 'second.txt'), 'second-original');
+    linkSync(join(outside, 'second.txt'), join(ws, 'second-hard.txt'));
+    ask.mockResolvedValue('always');
+    expect(await write(child, 'second-hard.txt', 'one-time-write')).toContain('Successfully');
+    ask.mockResolvedValue('no');
+    expect(await write(child, 'second-hard.txt', 'must-not-write')).toContain('hard links');
+    expect(await write(owner, 'second-hard.txt', 'must-not-leak-grant')).toContain('hard links');
+    expect(readFileSync(join(outside, 'second.txt'), 'utf8')).toBe('one-time-write');
+    expect(await write(owner, 'hard.txt', 'owner-still-approved')).toContain('Successfully');
   });
 
   it('refuses a canonical parent replaced by an outside junction during creation approval', async () => {
