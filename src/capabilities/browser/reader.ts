@@ -82,10 +82,16 @@ class ReaderPage {
     this.lifetime.signal.throwIfAborted();
     if (!address || typeof address === 'string') throw new Error('Browser network guard could not start.');
     this.child = spawn(executable, browserArgs(this.profile, address.port), {
-      stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'],
+      // Keep all five descriptors as pipes, including the standard streams,
+      // for Chromium's inherited-descriptor transport on Windows.
+      stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
       env: browserEnvironment(this.profile),
       detached: process.platform !== 'win32', windowsHide: true,
     });
+    // Browser logs never reach the model or the terminal. Drain both streams
+    // without collecting them so a full output pipe cannot block startup.
+    this.child.stdout?.resume();
+    this.child.stderr?.resume();
     this.pipe = new BrowserPipe(this.child);
     this.pipe.onFailure = () => this.closeInBackground();
     this.pipe.onEvent = (event) => { void this.handleEvent(event).catch(() => this.closeInBackground()); };
