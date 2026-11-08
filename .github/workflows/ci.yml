@@ -100,12 +100,6 @@ jobs:
           bun-version: latest
       - run: npm ci
       # Uses an installed Chrome/Edge. No browser engine download or sandbox override.
-      - name: Diagnose Windows browser pipe startup
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          bun build scripts/diagnose-browser-startup.ts --target=node --outfile .browser-startup.mjs
-          node .browser-startup.mjs
       - run: npm test -- src/capabilities/browser/reader.integration.test.ts --maxWorkers=1
         env:
           MERCURY_TEST_BROWSER: '1'

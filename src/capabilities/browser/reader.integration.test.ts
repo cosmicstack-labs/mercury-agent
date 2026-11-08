@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { stat, mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { IsolatedBrowserReader } from './reader.js';
 import { BrowserPipe } from './pipe.js';
 import { browserUrl, requestPublicResource, type BrowserTransport } from './public-request.js';
@@ -59,6 +59,7 @@ describe.skipIf(process.env.MERCURY_TEST_BROWSER !== '1')('installed browser aga
       expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
       const profile = child.spawnargs.find((arg) => arg.startsWith('--user-data-dir='))?.slice('--user-data-dir='.length);
       if (profile) await expect(stat(profile)).rejects.toMatchObject({ code: 'ENOENT' });
+      if (profile && process.platform === 'win32') await expect(stat(dirname(profile))).rejects.toMatchObject({ code: 'ENOENT' });
     }
     hits.length = 0;
     transportedBytes = 0;

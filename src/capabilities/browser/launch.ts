@@ -32,11 +32,17 @@ export function browserArgs(profile: string, proxyPort: number): string[] {
 }
 
 /** No provider tokens, SSH agents, cloud credentials, or real profile/home env. */
-export function browserEnvironment(profile: string, env = process.env): NodeJS.ProcessEnv {
+export function browserEnvironment(profile: string, env = process.env, platform = process.platform): NodeJS.ProcessEnv {
+  const home = platform === 'win32' ? win32.join(profile, 'home') : profile;
   return {
     ...(env.SystemRoot ? { SystemRoot: env.SystemRoot } : {}),
     ...(env.WINDIR ? { WINDIR: env.WINDIR } : {}),
-    HOME: profile, USERPROFILE: profile, LOCALAPPDATA: profile, APPDATA: profile,
+    HOME: home, USERPROFILE: home,
+    // Windows known-folder APIs expand AppData beneath USERPROFILE. A flat
+    // empty home makes Chromium unable to resolve its default profile path,
+    // so it refuses the debugging pipe even with an explicit user-data-dir.
+    LOCALAPPDATA: platform === 'win32' ? win32.join(home, 'AppData', 'Local') : profile,
+    APPDATA: platform === 'win32' ? win32.join(home, 'AppData', 'Roaming') : profile,
     TMPDIR: profile, TEMP: profile, TMP: profile, XDG_CONFIG_HOME: profile, XDG_CACHE_HOME: profile,
     LANG: 'C.UTF-8',
   };

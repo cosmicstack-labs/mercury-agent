@@ -63,8 +63,15 @@ class ReaderPage {
     const executable = await findBrowser(this.options.executable);
     this.lifetime.signal.throwIfAborted();
     this.profile = await mkdtemp(join(tmpdir(), 'mercury-browser-'));
-    await mkdir(join(this.profile, 'Default'));
-    await writeFile(join(this.profile, 'Default', 'Preferences'), JSON.stringify({
+    const env = browserEnvironment(this.profile);
+    const browserProfile = process.platform === 'win32' ? join(this.profile, 'browser') : this.profile;
+    await mkdir(join(browserProfile, 'Default'), { recursive: true });
+    if (process.platform === 'win32') {
+      // These must exist before Chromium calls SHGetFolderPath. The entire
+      // home and the separate browser profile remain inside our temp root.
+      await Promise.all([env.LOCALAPPDATA!, env.APPDATA!].map((dir) => mkdir(dir, { recursive: true })));
+    }
+    await writeFile(join(browserProfile, 'Default', 'Preferences'), JSON.stringify({
       credentials_enable_service: false, profile: { password_manager_enabled: false, default_content_setting_values: { javascript: 2, notifications: 2, geolocation: 2, media_stream_mic: 2, media_stream_camera: 2, automatic_downloads: 2 } },
       autofill: { profile_enabled: false, credit_card_enabled: false },
     }));
@@ -81,17 +88,11 @@ class ReaderPage {
     const address = this.proxy.address();
     this.lifetime.signal.throwIfAborted();
     if (!address || typeof address === 'string') throw new Error('Browser network guard could not start.');
-    this.child = spawn(executable, browserArgs(this.profile, address.port), {
-      // Keep all five descriptors as pipes, including the standard streams,
-      // for Chromium's inherited-descriptor transport on Windows.
-      stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
-      env: browserEnvironment(this.profile),
+    this.child = spawn(executable, browserArgs(browserProfile, address.port), {
+      stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'],
+      env,
       detached: process.platform !== 'win32', windowsHide: true,
     });
-    // Browser logs never reach the model or the terminal. Drain both streams
-    // without collecting them so a full output pipe cannot block startup.
-    this.child.stdout?.resume();
-    this.child.stderr?.resume();
     this.pipe = new BrowserPipe(this.child);
     this.pipe.onFailure = () => this.closeInBackground();
     this.pipe.onEvent = (event) => { void this.handleEvent(event).catch(() => this.closeInBackground()); };

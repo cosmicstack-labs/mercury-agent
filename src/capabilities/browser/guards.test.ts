@@ -56,9 +56,21 @@ describe('installed browser launch contract', () => {
   });
 
   it('does not inherit provider credentials, real home, debugging variables or proxy settings', () => {
-    const env = browserEnvironment('/tmp/empty', { HOME: '/real', OPENAI_API_KEY: 'secret', SSH_AUTH_SOCK: '/agent', HTTPS_PROXY: 'http://proxy', NODE_OPTIONS: '--inspect', SystemRoot: 'C:\\Windows' });
+    const env = browserEnvironment('/tmp/empty', { HOME: '/real', OPENAI_API_KEY: 'secret', SSH_AUTH_SOCK: '/agent', HTTPS_PROXY: 'http://proxy', NODE_OPTIONS: '--inspect', SystemRoot: 'C:\\Windows' }, 'linux');
     expect(env.HOME).toBe('/tmp/empty');
     expect(env.SystemRoot).toBe('C:\\Windows');
     for (const key of ['OPENAI_API_KEY', 'SSH_AUTH_SOCK', 'HTTPS_PROXY', 'NODE_OPTIONS']) expect(env[key]).toBeUndefined();
+  });
+
+  it('gives Windows known-folder APIs a private conventional home layout', () => {
+    const env = browserEnvironment('C:\\Temp\\isolated', { USERPROFILE: 'C:\\Users\\Owner', LOCALAPPDATA: 'C:\\Users\\Owner\\AppData\\Local', OPENAI_API_KEY: 'secret', SystemRoot: 'C:\\Windows' }, 'win32');
+    expect(env).toMatchObject({
+      HOME: 'C:\\Temp\\isolated\\home', USERPROFILE: 'C:\\Temp\\isolated\\home',
+      LOCALAPPDATA: 'C:\\Temp\\isolated\\home\\AppData\\Local',
+      APPDATA: 'C:\\Temp\\isolated\\home\\AppData\\Roaming',
+      TEMP: 'C:\\Temp\\isolated', SystemRoot: 'C:\\Windows',
+    });
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(Object.values(env).some((value) => value?.includes('Owner'))).toBe(false);
   });
 });
