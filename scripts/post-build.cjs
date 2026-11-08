@@ -83,14 +83,14 @@ if (isTermux) {
   try {
     execSync('npx vite build', { cwd: uiDir, stdio: 'pipe' });
   } catch (e) {
-    // PWA terser plugin fails on Node <20 (crypto not defined) but assets are still built
-    if (!fs.existsSync(path.join(uiDir, 'dist', 'index.html'))) {
-      // Real failure — show output for debugging
-      if (e.stdout) process.stderr.write(e.stdout);
-      if (e.stderr) process.stderr.write(e.stderr);
-      console.error('ERROR: Vite build failed and no output was produced');
-      process.exit(1);
-    }
+    // An old index.html or partial output does not prove this build succeeded.
+    // Stop before copying any UI assets into the runtime/release bundle.
+    if (e.stdout) process.stderr.write(e.stdout);
+    if (e.stderr) process.stderr.write(e.stderr);
+    const reason = e.code ? ` (${e.code})` : typeof e.status === 'number' && e.status !== 0 ? ` (exit ${e.status})` : '';
+    console.error(`ERROR: Vite build failed${reason}`);
+    if (!e.stdout && !e.stderr && e.message) console.error(e.message);
+    process.exit(1);
   }
 }
 
