@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { Hono } from 'hono';
 import { EvalHarness } from '../runner.js';
@@ -132,7 +132,13 @@ describe('authenticated event → durable Agent work → real tool loop', () => 
 
   it.each([false, true])('reports durable cancellation honestly while approval is pending (disk failure: %s)', async (diskFailure) => {
     const { harness, post } = await setup(true);
-    const target = join(harness.workDir, 'cancelled.txt');
+    // Event turns intentionally discard the harness's temporary grants.
+    // Give this fixture an explicit scope, through a symlink/junction so
+    // it also exercises macOS-style symlinked temporary directories.
+    const scope = join(dirname(harness.workDir), 'approved-work');
+    symlinkSync(harness.workDir, scope, process.platform === 'win32' ? 'junction' : 'dir');
+    harness.capabilities.permissions.getManifest().capabilities.filesystem.scopes = [{ path: scope, read: true, write: true }];
+    const target = join(scope, 'cancelled.txt');
     let answer!: (value: string) => void;
     const approval = new Promise<string>((resolve) => { answer = resolve; });
     const ask = vi.fn(() => approval);
