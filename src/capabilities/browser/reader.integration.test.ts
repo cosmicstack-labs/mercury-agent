@@ -174,7 +174,7 @@ describe.skipIf(process.env.MERCURY_TEST_BROWSER !== '1')('installed browser aga
     await expect(browser.run('session-a', 'snapshot')).rejects.toThrow('No isolated page');
   }, 30_000);
 
-  it('cancels a blocked startup without waiting for the longer bootstrap deadline', async () => {
+  it.each(['Target.getTargets', 'Target.attachToTarget'])('cancels blocked initialization at %s without waiting for its deadline', async (blockedMethod) => {
     const browser = reader();
     const controller = new AbortController();
     let started!: () => void;
@@ -182,9 +182,10 @@ describe.skipIf(process.env.MERCURY_TEST_BROWSER !== '1')('installed browser aga
     const send = BrowserPipe.prototype.send;
     const spy = vi.spyOn(BrowserPipe.prototype, 'send').mockImplementation(function (this: BrowserPipe, ...args: Parameters<BrowserPipe['send']>) {
       const pending = send.apply(this, args);
-      if (args[0] === 'Target.getTargets') {
+      if (args[0] === blockedMethod) {
         // Hold the real browser's reply in its owned pipe. Cancellation must
-        // reject the queued request and close the process, not wait 30 seconds.
+        // reject the queued request and close the process, not wait for either
+        // the 30-second bootstrap or a later 10-second command deadline.
         (launched.at(-1)!.stdio[4] as Readable).pause();
         started();
       }
@@ -194,11 +195,13 @@ describe.skipIf(process.env.MERCURY_TEST_BROWSER !== '1')('installed browser aga
       const pending = browser.run('cancel-startup', 'navigate', 'https://fixture.public.example/a', controller.signal);
       const rejection = expect(pending).rejects.toThrow('closed');
       await startup;
+      const cancelledAt = Date.now();
       controller.abort();
       await rejection;
+      expect(Date.now() - cancelledAt).toBeLessThan(5000);
       await expect(browser.run('cancel-startup', 'snapshot')).rejects.toThrow('No isolated page');
     } finally { spy.mockRestore(); }
-  }, 10_000);
+  }, 40_000);
 
   it('expires idle sessions', async () => {
     const browser = reader({ idleMs: 100 });

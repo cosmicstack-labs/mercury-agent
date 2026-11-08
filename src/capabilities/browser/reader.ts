@@ -100,27 +100,26 @@ class ReaderPage {
     // command. Only bootstrap gets 30 seconds, and cancellation stays prompt.
     const cancelStartup = () => this.pipe!.fail();
     this.lifetime.signal.addEventListener('abort', cancelStartup, { once: true });
-    let targetInfos: Array<{ type: string; targetId: string }>;
     try {
-      ({ targetInfos } = await this.pipe.send<{ targetInfos: Array<{ type: string; targetId: string }> }>('Target.getTargets', {}, undefined, 30_000));
+      const { targetInfos } = await this.pipe.send<{ targetInfos: Array<{ type: string; targetId: string }> }>('Target.getTargets', {}, undefined, 30_000);
+      this.targetId = targetInfos.find((t) => t.type === 'page')?.targetId ?? '';
+      if (!this.targetId) throw new Error('Browser did not create an empty page.');
+      ({ sessionId: this.sessionId } = await this.pipe.send<{ sessionId: string }>('Target.attachToTarget', { targetId: this.targetId, flatten: true }));
+      await this.pipe.send('Browser.setDownloadBehavior', { behavior: 'deny' });
+      await this.pipe.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+      await this.send('Page.enable');
+      await this.send('Emulation.setScriptExecutionDisabled', { value: true });
+      await this.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+      await this.send('Network.setBypassServiceWorker', { bypass: true });
+      await this.send('Network.setCacheDisabled', { cacheDisabled: true });
+      await this.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+      const { frameTree } = await this.send<{ frameTree: { frame: { id: string } } }>('Page.getFrameTree');
+      this.lifetime.signal.throwIfAborted();
+      this.frameId = frameTree.frame.id;
+      this.touch();
     } finally {
       this.lifetime.signal.removeEventListener('abort', cancelStartup);
     }
-    this.targetId = targetInfos.find((t) => t.type === 'page')?.targetId ?? '';
-    if (!this.targetId) throw new Error('Browser did not create an empty page.');
-    ({ sessionId: this.sessionId } = await this.pipe.send<{ sessionId: string }>('Target.attachToTarget', { targetId: this.targetId, flatten: true }));
-    await this.pipe.send('Browser.setDownloadBehavior', { behavior: 'deny' });
-    await this.pipe.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
-    await this.send('Page.enable');
-    await this.send('Emulation.setScriptExecutionDisabled', { value: true });
-    await this.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
-    await this.send('Network.setBypassServiceWorker', { bypass: true });
-    await this.send('Network.setCacheDisabled', { cacheDisabled: true });
-    await this.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
-    const { frameTree } = await this.send<{ frameTree: { frame: { id: string } } }>('Page.getFrameTree');
-    this.lifetime.signal.throwIfAborted();
-    this.frameId = frameTree.frame.id;
-    this.touch();
   }
 
   private send<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}): Promise<T> {
