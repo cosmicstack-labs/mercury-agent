@@ -100,6 +100,10 @@ describe('classifyGws: writes', () => {
     `gws tasks tasks insert --params '{"tasklist":"t"}' --json '{"title":"x"}'`,
     `gws calendar events watch --params '{"calendarId":"primary"}'`,
     'gws generate-skills',
+    'gws gmail +send --to a@b.com --subject Hi --body Hello --draft',
+    'gws gmail +reply --message-id m1 --body ok --draft',
+    'gws gmail +reply-all --message-id m1 --body ok --draft',
+    'gws gmail +forward --message-id m1 --to a@b.com --draft',
   ])('%s is a write', (command) => {
     expect(kindOf(command)).toBe('write');
   });
@@ -139,6 +143,10 @@ describe('classifyGws: sensitive', () => {
     'gws iam:v1 projects serviceAccounts keys create',
     `gws drive --format json files delete --params '{"fileId":"f"}'`,
     `gws drive files delete --dry-run --params '{"fileId":"f"}'`,
+    'gws gmail +send --to a@b.com --draft --attach ./a.pdf',
+    'gws gmail +send --to a@b.com --draft -a ./a.pdf',
+    'gws gmail +send --to a@b.com --body=--draft',
+    'gws chat +send --space spaces/x --text hi --draft',
   ])('%s is sensitive', (command) => {
     expect(kindOf(command)).toBe('sensitive');
   });

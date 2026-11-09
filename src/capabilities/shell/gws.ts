@@ -41,6 +41,7 @@ const CALENDAR_NOTIFYING = new Set(['insert', 'update', 'patch', 'move', 'quickA
 
 const READ_HELPERS = new Set(['+read', '+triage', '+agenda', '+standup-report', '+meeting-prep', '+weekly-digest', '+sanitize-prompt', '+sanitize-response']);
 const WRITE_HELPERS = new Set(['+write', '+append', '+watch', '+subscribe', '+renew', '+email-to-task', '+create-template']);
+const DRAFTABLE_HELPERS = new Set(['+send', '+reply', '+reply-all', '+forward']);
 const SENSITIVE_HELPERS = new Map([
   ['+send', 'sends a message'],
   ['+reply', 'sends a message'],
@@ -229,7 +230,7 @@ function classifyArgs(args: string[]): GwsCommand {
       : unreadable();
   }
   const helper = chain.find((part) => part.startsWith('+'));
-  if (helper) return classifyHelper(svc, helper);
+  if (helper) return classifyHelper(svc, helper, args);
   return classifyMethod(svc, chain.slice(0, -1), chain[chain.length - 1]);
 }
 
@@ -239,7 +240,15 @@ function authCommand(args: string[]): GwsCommand {
   return { kind: 'credentials', target: sub ? `auth ${sub}` : 'auth', reason: 'gws sign-in commands are for the owner' };
 }
 
-function classifyHelper(svc: string, helper: string): GwsCommand {
+function classifyHelper(svc: string, helper: string, args: string[]): GwsCommand {
+  if (
+    svc === 'gmail'
+    && DRAFTABLE_HELPERS.has(helper)
+    && args.includes('--draft')
+    && !args.some((arg) => /^(?:--attach(?:=|$)|-a)/.test(arg))
+  ) {
+    return { kind: 'write', service: svc, target: helper, reason: 'saves a Gmail draft' };
+  }
   if (READ_HELPERS.has(helper)) return { kind: 'read', service: svc, target: helper, reason: 'reads from Google Workspace' };
   if (WRITE_HELPERS.has(helper)) return { kind: 'write', service: svc, target: helper, reason: 'changes Google Workspace data' };
   return sensitive(svc, helper, SENSITIVE_HELPERS.get(helper) ?? 'is a gws helper Mercury does not know');
