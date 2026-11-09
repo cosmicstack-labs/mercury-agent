@@ -68,6 +68,19 @@ const RUNCRATE_PREFERRED_MODELS = [
   'moonshotai/Kimi-K2.6',
 ] as const;
 
+// Verified present on GET https://cloudgpu.app/v1/models on 2026-11-01.
+// CloudGPU is an OpenAI-compatible model API gateway.
+const CLOUDGPU_PREFERRED_MODELS = [
+  'deepseek-v4.1-flash',
+  'deepseek-v4-pro',
+  'kimi-k3',
+  'kimi-k2.7-code',
+  'glm-5.2',
+  'minimax-m3',
+  'qwen3-coder-480b',
+  'qwen3.5-397b',
+] as const;
+
 const OLLAMA_CLOUD_PREFERRED_MODELS = [
   'gpt-oss:120b',
   'gpt-oss:120b-cloud',
@@ -146,6 +159,7 @@ export function getPreferredModelsForProvider(provider: ProviderName): string[] 
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
+    cloudgpu: CLOUDGPU_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -272,6 +286,7 @@ function chooseRecommendedModel(
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
+    cloudgpu: CLOUDGPU_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -323,6 +338,7 @@ export function buildModelCatalog(
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
+    cloudgpu: CLOUDGPU_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -358,6 +374,8 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
     errorMessage = 'Mercury could not fetch models for this Atlas Cloud key. Please re-enter it.';
   } else if (provider === 'runcrate') {
     errorMessage = 'Mercury could not fetch models for this Runcrate key. Please re-enter it.';
+  } else if (provider === 'cloudgpu') {
+    errorMessage = 'Mercury could not fetch models for this CloudGPU key. Please re-enter it.';
   } else if (provider === 'deepseek') {
     errorMessage = 'Mercury could not fetch models for this DeepSeek key. Please re-enter it.';
   } else if (provider === 'aimlapi') {
@@ -407,6 +425,17 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
         // Runcrate lists image, video, audio and embedding models on the same
         // endpoint; each row says what it outputs.
         return id.length > 0 && (outputModalities ?? []).includes('text');
+      }
+      if (provider === 'cloudgpu') {
+        // CloudGPU lists image, speech and transcription models on the same
+        // endpoint. Rows do not declare an output modality, so those are dropped by id.
+        const lower = id.toLowerCase();
+        return id.length > 0
+          && !lower.startsWith('flux')
+          && !lower.includes('tts')
+          && !lower.includes('whisper')
+          && !lower.endsWith('-asr')
+          && !lower.includes('transcri');
       }
       return isOpenAIChatModel(id);
     })

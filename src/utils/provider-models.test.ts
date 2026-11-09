@@ -110,6 +110,20 @@ describe('buildModelCatalog', () => {
     expect(catalog.models).toContain('another-chat-model');
   });
 
+  it('prefers the CloudGPU DeepSeek V4.1 Flash model when available', () => {
+    const catalog = buildModelCatalog('cloudgpu', [
+      'kimi-k3',
+      'deepseek-v4.1-flash',
+      'deepseek-v4-pro',
+      'another-chat-model',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('deepseek-v4.1-flash');
+    expect(catalog.models[0]).toBe('deepseek-v4-pro');
+    expect(catalog.models).toContain('kimi-k3');
+    expect(catalog.models).toContain('another-chat-model');
+  });
+
   it('falls back to the current Ollama Cloud model when no preferred default is available', () => {
     const catalog = buildModelCatalog(
       'ollamaCloud',
@@ -276,6 +290,34 @@ describe('fetchProviderModelCatalog', () => {
     expect(init.headers).toMatchObject({ Authorization: 'Bearer rc_live_test' });
     expect(catalog.recommendedModel).toBe('deepseek-ai/DeepSeek-V4.1-Flash');
     expect(catalog.models).toEqual(['zai-org/GLM-5.3-Flash']);
+  });
+
+  it('keeps CloudGPU chat models and sends the key as a bearer token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [
+        { id: 'deepseek-v4.1-flash' },
+        { id: 'glm-5.2' },
+        { id: 'flux-1-schnell' },
+        { id: 'kokoro-tts' },
+        { id: 'whisper-v3' },
+        { id: 'qwen3-asr' },
+      ],
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const catalog = await fetchProviderModelCatalog('cloudgpu', {
+      name: 'cloudgpu',
+      apiKey: 'cgw-sk-test',
+      baseUrl: 'https://cloudgpu.app/v1/',
+      model: 'deepseek-v4.1-flash',
+      enabled: true,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://cloudgpu.app/v1/models');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer cgw-sk-test' });
+    expect(catalog.recommendedModel).toBe('deepseek-v4.1-flash');
+    expect(catalog.models).toEqual(['glm-5.2']);
   });
 });
 
