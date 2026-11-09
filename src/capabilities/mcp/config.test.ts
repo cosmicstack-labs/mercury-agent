@@ -60,6 +60,21 @@ describe('validateMcpConfig', () => {
     ]);
   });
 
+  it('warns about a literal Basic credential in a header value', () => {
+    const result = validateMcpConfig({
+      servers: {
+        docs: {
+          transport: 'http',
+          url: 'https://mcp.example.com/mcp',
+          headers: { Authorization: `Basic ${Buffer.from('alice:s3cret').toString('base64')}` },
+        },
+      },
+    });
+    expect(result.warnings).toEqual([
+      'mcp.servers.docs.headers.Authorization looks like a literal secret; use "${env:NAME}" and keep the value in .env',
+    ]);
+  });
+
   it('warns about literal secrets in env and headers', () => {
     const result = validateMcpConfig({
       servers: {
