@@ -12,6 +12,12 @@ export interface BotEventState {
   activity: Record<string, string>;
   /** Newest delivered artifact — the deliverables inbox banners + refreshes live on this. */
   lastDelivery: { botId: string; name: string; at: number } | null;
+  /**
+   * Bumped on every `bot_roster` frame — the core re-broadcasts the roster when an avatar
+   * changes, which is how a face set on the phone reaches an open dashboard. Used as the
+   * cache-buster of each `<img>`; the periodic poll stays the fallback.
+   */
+  rosterSeq: number;
   connected: boolean;
 }
 
@@ -19,6 +25,7 @@ export function useBotEvents(): BotEventState {
   const [state, setState] = useState<BotEventState>({
     activity: {},
     lastDelivery: null,
+    rosterSeq: 0,
     connected: false,
   });
   const esRef = useRef<EventStream | null>(null);
@@ -58,6 +65,10 @@ export function useBotEvents(): BotEventState {
           return { ...prev, activity };
         });
       } catch {}
+    });
+
+    es.addEventListener("bot_roster", () => {
+      setState((prev) => ({ ...prev, rosterSeq: prev.rosterSeq + 1 }));
     });
 
     es.onopen = () => setState((p) => ({ ...p, connected: true }));
