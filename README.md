@@ -27,8 +27,13 @@
   <a href="https://mercuryagent.sh/docs">Docs</a> ·
   <a href="#quickstart">Quickstart</a> ·
   <a href="CHANGELOG.md">Changelog</a> ·
-  <a href="https://discord.gg/5emMpMJy5J">Discord</a> ·
-  <a href="README.zh-CN.md">简体中文</a>
+  <a href="https://discord.gg/5emMpMJy5J">Discord</a>
+</p>
+
+<p align="center">
+  English ·
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="README.ja.md">日本語</a>
 </p>
 
 ---
