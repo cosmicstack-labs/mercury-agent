@@ -111,8 +111,13 @@ mod tests {
             fs::create_dir_all(&path).unwrap();
             Self(path)
         }
+        fn path(&self, path: &str) -> PathBuf {
+            // Construct every fixture component with the host separator. Raw
+            // Command argv assertions compare OsStr, not normalized Paths.
+            path.split('/').fold(self.0.clone(), |dir, part| dir.join(part))
+        }
         fn file(&self, path: &str) -> PathBuf {
-            let path = self.0.join(path);
+            let path = self.path(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, b"fixture, never interpreted").unwrap();
             path
@@ -137,7 +142,7 @@ mod tests {
         f.file("npm prefix/node.exe");
         let binary = f.file("managed/bin/mercury.exe");
         let launch = find_runtime(
-            &[f.0.join("npm prefix"), f.0.join("managed/bin")],
+            &[f.path("npm prefix"), f.path("managed/bin")],
             &[],
             true,
         )
@@ -159,8 +164,8 @@ mod tests {
             let (shim, entry) = f.npm(shim_name);
             let node = f.file("Program Files/nodejs/node.exe");
             let launch = find_runtime(
-                &[f.0.join("npm prefix")],
-                &[f.0.join("Program Files/nodejs")],
+                &[f.path("npm prefix")],
+                &[f.path("Program Files/nodejs")],
                 true,
             )
             .unwrap();
@@ -189,14 +194,14 @@ mod tests {
     fn adjacent_node_wins_and_incomplete_installs_are_not_executed_as_shims() {
         let f = Fixture::new();
         f.file("npm prefix/mercury.cmd");
-        let dirs = [f.0.join("npm prefix")];
+        let dirs = [f.path("npm prefix")];
         assert!(find_runtime(&dirs, &[], true).is_none());
         f.npm("mercury.cmd");
         f.file("elsewhere/node.cmd");
-        assert!(find_runtime(&dirs, &[f.0.join("elsewhere")], true).is_none());
+        assert!(find_runtime(&dirs, &[f.path("elsewhere")], true).is_none());
         f.file("elsewhere/node.exe");
         let adjacent = f.file("npm prefix/node.exe");
-        let launch = find_runtime(&dirs, &[f.0.join("elsewhere")], true).unwrap();
+        let launch = find_runtime(&dirs, &[f.path("elsewhere")], true).unwrap();
         assert_eq!(launch.command().get_program(), adjacent.as_os_str());
     }
 
@@ -205,9 +210,9 @@ mod tests {
         let f = Fixture::new();
         f.npm("mercury.cmd");
         f.file("npm prefix/node.exe");
-        assert!(find_runtime(&[f.0.join("npm prefix")], &[], false).is_none());
+        assert!(find_runtime(&[f.path("npm prefix")], &[], false).is_none());
         let binary = f.file("bin/mercury");
-        let launch = find_runtime(&[f.0.join("bin")], &[], false).unwrap();
+        let launch = find_runtime(&[f.path("bin")], &[], false).unwrap();
         assert_eq!(launch.command().get_program(), binary.as_os_str());
     }
 
@@ -223,7 +228,7 @@ mod tests {
         .unwrap();
         let node_dirs: Vec<PathBuf> =
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
-        let launch = find_runtime(&[f.0.join("npm prefix")], &node_dirs, true)
+        let launch = find_runtime(&[f.path("npm prefix")], &node_dirs, true)
             .expect("the Windows desktop CI runner must provide Node.js on PATH");
         let args = [
             "start",
