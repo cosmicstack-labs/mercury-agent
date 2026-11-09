@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getMercuryHome, getMemoryDir } from '../utils/config.js';
@@ -73,6 +73,13 @@ export class SessionResolutionError extends Error {
 
 export class SessionTitleError extends Error {}
 
+export class SessionReadError extends Error {
+  constructor(message: string, readonly bytesRead: number, readonly fileSize?: number) {
+    super(message);
+    this.name = 'SessionReadError';
+  }
+}
+
 export class SessionRepository {
   readonly rootDir: string;
   private readonly indexPath: string;
@@ -126,10 +133,46 @@ export class SessionRepository {
   }
 
   list(options: { includeArchived?: boolean; includeDeleted?: boolean } = {}): Session[] {
+    return this.listSummaries(options).map((entry) => this.readSession(entry.id));
+  }
+
+  /** Index metadata only: callers can page without loading every transcript. */
+  listSummaries(options: { includeArchived?: boolean; includeDeleted?: boolean } = {}): SessionIndexEntry[] {
     return this.index.sessions
       .filter((entry) => entry.status === 'active' || (options.includeArchived && entry.status === 'archived') || (options.includeDeleted && entry.status === 'deleted'))
       .sort((a, b) => b.updatedAt - a.updatedAt)
-      .map((entry) => this.readSession(entry.id));
+      .map((entry) => ({ ...entry }));
+  }
+
+  /** Bounded, read-only access for recall; no path is accepted from the model. */
+  readBounded(ref: string, maxBytes: number): { session: Session; bytes: number } {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('Invalid session read limit');
+    const entry = this.resolveEntry(ref);
+    const fd = openSync(join(this.rootDir, `${entry.id}.json`), 'r');
+    let bytes = 0;
+    let size: number | undefined;
+    try {
+      size = fstatSync(fd).size;
+      if (size > maxBytes) throw new Error('Session exceeds the recall read limit');
+      // Repository writes use atomic rename, so the descriptor normally stays
+      // stable. Never read past the bound, even if another writer grows it.
+      const buffer = Buffer.alloc(size);
+      while (bytes < buffer.length) {
+        const n = readSync(fd, buffer, bytes, buffer.length - bytes, bytes);
+        if (!n) break;
+        bytes += n;
+      }
+      if (fstatSync(fd).size !== size) throw new Error('Session changed during recall; try again');
+      const session: unknown = JSON.parse(buffer.subarray(0, bytes).toString('utf8'));
+      if (!this.isValidSession(session, entry.id)) throw new Error('Invalid session');
+      return { session, bytes };
+    } catch {
+      // Failed JSON/validation still consumed disk bytes and must count toward
+      // the caller's aggregate scan budget. Do not expose parser/file content.
+      throw new SessionReadError('Could not read session within the limit', bytes, size);
+    } finally {
+      closeSync(fd);
+    }
   }
 
   get(ref: string): Session {
