@@ -18,3 +18,52 @@ Tell Mercury in conversation:
 - "Ping me in 2 hours about the deployment"
 
 Tasks persist to `~/.mercury/schedules.yaml` and restore on restart. Responses route back to the channel (CLI or Telegram) where the task was created.
+## Time zones and overlap
+
+Use a timezone for recurring work, for example: “Every weekday at 9am in
+America/New_York, brief me on my calendar.” The `schedule_task` tool accepts an
+IANA `timezone`; the Schedules editor exposes the same setting. Existing schedules
+without one continue using the host timezone. Cron follows that zone's local clock,
+including daylight-saving changes.
+
+A schedule never queues another main-agent run while its previous run is still
+queued or running. Overlapping ticks are skipped, rather than accumulated for later.
+Recurring ticks missed while Mercury was offline are not replayed.
+
+## Offline and interrupted work
+
+One-shot tasks have an explicit `missed_run_policy`:
+
+- `skip` (default, including older schedules): keep a skipped record when Mercury
+  starts after the due time.
+- `run_once`: start the overdue task once after restart, provided no run had begun.
+
+This policy does **not** retry failed or interrupted work. Mercury records a run
+before invoking it. If the process stops before the outcome is confirmed, the run
+becomes **interrupted** and the schedule pauses. Failed runs also pause, because an
+external action may have succeeded before its response was lost.
+
+Check the prior run's effects before repeating it. In **Schedules → Edit**, choose
+**Schedule again** to explicitly resume. For a one-shot, the delay starts again
+from when you save. Editing only a description or policy does not repeat the work.
+The API equivalent is `PUT /api/schedules/:id` with `{"resume": true}` and, for a
+one-shot, the desired `delaySeconds`. Running tasks cannot be edited.
+
+## Run outcomes
+
+The Schedules page and `list_scheduled_tasks` show pending, running, completed,
+failed, interrupted, skipped, or dispatched status. **Completed** means the main
+agent finished its turn; inspect its response for the actual task result. Bot
+schedules show **dispatched** after their separate queue accepts them; inspect the
+bot's run history for completion. Scheduled bot jobs whose run or retry was
+interrupted go to the dead-letter queue (DLQ) instead of replaying automatically;
+future routines pause. Check their effects, then use `/bots start <id>` to resume
+future routines or `/bots replay <id> <jobId>` to explicitly repeat that job.
+A fresh queued bot job that never started can still resume. Manual/chat bot jobs
+keep their existing recovery behavior.
+
+Run records are stored with the schedule in `~/.mercury/schedules.yaml`, using an
+atomic replacement. The latest run is kept for each recurring task. The most recent
+100 resolved one-shot records are retained; active work and unresolved failures are
+kept until you remove them. These safeguards prevent automatic scheduler replay;
+they cannot guarantee exactly-once behavior from external services.

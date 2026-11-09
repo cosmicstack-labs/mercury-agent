@@ -12,7 +12,7 @@ import type { ChannelRegistry } from '../channels/registry.js';
 import type { MercuryConfig, ProviderName } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
-import type { ScheduledTaskManifest } from './scheduler.js';
+import type { ScheduledDispatch, ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
 import { ArtifactCollector } from '../artifacts/collector.js';
 import { artifactStore, type Artifact } from '../artifacts/store.js';
@@ -672,7 +672,7 @@ export class Agent {
       this.notifyBackgroundTaskComplete(task);
     });
 
-    this.scheduler.setOnScheduledTask(async (manifest) => this.handleScheduledTask(manifest));
+    this.scheduler.setOnScheduledTask(async (manifest, runId) => this.handleScheduledTask(manifest, runId));
 
     this.channels.onIncomingMessage((msg) => this.enqueueMessage(msg));
     this.wireOwnerApprovals();
@@ -2166,6 +2166,18 @@ export class Agent {
           }
           logger.error({ err, msg: msg.content.slice(0, 50) }, 'Failed to handle message');
         } finally {
+          const taskId = msg.metadata?.scheduledTaskId;
+          const runId = msg.metadata?.scheduledRunId;
+          if (typeof taskId === 'string' && typeof runId === 'string') {
+            const entry = item.workKey ? this.workLedger.get(item.workKey) : undefined;
+            try {
+              this.scheduler.finishRun(taskId, runId, entry?.status === 'completed' ? 'completed' : 'failed',
+                entry?.status === 'completed' ? undefined : entry?.error ?? 'Scheduled work ended without confirmed completion');
+            } catch (err) {
+              // Leave the durable running record uncertain, but always release queue state.
+              logger.error({ err, taskId, runId }, 'Could not persist scheduled run outcome');
+            }
+          }
           this.currentWorkKey = null;
           if (!this.lifecycle.is('idle') && this.lifecycle.canTransitionTo('idle')) {
             this.lifecycle.transition('idle');
@@ -4169,7 +4181,7 @@ export class Agent {
           return;
         }
         logger.error({ err: lastError }, errMsg);
-        if (this.currentWorkKey && (hasCompletedTool || hasStreamedOutput || requiresContinuationApproval)) {
+        if (this.currentWorkKey && !msg.metadata?.scheduledTaskId && (hasCompletedTool || hasStreamedOutput || requiresContinuationApproval)) {
           const continuationAttempt = typeof msg.metadata?.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 0;
           const needsApproval = needsContinuationApproval(continuationAttempt, requiresContinuationApproval);
           if (needsApproval) {
@@ -4203,7 +4215,7 @@ export class Agent {
             return;
           }
         }
-        if (this.currentWorkKey && !hasCompletedTool && !hasStreamedOutput && this.isRetryableProviderError(lastError)) {
+        if (this.currentWorkKey && !msg.metadata?.scheduledTaskId && !hasCompletedTool && !hasStreamedOutput && this.isRetryableProviderError(lastError)) {
           const attempts = this.workLedger.get(this.currentWorkKey)?.attempts ?? 1;
           const shouldContinue = !needsRetryApproval(attempts) || (
             channel && msg.channelType !== 'internal'
@@ -4970,28 +4982,36 @@ export class Agent {
     });
   }
 
-  async processInternalPrompt(prompt: string, channelId?: string, channelType?: string, opts: { allowTools?: string[]; scheduledTaskId?: string } = {}): Promise<void> {
+  async processInternalPrompt(prompt: string, channelId?: string, channelType?: string, opts: { allowTools?: string[]; scheduledTaskId?: string; scheduledRunId?: string } = {}): Promise<void> {
     const syntheticMsg: ChannelMessage = {
-      id: `internal-${Date.now().toString(36)}`,
+      id: opts.scheduledRunId ? `scheduled-${opts.scheduledRunId}` : `internal-${Date.now().toString(36)}`,
       channelId: channelId || 'internal',
       channelType: (channelType || 'internal') as ChannelType,
       senderId: 'system',
       content: prompt,
       timestamp: Date.now(),
       ...(opts.allowTools?.length || opts.scheduledTaskId
-        ? { metadata: { ...(opts.allowTools?.length ? { allowTools: opts.allowTools } : {}), ...(opts.scheduledTaskId ? { scheduledTaskId: opts.scheduledTaskId } : {}) } }
+        ? { metadata: { ...(opts.allowTools?.length ? { allowTools: opts.allowTools } : {}), ...(opts.scheduledTaskId ? { scheduledTaskId: opts.scheduledTaskId, scheduledRunId: opts.scheduledRunId } : {}) } }
         : {}),
     };
-    this.enqueueMessage(syntheticMsg);
+    if (opts.scheduledTaskId) {
+      // A scheduled prompt is work, never an interactive slash command/dialog answer.
+      const accepted = this.workLedger.accept(syntheticMsg);
+      if (accepted.accepted) {
+        this.queueMessage(syntheticMsg, accepted.entry.key);
+        void this.processQueue();
+      }
+    } else {
+      this.enqueueMessage(syntheticMsg);
+    }
   }
 
-  private async handleScheduledTask(manifest: ScheduledTaskManifest): Promise<void> {
+  private async handleScheduledTask(manifest: ScheduledTaskManifest, runId: string): Promise<ScheduledDispatch> {
     // Bot routines run on the bot lane, never through the main agent loop
     // (BOTS-ARCHITECTURE.md §2.3 — cron lane).
     if (manifest.botId) {
       if (!this.botManager) {
-        logger.warn({ task: manifest.id, botId: manifest.botId }, 'Bot routine fired but BotManager is not wired');
-        return;
+        throw new Error('Bot routine fired but BotManager is not wired');
       }
       logger.info({ task: manifest.id, botId: manifest.botId }, 'Bot routine firing');
       const result = this.botManager.enqueue(manifest.botId, {
@@ -5003,8 +5023,10 @@ export class Agent {
         // Gate skips (busy, too soon, paused) are the governor working, not faults.
         const level = result.reasonCode === 'busy' || result.reasonCode === 'too_soon' || result.reasonCode === 'routine_paused' ? 'info' : 'warn';
         logger[level]({ botId: manifest.botId, task: manifest.id, reasonCode: result.reasonCode }, 'Bot routine tick skipped');
+        if (['busy', 'too_soon', 'routine_paused', 'stopped', 'target_disabled'].includes(result.reasonCode ?? '')) return 'skipped';
+        throw new Error(`Bot schedule was not accepted: ${result.reasonCode ?? 'unknown error'}`);
       }
-      return;
+      return 'dispatched';
     }
     logger.info({ task: manifest.id, channel: manifest.sourceChannelType }, 'Processing scheduled task');
     try {
@@ -5015,7 +5037,7 @@ export class Agent {
       if (channel && manifest.sourceChannelType !== 'internal') {
         const skillInfo = manifest.skillName ? ` (${manifest.skillName})` : '';
         await channel.send(
-          ` Scheduled task started${skillInfo}: ${manifest.description}\nAll actions auto-approved for this run.`,
+          ` Scheduled task started${skillInfo}: ${manifest.description}\nExisting tool permissions apply to this run.`,
           manifest.sourceChannelId,
         ).catch((e) => logger.warn({ e }, 'channel send failed'));
       }
@@ -5028,9 +5050,11 @@ export class Agent {
       if (!prompt) {
         prompt = `Execute scheduled task: ${manifest.description}`;
       }
-      await this.processInternalPrompt(prompt, manifest.sourceChannelId, manifest.sourceChannelType, { allowTools: manifest.allowTools, scheduledTaskId: manifest.id });
+      await this.processInternalPrompt(prompt, manifest.sourceChannelId, manifest.sourceChannelType, { allowTools: manifest.allowTools, scheduledTaskId: manifest.id, scheduledRunId: runId });
+      return 'queued';
     } catch (err) {
       logger.error({ err, task: manifest.id }, 'Scheduled task execution failed');
+      throw err;
     }
   }
 

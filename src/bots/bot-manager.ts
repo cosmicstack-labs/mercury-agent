@@ -274,6 +274,14 @@ export class BotManager {
     this.queue = deps.queue ?? new BotQueue(this.store.botsRoot, this.config.bots?.retention?.dlqCap);
     this.tasks = new BotTaskStore(this.store.botsRoot);
     this.inbox = new BotInbox(this.store.botsRoot);
+    this.queue.onInterruptedSchedule = (job) => {
+      if (!this.store.exists(job.botId)) return;
+      const routines = this.store.readRoutineState(job.botId);
+      routines.paused['*'] = { since: new Date().toISOString(), reason: 'A scheduled run was interrupted. Inspect its effects before /bots start or manual DLQ replay.' };
+      this.store.writeRoutineState(job.botId, routines);
+      this.needsYou.add(job.botId);
+      this.inbox.add({ botId: job.botId, botName: this.store.get(job.botId)?.name ?? job.botId, runId: job.id, files: [], kind: 'needs-you', title: 'Scheduled run interrupted', summary: routines.paused['*'].reason, reasonCode: 'scheduled_interrupted' });
+    };
     // A stop survives a restart (it used to be in memory only, so a restart
     // quietly undid /bots stop).
     for (const id of this.store.readHeld()) if (this.store.exists(id)) this.held.add(id);
@@ -317,7 +325,7 @@ export class BotManager {
     for (const m of this.store.list()) {
       const drained = this.queue.drainMail(m.id);
       if (drained.length > 0) this.mailboxes.set(m.id, drained);
-      if (this.journalFor(m.id).read(m.id, 1)[0]?.needsYou) this.needsYou.add(m.id);
+      if (this.journalFor(m.id).read(m.id, 1)[0]?.needsYou || this.store.readRoutineState(m.id).paused['*']) this.needsYou.add(m.id);
     }
     // A profile relocation (re-parent or fleet-layout migration) invalidates
     // the cached journal handle (it is bound to the old dir) and the bot's
@@ -436,7 +444,7 @@ export class BotManager {
     return this.journalFor(botId);
   }
 
-  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string; attachments?: ChannelAttachment[] }): { jobId: string; accepted: boolean; reasonCode?: string; duplicated?: boolean } {
+  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string; attachments?: ChannelAttachment[]; manualReplay?: boolean }): { jobId: string; accepted: boolean; reasonCode?: string; duplicated?: boolean } {
     const manifest = this.store.get(botId);
     if (!manifest) return { jobId: '', accepted: false, reasonCode: 'target_unknown' };
     if (!manifest.enabled || this.disabled.has(botId)) return { jobId: '', accepted: false, reasonCode: 'target_disabled' };
@@ -448,12 +456,12 @@ export class BotManager {
     // It is skipped — never stacked — when the bot is still busy, when the
     // routine ran too recently, or when the routine was paused for
     // producing nothing. The next tick tries again.
-    if (job.trigger === 'cron') {
+    if (job.trigger === 'cron' && !job.manualReplay) {
       // A stopped bot's routines don't queue up behind the stop.
       if (this.held.has(botId)) return { jobId: '', accepted: false, reasonCode: 'stopped' };
       const key = job.routineId ?? `bot:${botId}:cron`;
       const routineState = this.store.readRoutineState(botId);
-      const pausedEntry = routineState.paused[key];
+      const pausedEntry = routineState.paused[key] ?? routineState.paused['*'];
       if (pausedEntry) {
         const until = pausedEntry.until ? Date.parse(pausedEntry.until) : Number.POSITIVE_INFINITY;
         if (Date.now() < until) return { jobId: '', accepted: false, reasonCode: 'routine_paused' };
@@ -954,7 +962,7 @@ export class BotManager {
         this.providers.markAuthFailure?.(usedProvider);
         authSwitch = resolveProvider(this.providers, manifest, this.config).name !== usedProvider;
       }
-      const willRetry = output.status === 'failed' && !!output.reasonCode
+      const willRetry = job.trigger !== 'cron' && output.status === 'failed' && !!output.reasonCode
         && (isTransientFailure(output.reasonCode) || authSwitch) && job.attempts + 1 < MAX_TRANSIENT_ATTEMPTS;
       const turnLimited = output.status === 'failed' && isTurnLimitFailure(output.reasonCode);
       const routineKey = job.trigger === 'cron' ? (job.routineId ?? `bot:${botId}:cron`) : undefined;
@@ -1009,6 +1017,9 @@ export class BotManager {
         } else if (output.status === 'completed' && state.failStreak?.[routineKey]) {
           delete state.failStreak[routineKey];
         }
+        if (output.status !== 'completed') {
+          state.paused[routineKey] = { since: new Date().toISOString(), reason: 'Scheduled run did not finish. Inspect its effects before /bots start or manual DLQ replay.' };
+        }
         this.store.writeRoutineState(botId, state);
       }
 
@@ -1016,7 +1027,7 @@ export class BotManager {
       // three runs in a row is paused — the owner is told once, and
       // /bots start resumes it. This is what stops a bot that has
       // talked itself into a loop of records about records.
-      if (routineKey && this.expectationFor(manifest, job) === 'work' && output.status !== 'halted') {
+      if (routineKey && this.expectationFor(manifest, job) === 'work' && output.status === 'completed') {
         const state = this.store.readRoutineState(botId);
         if (output.outcome === 'none') {
           const streak = (state.noOutcomeStreak[routineKey] ?? 0) + 1;
@@ -1100,6 +1111,10 @@ export class BotManager {
         if (routineFailStreak <= 1) {
           await this.alertOwner(botId, `❌ **${manifest.name}** failed permanently [reason: ${output.reasonCode}] — replay with \`/bots replay ${botId} ${job.id}\``);
         }
+      } else if (output.status === 'paused' && job.trigger === 'cron') {
+        this.queue.settle(job.id, 'dead', 'scheduled_interrupted');
+        this.needsYou.add(botId);
+        this.inbox.add({ botId, botName: manifest.name, runId: job.id, files: output.deliverables, kind: 'needs-you', title: 'Scheduled run paused', summary: 'Inspect the existing effects before /bots start or manually replaying this run from the DLQ.', reasonCode: 'scheduled_interrupted' });
       } else if (output.status === 'paused') {
         // Step-budget pause: work continues next turn — same job requeues in
         // place (durable), no attempts bump.
@@ -1233,6 +1248,11 @@ export class BotManager {
       }
     } catch (err: any) {
       logger.error({ botId, jobId: job.id, err: err?.message }, 'Bot turn crashed');
+      if (job.trigger === 'cron') {
+        const state = this.store.readRoutineState(botId);
+        state.paused[job.routineId ?? `bot:${botId}:cron`] = { since: new Date().toISOString(), reason: 'Scheduled run crashed. Inspect its effects before /bots start or manual DLQ replay.' };
+        this.store.writeRoutineState(botId, state);
+      }
       this.queue.settle(job.id, 'dead', 'unknown_error');
       this.needsYou.add(botId);
       void this.alertOwner(botId, `💥 **${botId}** run ${job.id} crashed: ${String(err?.message ?? err).slice(0, 150)} — see journal; replay from DLQ.`);
@@ -2093,14 +2113,20 @@ export class BotManager {
     // then reported not_found).
     const entry = this.queue.peekDlq(jobId);
     if (!entry || entry.botId !== botId) return { accepted: false, reasonCode: 'not_found' };
-    this.queue.removeFromDlq(jobId);
-    return this.enqueue(botId, {
+    const result = this.enqueue(botId, {
       trigger: entry.trigger,
+      // The owner explicitly chose this job. Bypass routine timing/pause gates
+      // for this admission only; future ticks stay paused and a new crash still
+      // has cron recovery semantics.
+      manualReplay: true,
+      attachments: entry.attachments,
       prompt: entry.prompt,
       fromBot: entry.fromBot,
       source: entry.source,
       attempts: 0,
     });
+    if (result.accepted) this.queue.removeFromDlq(jobId);
+    return result;
   }
 
   getStorage(): Array<{ id: string; bytes: number; journalBytes: number }> {
