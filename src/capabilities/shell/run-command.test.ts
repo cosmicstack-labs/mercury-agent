@@ -66,4 +66,20 @@ describe('run_command executor (ROADMAP P1.8)', () => {
     // Arguments reach the program verbatim: no expansion, no command separator.
     expect(arg).toBe('$HOME;echo pwned');
   });
+
+  it.each(['cat', 'head'])('preserves the %s applet name when executing a canonical multicall binary', async (applet) => {
+    // A real child dispatches on argv[0], as Termux coreutils and BusyBox do.
+    // Node makes the original value available as process.argv0 on every OS.
+    const dispatcher = `
+      switch (process.argv0) {
+        case 'cat': process.stdout.write(process.argv[1]); break;
+        case 'head': process.stdout.write(process.argv[1].split('\\n')[0]); break;
+        default: console.error('unknown applet: ' + process.argv0); process.exit(64);
+      }
+    `;
+    const input = '$HOME;echo pwned\nsecond line';
+    const result = await executeArgv(process.execPath, ['-e', dispatcher, input], process.cwd(), 5_000, { argv0: applet });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe(applet === 'cat' ? input : input.split('\n')[0]);
+  });
 });

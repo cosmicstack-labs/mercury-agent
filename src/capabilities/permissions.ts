@@ -1,3 +1,4 @@
+import { captureWriteAncestor } from './filesystem/verified-write.js';
 import { commandTouchesMercuryCredentials, isMercuryCredentialPath } from '../security/protected-paths.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, lstatSync } from 'node:fs';
 import { join, resolve, sep, dirname, basename } from 'node:path';
@@ -9,6 +10,7 @@ import { redactSecrets } from '../utils/redact.js';
 import { BLOCKED_COMMANDS } from './shell/blocklist.js';
 import {
   evaluateArgvPolicy,
+  tokenizePosix,
   pinnedBinary,
   IN_PROCESS_BUILTINS,
   type BinaryResolver,
@@ -136,7 +138,7 @@ export interface PermissionsManifest {
   };
 }
 
-/** Device/inode pair identifying the file a read was authorised against. */
+/** Device/inode pair identifying the file an access was authorised against. */
 export interface FileIdentity {
   dev: number;
   ino: number;
@@ -152,17 +154,21 @@ export interface FsAccessResult {
    */
   code?: 'symlink-escape' | 'hardlink' | 'denied';
   /**
-   * Reads only: the canonical (realpath) target the check was made against.
+   * The canonical (realpath) target the check was made against.
    * Tools must open THIS path, never the lexical one, so a symlink swapped in
    * after the check cannot redirect the read.
    */
   canonical?: string;
   /**
-   * Reads of existing files only: lstat identity of `canonical` at check
+   * Existing files only: lstat identity of `canonical` at check
    * time. Tools compare it with `fstat` on the opened descriptor to defeat a
    * swap between check and open (TOCTOU).
    */
   fileId?: FileIdentity;
+  /** Link count captured before write approval; a new hardlink invalidates it. */
+  fileNlink?: number;
+  /** Existing canonical parent/ancestor captured before write approval. */
+  writeAncestor?: FileIdentity & { path: string };
 }
 
 const DEFAULT_MANIFEST: PermissionsManifest = {
@@ -388,7 +394,8 @@ export function splitShellSegments(command: string): string[] {
 
 export class PermissionManager {
   private manifest: PermissionsManifest;
-  private readonly cwd: string;
+  /** Fixed authority boundary; a session cwd only resolves command operands. */
+  private readonly workspaceRoot: string;
   private askHandler?: (prompt: string) => Promise<string>;
   private turnAnswers: Array<{ action: string; answer: 'yes' | 'no' | 'always' }> = [];
   /**
@@ -420,6 +427,7 @@ export class PermissionManager {
   private approvedMcpByContext = new Map<string, Set<string>>();
   /** Hard-linked files the user answered "always" for, per interaction context. */
   private approvedHardlinkReadsByContext = new Map<string, Set<string>>();
+  private approvedHardlinkWritesByContext = new Map<string, Set<string>>();
   /**
    * Fail-closed mode (unattended agents, e.g. Mercury Bots): no interactive
    * approvals exist. Explicitly granted scopes apply without prompting;
@@ -436,7 +444,7 @@ export class PermissionManager {
   private botShellAllowList?: string[];
 
   constructor() {
-    this.cwd = process.cwd();
+    this.workspaceRoot = process.cwd();
     this.manifest = this.load();
   }
 
@@ -737,7 +745,35 @@ export class PermissionManager {
     if (isMercuryCredentialPath(path)) {
       return { allowed: false, reason: "Permission denied: that is one of Mercury's login credential files (device tokens, password, sessions). Manage devices with /server.", code: 'denied' };
     }
-    if (mode === 'write') return this.checkScopedAccess(path, mode);
+    if (mode === 'write') {
+      // Capture the target BEFORE an approval can yield. The mutation tools
+      // open this canonical path without truncation, then verify its identity.
+      const canonical = this.canonicalizePath(resolve(path));
+      const described = this.describeRead(canonical);
+      const writeAncestor = captureWriteAncestor(canonical);
+      const scoped = await this.checkScopedAccess(path, mode);
+      if (!scoped.allowed) return scoped;
+      const nlink = described.nlink;
+      if (nlink !== undefined && nlink > 1 && !this.isGlobalAutoApproveActive()) {
+        const ctx = this.ctx();
+        const channelId = JSON.stringify([ctx.channelType, ctx.channelId]);
+        const approved = ctx.rememberApprovals ? this.approvedHardlinkWritesByContext.get(channelId) : undefined;
+        if (!approved?.has(canonical)) {
+          const reason = `Permission denied for write access to ${path}: the file has ${nlink} hard links and may modify a file outside the approved scopes`;
+          if (this.failClosed || !this.askHandler || this.ctx().channelType === 'internal') {
+            return { allowed: false, reason, code: 'hardlink', canonical };
+          }
+          const answer = await this.askHandler(`Write hard-linked file: ${canonical}\n(${nlink} links — this also changes every alias, including any outside the approved scopes)`);
+          if (answer !== 'yes' && answer !== 'always') return { allowed: false, reason, code: 'hardlink', canonical };
+          if (answer === 'always' && ctx.rememberApprovals) {
+            const aliases = approved ?? new Set<string>();
+            aliases.add(canonical);
+            this.approvedHardlinkWritesByContext.set(channelId, aliases);
+          }
+        }
+      }
+      return { ...described.result, fileNlink: nlink, writeAncestor };
+    }
 
     const resolved = resolve(path);
     const canonical = this.canonicalizePath(resolved);
@@ -947,7 +983,7 @@ export class PermissionManager {
    *
    * - **argv lane** (no prompt): the command tokenises into argv with no
    *   shell syntax, `argv[0]` is allowlisted, its flags pass the per-command
-   *   policy, and every path argument stays inside the cwd or a readable
+   *   policy, and every path argument stays inside the workspace or a readable
    *   scope. The caller executes it with execFile from the pinned PATH.
    * - **approval lane**: everything else, including pipelines and chains.
    *   The user sees the exact string; once approved it may use a shell.
@@ -968,7 +1004,12 @@ export class PermissionManager {
     }
     const segments = splitShellSegments(trimmed);
     const ctx = this.ctx();
-    const cwd = options.cwd ?? this.cwd;
+    const cwd = options.cwd ?? this.workspaceRoot;
+    const parsed = evaluateArgvPolicy(trimmed);
+    if (parsed.ok && parsed.argv.slice(1).some((arg) => this.argvPathCandidates(arg, cwd, parsed.argv[0])
+      .some((path) => isMercuryCredentialPath(resolve(cwd, path))))) {
+      return { allowed: false, reason: 'Blocked: the command resolves to a Mercury login credential file.', needsApproval: false };
+    }
 
     // Always block dangerous commands — check each segment so an
     // auto-approved base command can't launder a chained destructive one
@@ -1013,11 +1054,10 @@ export class PermissionManager {
 
     if (shell.cwdOnly) {
       for (const segment of segments) {
-        const hasPathTraversal = this.hasPathBeyondCwd(segment);
-        if (hasPathTraversal) {
-          const scopeCheck = await this.checkFsAccess(hasPathTraversal, 'write');
-          if (!scopeCheck.allowed && !this.isExecuteScoped(hasPathTraversal)) {
-            return { allowed: false, reason: `No permission to access ${hasPathTraversal}. Use approve_scope tool with path="${hasPathTraversal}" and mode="write" to request access.`, needsApproval: false };
+        for (const path of this.pathsBeyondWorkspace(segment, cwd)) {
+          const scopeCheck = await this.checkFsAccess(path, 'write');
+          if (!scopeCheck.allowed && !this.isExecuteScoped(path)) {
+            return { allowed: false, reason: `No permission to access ${path}. Use approve_scope tool with path="${path}" and mode="write" to request access.`, needsApproval: false };
           }
         }
       }
@@ -1076,7 +1116,7 @@ export class PermissionManager {
     // approval-gated: an unscoped `npm install` mutates cwd and can reach
     // anywhere via the network, so it is not covered by a directory grant.
     if (this.failClosed) {
-      const pathTokens = segments.flatMap(s => this.extractPathTokens(s));
+      const pathTokens = segments.flatMap(s => this.extractPathTokens(s, cwd));
       if (pathTokens.length > 0 && pathTokens.every(t => this.isExecuteScoped(t))) {
         logger.info({ cmd: trimmed, paths: pathTokens.length }, 'Shell command allowed by execute scope');
         return { allowed: true, needsApproval: false, lane: 'shell' };
@@ -1169,34 +1209,55 @@ export class PermissionManager {
    * tokenised arguments (after quote removal, so `cat "/etc/passwd"` is
    * seen as the absolute path it is).
    */
-  classifyArgvLane(command: string, cwd: string = this.cwd): { ok: true; argv: string[] } | { ok: false; reason: string } {
+  classifyArgvLane(command: string, cwd: string = this.workspaceRoot): { ok: true; argv: string[] } | { ok: false; reason: string } {
     const verdict = evaluateArgvPolicy(command);
     if (!verdict.ok) return verdict;
     const argv = verdict.argv;
     if (!IN_PROCESS_BUILTINS.has(argv[0]) && !this.binaryResolver(argv[0])) {
       return { ok: false, reason: `${argv[0]} is not installed in the pinned system PATH` };
     }
-    for (const arg of argv.slice(1)) {
-      for (const candidate of this.argvPathCandidates(arg)) {
+    const workspace = resolve(this.workspaceRoot);
+    const canonicalWorkspace = this.canonicalizePath(workspace);
+    const withinWorkspace = (path: string, base: string) => path === base || path.startsWith(base.endsWith(sep) ? base : base + sep);
+    const operands = argv[0] === 'cd' && argv.length === 1 ? [homedir()] : argv.slice(1);
+    for (const arg of operands) {
+      for (const candidate of this.argvPathCandidates(arg, cwd, argv[0])) {
         const resolved = resolve(cwd, candidate.replace(/^~/, homedir()));
-        if (resolved === cwd || resolved.startsWith(cwd.endsWith(sep) ? cwd : cwd + sep)) continue;
-        if (this.isLexicallyReadable(resolved)) continue;
-        return { ok: false, reason: `path ${candidate} is outside the working directory and readable scopes` };
+        const canonical = this.canonicalizePath(resolved);
+        if (!withinWorkspace(resolved, workspace) && !this.isLexicallyReadable(resolved)) {
+          return { ok: false, reason: `path ${candidate} is outside the workspace and readable scopes` };
+        }
+        if (isMercuryCredentialPath(resolved)) return { ok: false, reason: 'path names a Mercury login credential file' };
+        if (!withinWorkspace(canonical, canonicalWorkspace) && !this.isWithinScope(canonical, 'read')) {
+          return { ok: false, reason: `path ${candidate} resolves outside the workspace and readable scopes` };
+        }
+        try {
+          const stat = lstatSync(canonical);
+          if (stat.isFile() && stat.nlink > 1) return { ok: false, reason: `path ${candidate} has multiple hard links and needs command approval` };
+        } catch {
+          // Missing operands cannot disclose data. The command reports them.
+        }
       }
     }
     return { ok: true, argv };
   }
 
   /** Path-like parts of one argv element: the element itself and an `--opt=value` value. */
-  private argvPathCandidates(arg: string): string[] {
+  private argvPathCandidates(arg: string, cwd: string, program: string): string[] {
     const parts = [arg];
     const eq = arg.indexOf('=');
     if (arg.startsWith('-') && eq > 0) parts.push(arg.slice(eq + 1));
+    // Attached pattern-file operands are files too, not just option text.
+    if ((program === 'grep' || program === 'rg') && /^-[A-Za-z]*f.+/.test(arg) && !arg.startsWith('--')) {
+      parts.push(arg.slice(arg.indexOf('f') + 1));
+    }
+    if (program === 'findstr' && /^\/[fg]:/i.test(arg)) parts.push(arg.slice(3));
     return parts.filter((p) =>
       p.startsWith('/')
       || /^[A-Za-z]:[\\/]/.test(p)
       || p.startsWith('\\\\')
-      || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(p),
+      || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(p)
+      || existsSync(resolve(cwd, p)),
     );
   }
 
@@ -1328,17 +1389,17 @@ export class PermissionManager {
   private static readonly PATH_PATTERNS = [
     /(?:^|\s)(\/[^\s]+)/,
     /(?:^|\s)(~\/[^\s]+)/,
-    /(?:^|\s)\.\.\/([^\s]+)/,
+    /(?:^|\s)(\.\.\/[^\s]+)/,
     /(?:^|\s)([A-Za-z]:\\[^\s]+)/,
     /(?:^|\s)(\\\\[^\s]+)/,
   ];
 
   /** Every path-like token in a command segment, resolved (tilde expanded). */
-  private extractPathTokens(text: string): string[] {
+  private extractPathTokens(text: string, cwd: string): string[] {
     const out: string[] = [];
     for (const pattern of PermissionManager.PATH_PATTERNS) {
       for (const match of text.matchAll(new RegExp(pattern.source, 'g'))) {
-        out.push(resolve(match[1].replace(/^~/, homedir())));
+        out.push(resolve(cwd, match[1].replace(/^~/, homedir())));
       }
     }
     return out;
@@ -1350,11 +1411,21 @@ export class PermissionManager {
     return this.findTempScope(resolvedPath)?.execute === true;
   }
 
-  private hasPathBeyondCwd(command: string): string | null {
-    for (const candidate of this.extractPathTokens(command)) {
-      if (!candidate.startsWith(this.cwd)) return candidate;
+  private pathsBeyondWorkspace(command: string, cwd: string): string[] {
+    const base = resolve(this.workspaceRoot);
+    const parsed = tokenizePosix(command);
+    // Decode literal quotes/escapes and include existing relative operands,
+    // just as the argv lane does. Also retain native Windows backslashes and
+    // shell-syntax paths that the POSIX tokenizer cannot faithfully interpret.
+    const paths = this.extractPathTokens(command, cwd);
+    if (parsed.ok) {
+      paths.push(...parsed.argv.flatMap(arg => this.argvPathCandidates(arg, cwd, parsed.argv[0]))
+        .map(path => resolve(cwd, path.replace(/^~/, homedir()))));
     }
-    return null;
+    // Resolve against the session cwd, but never let moving that cwd widen
+    // authority. Check every outside operand, not just the first granted one.
+    return [...new Set(paths)].filter(candidate => candidate !== base
+      && !candidate.startsWith(base.endsWith(sep) ? base : base + sep));
   }
 
   private mergeDefaults(parsed: Partial<PermissionsManifest>): PermissionsManifest {

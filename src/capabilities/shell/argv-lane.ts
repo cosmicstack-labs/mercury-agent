@@ -11,7 +11,7 @@
  *   4. resolves to an executable in a PATH pinned to system directories,
  *      resolved once per process and never read from `process.env.PATH`.
  *
- * Such a command is executed with `execFile(absBinary, argv, { env: minimal })`
+ * Such a command is executed with the pinned binary, literal args and argv[0]
  * — never through `sh -c` — so what was checked is exactly what runs.
  * Everything else (pipelines included) goes to the approval lane, which
  * prompts with the exact string and may still use the shell.
@@ -274,6 +274,35 @@ export function evaluateArgvPolicy(command: string): ArgvVerdict {
   if (program.includes('/') || program.includes('\\')) return { ok: false, reason: 'argv[0] must be a bare program name' };
   const policy = Object.prototype.hasOwnProperty.call(ARGV_ALLOWLIST, program) ? ARGV_ALLOWLIST[program] : undefined;
   if (!policy) return { ok: false, reason: `${program} is not on the argv-lane allowlist` };
+
+  // Following links recursively reaches paths that the literal operand
+  // gate cannot see. Keep these forms in the explicit approval lane.
+  const followShort: Record<string, RegExp> = {
+    ls: /[LH]/, du: /[LDH]/, grep: /R/, rg: /L/, tree: /l/,
+  };
+  const followLong: Record<string, string[]> = {
+    ls: ['--dereference', '--dereference-command-line', '--dereference-command-line-symlink-to-dir'],
+    du: ['--dereference', '--dereference-args'],
+    grep: ['--dereference-recursive'],
+    rg: ['--follow'],
+  };
+  const followsLinks = argv.slice(1).some((arg) => {
+    if (program === 'find' && ['-L', '-H', '-follow'].includes(arg)) return true;
+    // Numeric options can share a short cluster (grep -R1); option values
+    // that resemble a follow flag conservatively require approval as well.
+    if (arg.startsWith('-') && !arg.startsWith('--') && followShort[program]?.test(arg.slice(1))) return true;
+    // GNU utilities accept unambiguous long-option prefixes. Routing even
+    // ambiguous prefixes to approval avoids relying on one host's version.
+    return arg.startsWith('--') && arg.length > 2
+      && !!followLong[program]?.some((flag) => flag.startsWith(arg.split('=')[0]));
+  });
+  if (followsLinks) return { ok: false, reason: 'following directory links requires command approval' };
+
+  // findstr can recursively follow junctions; /F reads an unchecked list
+  // of filenames. Its wildcard file operands also need explicit approval.
+  if (program === 'findstr' && argv.slice(1).some((arg) => /^\/(?:s$|f:)/i.test(arg) || /[*?]/.test(arg))) {
+    return { ok: false, reason: 'findstr recursive, wildcard or file-list reads require command approval' };
+  }
 
   const joined = argv.join(' ');
   for (const rule of SIDE_EFFECT_FLAGS) {
