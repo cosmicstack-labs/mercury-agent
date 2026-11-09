@@ -7,6 +7,7 @@ import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { redactSecrets } from '../utils/redact.js';
 import { BLOCKED_COMMANDS } from './shell/blocklist.js';
+import { classifyGws, setsGwsCredentials, type GwsCommand } from './shell/gws.js';
 import {
   evaluateArgvPolicy,
   pinnedBinary,
@@ -981,6 +982,21 @@ export class PermissionManager {
       }
     }
 
+    const gwsParts = /\$\(|`/.test(trimmed) ? [...segments, trimmed] : segments;
+    const gwsCommands = gwsParts.map((part) => classifyGws(part)).filter((c): c is GwsCommand => c !== null);
+    if (setsGwsCredentials(trimmed) || gwsCommands.some((c) => c.kind === 'credentials')) {
+      return { allowed: false, reason: 'Blocked: gws sign-in commands are for the owner. Run it yourself in a terminal.', needsApproval: false };
+    }
+    if (gwsCommands.some((c) => c.kind === 'sensitive')) {
+      if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed) {
+        return { allowed: false, reason: 'Sending, sharing, uploading or deleting in Google Workspace needs you to approve it, and nobody can be asked here.', needsApproval: false };
+      }
+      const answer = await this.askHandler(`Run command (sends, shares, uploads or deletes in Google Workspace, so it always asks): ${trimmed}`);
+      return answer === 'yes' || answer === 'always'
+        ? { allowed: true, needsApproval: false, lane: 'shell' }
+        : { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
+    }
+
     // Adding or changing an MCP server is an owner action (ADR-029): a shell
     // command that does it asks every time, Allow All and earlier "always"
     // answers included, and never runs unattended. Otherwise an injected
@@ -1398,6 +1414,8 @@ const SUBCOMMAND_TOOLS = new Set(['git', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'p
  * no plain program name.
  */
 export function commandFamily(segment: string): string | null {
+  const gws = classifyGws(segment);
+  if (gws) return gws.kind === 'read' && gws.service ? `gws ${gws.service} read` : null;
   const tokens = segment.trim().split(/\s+/).filter(Boolean);
   let i = 0;
   while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;

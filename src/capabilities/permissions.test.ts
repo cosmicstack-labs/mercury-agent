@@ -646,3 +646,137 @@ describe('argv lane (ADR-016)', () => {
     expect(ask).not.toHaveBeenCalled();
   });
 });
+
+describe('gws commands', () => {
+  const SEND = 'gws gmail +send --to a@b.com --subject Hi';
+  const READ = `gws gmail users messages list --params '{"q":"is:unread"}'`;
+  const WRITE = `gws gmail users drafts create --json '{"message":{"raw":"x"}}'`;
+  const ALWAYS_ASKS = /^Run command \(sends, shares, uploads or deletes in Google Workspace, so it always asks\): /;
+
+  function gwsPermissions(answer: string = 'no') {
+    const permissions = new PermissionManager();
+    const manifest = permissions.getManifest();
+    manifest.capabilities.shell.enabled = true;
+    manifest.capabilities.shell.blocked = [];
+    permissions.setAutoApproveAll(false);
+    const ask = vi.fn().mockResolvedValue(answer);
+    permissions.onAsk(ask);
+    permissions.setCurrentContext('cli', 'cli');
+    return { permissions, ask };
+  }
+
+  it('asks for a send under Allow All, and runs it only on yes', async () => {
+    const { permissions, ask } = gwsPermissions('no');
+    permissions.setAutoApproveAll(true);
+    await expect(permissions.checkShellCommand(SEND)).resolves.toMatchObject({ allowed: false });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(String(ask.mock.calls[0]?.[0])).toMatch(ALWAYS_ASKS);
+    expect(String(ask.mock.calls[0]?.[0])).toContain(SEND);
+    ask.mockResolvedValueOnce('yes');
+    await expect(permissions.checkShellCommand(SEND)).resolves.toMatchObject({ allowed: true, lane: 'shell' });
+  });
+
+  it('runs gws reads and writes under Allow All without asking', async () => {
+    const { permissions, ask } = gwsPermissions();
+    permissions.setAutoApproveAll(true);
+    await expect(permissions.checkShellCommand(READ)).resolves.toMatchObject({ allowed: true });
+    await expect(permissions.checkShellCommand(WRITE)).resolves.toMatchObject({ allowed: true });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('refuses a send in an internal turn without asking, while reads and writes run', async () => {
+    const { permissions, ask } = gwsPermissions('yes');
+    permissions.setCurrentContext('internal', 'scheduler');
+    permissions.beginTurnGrant();
+    try {
+      const check = await permissions.checkShellCommand(SEND);
+      expect(check).toMatchObject({ allowed: false, needsApproval: false });
+      expect(check.reason).toMatch(/nobody can be asked here/);
+      await expect(permissions.checkShellCommand(READ)).resolves.toMatchObject({ allowed: true });
+      await expect(permissions.checkShellCommand(WRITE)).resolves.toMatchObject({ allowed: true });
+      expect(ask).not.toHaveBeenCalled();
+    } finally {
+      permissions.endTurnGrant();
+    }
+  });
+
+  it('refuses a send for a bot whose allow-list names gws, and runs its reads', async () => {
+    const { permissions, ask } = gwsPermissions('yes');
+    permissions.setFailClosed(true);
+    permissions.setCurrentContext('bot', 'worker');
+    permissions.setBotShellAllowList(['gws *']);
+    await expect(permissions.checkShellCommand(SEND)).resolves.toMatchObject({ allowed: false });
+    await expect(permissions.checkShellCommand(READ)).resolves.toMatchObject({ allowed: true });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('never remembers "Always" on a send', async () => {
+    const { permissions, ask } = gwsPermissions('always');
+    await expect(permissions.checkShellCommand(SEND)).resolves.toMatchObject({ allowed: true });
+    await expect(permissions.checkShellCommand(SEND)).resolves.toMatchObject({ allowed: true });
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(String(ask.mock.calls[1]?.[0])).toMatch(ALWAYS_ASKS);
+  });
+
+  it('"Always" on a Gmail read covers Gmail reads, not Drive and not Gmail writes', async () => {
+    const { permissions, ask } = gwsPermissions('no');
+    ask.mockResolvedValueOnce('always');
+    await expect(permissions.checkShellCommand(READ)).resolves.toMatchObject({ allowed: true });
+    await expect(permissions.checkShellCommand(`gws gmail users threads get --params '{"id":"t1"}'`)).resolves.toMatchObject({ allowed: true });
+    expect(ask).toHaveBeenCalledTimes(1);
+    await expect(permissions.checkShellCommand('gws drive files list')).resolves.toMatchObject({ allowed: false });
+    await expect(permissions.checkShellCommand(WRITE)).resolves.toMatchObject({ allowed: false });
+    expect(ask).toHaveBeenCalledTimes(3);
+  });
+
+  it('"Always" on a write covers only that exact command', async () => {
+    const { permissions, ask } = gwsPermissions('no');
+    ask.mockResolvedValueOnce('always');
+    await expect(permissions.checkShellCommand(WRITE)).resolves.toMatchObject({ allowed: true });
+    await expect(permissions.checkShellCommand(WRITE)).resolves.toMatchObject({ allowed: true });
+    expect(ask).toHaveBeenCalledTimes(1);
+    await expect(permissions.checkShellCommand(`gws gmail users drafts create --json '{"message":{"raw":"y"}}'`)).resolves.toMatchObject({ allowed: false });
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses gws sign-in commands in every mode without asking', async () => {
+    for (const command of ['gws auth export', 'gws auth login -s gmail', 'GOOGLE_WORKSPACE_CLI_TOKEN=x gws drive files list']) {
+      const askMe = gwsPermissions('yes');
+      const allowAll = gwsPermissions('yes');
+      allowAll.permissions.setAutoApproveAll(true);
+      const internal = gwsPermissions('yes');
+      internal.permissions.setCurrentContext('internal', 'scheduler');
+      internal.permissions.beginTurnGrant();
+      for (const { permissions, ask } of [askMe, allowAll, internal]) {
+        const check = await permissions.checkShellCommand(command);
+        expect(check).toMatchObject({ allowed: false, needsApproval: false });
+        expect(check.reason).toBe('Blocked: gws sign-in commands are for the owner. Run it yourself in a terminal.');
+        expect(ask).not.toHaveBeenCalled();
+      }
+      internal.permissions.endTurnGrant();
+    }
+  });
+
+  it('asks for the whole command when one segment is sensitive', async () => {
+    const { permissions, ask } = gwsPermissions('no');
+    permissions.setAutoApproveAll(true);
+    await expect(permissions.checkShellCommand(`ls; ${SEND}`)).resolves.toMatchObject({ allowed: false });
+    expect(String(ask.mock.calls[0]?.[0])).toMatch(ALWAYS_ASKS);
+  });
+
+  it('judges a gws command with a substitution as a whole', async () => {
+    const { permissions, ask } = gwsPermissions('no');
+    permissions.setAutoApproveAll(true);
+    await expect(permissions.checkShellCommand('gws $(echo gmail) +send --to a@b.com')).resolves.toMatchObject({ allowed: false });
+    expect(String(ask.mock.calls[0]?.[0])).toMatch(ALWAYS_ASKS);
+  });
+
+  it('gives gws reads a per-service family and other gws commands none', () => {
+    expect(commandFamily(READ)).toBe('gws gmail read');
+    expect(commandFamily('gws drive files list')).toBe('gws drive read');
+    expect(commandFamily(WRITE)).toBeNull();
+    expect(commandFamily(SEND)).toBeNull();
+    expect(commandFamily('gws auth export')).toBeNull();
+    expect(commandFamily('pandoc book.epub -o book.md')).toBe('pandoc');
+  });
+});
