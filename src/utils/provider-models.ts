@@ -81,6 +81,19 @@ const CLOUDGPU_PREFERRED_MODELS = [
   'qwen3.5-397b',
 ] as const;
 
+// Verified present on GET https://api.stdcmpt.com/v1/models on 2026-11-09.
+// `StandardCompute` is the routed model: each request goes to the cheapest
+// enabled model that can handle it, with automatic fallback. The rest are pinned ids.
+const STANDARDCOMPUTE_PREFERRED_MODELS = [
+  'StandardCompute',
+  'anthropic/claude-sonnet-5.5',
+  'openai/gpt-6.1-terra',
+  'deepseek/deepseek-v4.1-flash',
+  'z-ai/glm-5.3',
+  'moonshotai/kimi-k3',
+  'qwen/qwen3.8-flash',
+] as const;
+
 const OLLAMA_CLOUD_PREFERRED_MODELS = [
   'gpt-oss:120b',
   'gpt-oss:120b-cloud',
@@ -160,6 +173,7 @@ export function getPreferredModelsForProvider(provider: ProviderName): string[] 
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
     cloudgpu: CLOUDGPU_PREFERRED_MODELS,
+    standardcompute: STANDARDCOMPUTE_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -287,6 +301,7 @@ function chooseRecommendedModel(
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
     cloudgpu: CLOUDGPU_PREFERRED_MODELS,
+    standardcompute: STANDARDCOMPUTE_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -339,6 +354,7 @@ export function buildModelCatalog(
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
     cloudgpu: CLOUDGPU_PREFERRED_MODELS,
+    standardcompute: STANDARDCOMPUTE_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -376,6 +392,8 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
     errorMessage = 'Mercury could not fetch models for this Runcrate key. Please re-enter it.';
   } else if (provider === 'cloudgpu') {
     errorMessage = 'Mercury could not fetch models for this CloudGPU key. Please re-enter it.';
+  } else if (provider === 'standardcompute') {
+    errorMessage = 'Mercury could not fetch models for this Standard Compute key. Please re-enter it.';
   } else if (provider === 'deepseek') {
     errorMessage = 'Mercury could not fetch models for this DeepSeek key. Please re-enter it.';
   } else if (provider === 'aimlapi') {
@@ -425,6 +443,10 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
         // Runcrate lists image, video, audio and embedding models on the same
         // endpoint; each row says what it outputs.
         return id.length > 0 && (outputModalities ?? []).includes('text');
+      }
+      if (provider === 'standardcompute') {
+        // Standard Compute only lists chat models.
+        return id.length > 0;
       }
       if (provider === 'cloudgpu') {
         // CloudGPU lists image, speech and transcription models on the same
