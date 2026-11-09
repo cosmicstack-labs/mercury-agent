@@ -4,7 +4,7 @@ title: Installation
 slug: /
 ---
 
-Mercury runs anywhere Node.js 22+ runs, plus everywhere a single binary can live — including phones via Termux.
+Mercury offers standalone releases for specific desktop and server targets, plus an npm package requiring Node.js 22 or newer. Android uses the npm route through Termux.
 
 ## The easiest way: Mercury Desktop
 
@@ -15,14 +15,14 @@ The rest of this page installs the Mercury runtime from the command line: for se
 ## Pick your platform
 
 - **[macOS](/docs/getting-started/platforms/macos)** — `curl | sh` installer, Homebrew-style PATH setup, Apple Silicon & Intel binaries.
-- **[Linux](/docs/getting-started/platforms/linux)** — works on any glibc distro; static x64/arm64 binaries.
+- **[Linux](/docs/getting-started/platforms/linux)** — standalone x64/arm64 binaries for glibc-based systems.
 - **[Windows](/docs/getting-started/platforms/windows)** — PowerShell installer, native `.exe`, optional WSL path.
 - **[Termux & lightweight devices](/docs/getting-started/platforms/termux)** — Android (Termux), iSH, Alpine containers, Raspberry Pi.
 - **[Cloud Instance](/docs/getting-started/platforms/cloud-instance)** — hosted Mercury Code via [Atomic Bot](https://atomicbot.ai/?utm_source=agent). No install needed.
 
 ## Two install paths
 
-Every platform supports two routes — pick whichever fits.
+Choose a route supported by your operating system and CPU.
 
 ### 1. Standalone binary (no Node.js required)
 
@@ -42,8 +42,26 @@ The installer:
 
 - Detects your OS and CPU architecture (macOS arm64/x64, Linux x64/arm64, Windows x64).
 - Resolves the latest GitHub release.
-- Verifies the SHA-256 checksum against `checksums.txt`.
+- Verifies the SHA-256 checksum against `checksums.txt` and tests the staged binary with `--version` before replacing an existing installation.
 - Installs to `~/.mercury/bin/mercury` (or `%USERPROFILE%\.mercury\bin\mercury.exe`) and updates your shell `PATH`.
+
+#### Standalone support limits
+
+| System | Published runtime targets | Other environments |
+|---|---|---|
+| macOS | arm64, x64 | No 32-bit binary |
+| Linux | glibc-based x64, arm64 | No musl/Alpine, Android/bionic, or 32-bit binary |
+| Windows | x64, including an older-CPU baseline build | No native Windows arm64 or 32-bit binary |
+
+Linux x64 also has a baseline build for CPUs without AVX2. The installer can select or fall back to it, but the binary still needs a compatible operating system and libc. A baseline build does not add support for every CPU or distribution.
+
+For Alpine, Termux, Windows on ARM, or another target without a published binary, consider the [npm route](#2-npm-package-requires-nodejs-22) if a compatible Node.js 22+ build and the package's dependencies are available. The npm package is not a guarantee of support on every machine. See the platform guides for requirements.
+
+#### Failed installer updates
+
+The command-line installers check the downloaded binary and dashboard before replacing existing files, including a baseline fallback when needed. If a handled file-promotion failure occurs, they attempt to restore both previous artifacts. If restoration fails, the error reports a recovery directory containing the remaining backups; preserve it until recovery is complete.
+
+These steps are not an atomic transaction across the binary and dashboard. Power loss, forced termination, filesystem failures, and concurrent installers can interrupt recovery. Keep an independent backup for installations you rely on. This behavior applies to the standalone command-line installers; npm and Desktop updates have their own update paths.
 
 #### Environment variables
 
