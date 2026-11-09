@@ -412,11 +412,16 @@ function startManagedRuntime(): void {
 
 function isProviderConfiguredSafe(p: import('../utils/config.js').ProviderConfig): boolean {
   if (!p.enabled) return false;
-  if (p.name === 'ollamaLocal') return p.baseUrl.length > 0 && p.model.length > 0;
+  if (p.name === 'ollamaLocal' || p.name === 'atomicChat') return p.baseUrl.length > 0 && p.model.length > 0;
   if (p.name === 'ollamaCloud') return p.apiKey.length > 0 && p.baseUrl.length > 0;
   if (p.name === 'atlascloud' || p.name === 'runcrate') return p.apiKey.length > 0 && p.baseUrl.length > 0 && p.model.length > 0;
-  if (p.name === 'openaiCompat') return p.baseUrl.length > 0 && p.model.length > 0;
-  if (p.name === 'chatgptWeb' || p.name === 'githubCopilot') return p.model.length > 0;
+  // Keep this in sync with isProviderConfigured(): a local/keyless provider that
+  // is configured without an API key must not be treated as "not configured"
+  // here, or disconnecting Cloud reports that no offline provider exists.
+  if (p.name === 'openaiCompat' || p.name === 'litellm' || p.name === 'lmStudio')
+    return p.baseUrl.length > 0 && p.model.length > 0;
+  if (p.name === 'chatgptWeb' || p.name === 'githubCopilot' || p.name === 'mercuryCloud')
+    return p.model.length > 0;
   return p.apiKey.length > 0;
 }
 
