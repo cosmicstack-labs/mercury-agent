@@ -1,5 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { classifyGws } from '../capabilities/shell/gws.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SkillLoader } from './loader.js';
@@ -81,5 +83,39 @@ describe('SkillLoader extra skill roots (per-bot libraries)', () => {
   it('seedDefaults:false never writes into the primary root (bots are read-only guests there)', () => {
     new SkillLoader(root, { extraDirs: [botSkills], seedDefaults: false }).discover();
     expect(existsSync(root)).toBe(false); // no mkdir, no default-seed writes
+  });
+});
+
+describe("Mercury's google-workspace skill", () => {
+  const content = readFileSync(fileURLToPath(new URL('../../website/static/skills/google-workspace/SKILL.md', import.meta.url)), 'utf-8').replace(/\r\n/g, '\n');
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-skills-gws-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('installs and loads, and never lifts approvals', () => {
+    const loader = new SkillLoader(root, { seedDefaults: false });
+    expect(loader.installFromContent(content).name).toBe('google-workspace');
+    const skill = loader.load('google-workspace');
+    expect(skill?.description).toMatch(/gws/);
+    expect(skill?.category).toBe('productivity');
+    expect(skill?.['allowed-tools']).toBeUndefined();
+    expect(skill?.instructions).toContain('gws auth status');
+  });
+
+  it('only shows gws commands that read or write, apart from the sign-in it leaves to the owner', () => {
+    const commands = [...content.matchAll(/`(gws [^`]+)`/g), ...content.matchAll(/^(gws .+)$/gm)]
+      .map((match) => match[1].replace(/<[^>]+>/g, 'x'));
+    expect(commands.length).toBeGreaterThan(10);
+    for (const command of commands) {
+      const kind = classifyGws(command)?.kind;
+      if (command.startsWith('gws auth') && command !== 'gws auth status') expect(kind, command).toBe('credentials');
+      else expect(['read', 'write'], command).toContain(kind);
+    }
   });
 });
