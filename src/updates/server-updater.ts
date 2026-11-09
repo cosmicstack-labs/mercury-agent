@@ -574,7 +574,8 @@ export function realWorkerSteps(): WorkerSteps {
       const s = await import('../cli/service.js');
       if (d.getDaemonStatus().running) await d.stopDaemon();
       if (d.getForegroundRuntimeStatus().running) await d.stopForegroundRuntime();
-      if (s.isServiceRunning()) s.stopService();
+      // stopService also handles queued tasks and unknown/unavailable status.
+      if (!s.stopService()) return false;
       return !d.getDaemonStatus().running && !d.getForegroundRuntimeStatus().running;
     },
     async install(job) {
