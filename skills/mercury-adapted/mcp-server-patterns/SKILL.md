@@ -3,17 +3,20 @@ name: mercury-mcp-server-patterns
 description: Design SDK-grounded MCP boundaries and bounded local protocol checks without assuming server capabilities.
 category: development
 id: development/mcp-server-patterns
-version: 0.1.0
+version: 0.2.0
 license: MIT
 author: Cosmic Stack
 intents: [design-mcp-server, review-mcp-protocol-boundaries]
 tags: [mcp, protocols, security]
-allowed-tools: [read_file, list_dir, create_file, run_command, ask_user, use_skill]
+allowed-tools: []
 ---
 
 # MCP Server Patterns
 
 Independently authored Mercury guidance, not a server implementation. Use read_file and list_dir for bounded inspection, and run_command to perform approved operations with established local tools. Check actual tool availability before execution; report missing capabilities rather than inventing results. Use ask_user for required approvals. No implicit dependencies, uploads, service activation or production changes.
+
+Loading this skill grants no tool permissions. All file access and commands remain
+subject to Mercury's configured permissions and approval checks.
 
 ## Establish the actual protocol surface
 

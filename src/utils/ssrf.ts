@@ -15,7 +15,7 @@
 
 import { lookup } from 'node:dns';
 import { isIP } from 'node:net';
-import { Agent, fetch as undiciFetch } from 'undici';
+import { Agent } from 'undici';
 
 const DEFAULT_HEADERS = {
   'User-Agent': 'Mercury-Agent/0.1.0',
@@ -188,17 +188,7 @@ const guardedAgent = new Agent({
   },
 });
 
-type FetchInitWithDispatcher = RequestInit & { dispatcher: Agent };
-
-// A dispatcher and fetch must speak the same Undici protocol. Node's bundled
-// fetch can be newer than our dependency (Node 26 uses the new handler API),
-// so passing this package's Agent to global fetch fails before any request.
-// Keep the existing web Fetch API types at the boundary: the package and Node
-// ship separately versioned declarations for the same request/response APIs.
-const fetchWithDispatcher = undiciFetch as unknown as (
-  input: URL,
-  init: FetchInitWithDispatcher,
-) => Promise<Response>;
+type FetchInitWithDispatcher = RequestInit & { dispatcher?: unknown };
 
 /** Fetch with SSRF validation on the initial URL AND every redirect hop. */
 export async function guardedFetch(rawUrl: string, signal: AbortSignal, headers?: Record<string, string>): Promise<Response> {
@@ -214,7 +204,7 @@ export async function guardedFetch(rawUrl: string, signal: AbortSignal, headers?
         headers: headers ?? DEFAULT_HEADERS,
         dispatcher: guardedAgent,
       };
-      const resp = await fetchWithDispatcher(url, init);
+      const resp = await fetch(url, init);
       if (resp.status >= 300 && resp.status < 400) {
         const location = resp.headers.get('location');
         if (location) {
@@ -279,7 +269,7 @@ export function createGuardedFetch(options: { allowPrivate?: boolean; privateHin
     if (pinned) guardedFetchPins.acquire(host, pinned);
     try {
       const guardedInit: FetchInitWithDispatcher = { ...init, redirect: 'manual', dispatcher: guardedFetchAgent };
-      return await fetchWithDispatcher(url, guardedInit);
+      return await fetch(url, guardedInit);
     } finally {
       if (pinned) guardedFetchPins.release(host);
     }

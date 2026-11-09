@@ -3,17 +3,20 @@ name: mercury-agent-workstation-backup-recovery
 description: Scope encrypted workstation recovery artifacts and prove isolated restoration with measured evidence.
 category: devops
 id: devops/agent-workstation-backup-recovery
-version: 0.1.0
+version: 0.2.0
 license: MIT
 author: Cosmic Stack
 intents: [plan-agent-backup, restore-agent-workstation, drill-agent-recovery]
 tags: [backup, sqlite, recovery, isolation]
-allowed-tools: [read_file, list_dir, create_file, run_command, ask_user, use_skill]
+allowed-tools: []
 ---
 
 # Agent Workstation Backup and Recovery
 
 An independently authored Mercury procedure, not a backup engine. Use read_file and list_dir for bounded inspection, and run_command to perform approved operations with established local tools. Check actual tool availability before execution; report missing capabilities rather than inventing results. Use ask_user for required approvals. No implicit dependencies, uploads, service activation or production changes.
+
+Loading this skill grants no tool permissions. All file access and commands remain
+subject to Mercury's configured permissions and approval checks.
 
 ## Narrow consent and recovery goals
 

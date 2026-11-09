@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { contentAssets, verifyContent, inspectArchive } = require('./release-content.cjs');
 
 const root = path.join(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -16,7 +16,6 @@ const assets = [
   'mercury-win-x64.exe',
   'mercury-win-x64-baseline.exe',
   'web.tar.gz',
-  ...contentAssets(root),
 ];
 
 function fail(message) {
@@ -52,15 +51,15 @@ if (checksums.size !== assets.length || assets.some((asset) => !checksums.has(as
 
 for (const asset of assets) {
   const filePath = path.join(releaseDir, asset);
-  if (!fs.lstatSync(filePath, { throwIfNoEntry: false })?.isFile()) fail(`${asset} is missing or not a regular file`);
+  if (!fs.statSync(filePath, { throwIfNoEntry: false })?.isFile()) fail(`${asset} is missing`);
   const actual = sha256(filePath);
   if (actual !== checksums.get(asset)) fail(`checksum mismatch for ${asset}`);
 }
 
-const archiveEntries = [...inspectArchive(path.join(releaseDir, 'web.tar.gz')).keys()];
-if (!archiveEntries.includes('web')) fail('web.tar.gz has no web/ root');
-if (!archiveEntries.includes('web/index.html')) fail('web.tar.gz has no web/index.html');
-verifyContent(root, releaseDir, { dev: path.basename(releaseDir) === 'dev' });
+const archiveEntries = execFileSync('tar', ['-tzf', path.join(releaseDir, 'web.tar.gz')], {
+  encoding: 'utf8',
+}).trim().split(/\r?\n/);
+if (!archiveEntries.some((entry) => entry === 'web' || entry === 'web/')) fail('web.tar.gz has no web/ root');
 for (const entry of archiveEntries) {
   if (!/^web(?:\/|$)/.test(entry) || /(?:^|\/)\.\.(?:\/|$)/.test(entry)) {
     fail(`unsafe archive entry: ${entry}`);

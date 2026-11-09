@@ -64,9 +64,7 @@
   "files": [
     "dist",
     "src/web/static",
-    "skills/mercury-adapted",
-    "plugins/live-time",
-    "plugins/hardlight"
+    "skills/mercury-adapted"
   ],
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.71",

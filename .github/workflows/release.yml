@@ -4,7 +4,7 @@ name: Release
 # apps/desktop) and this builds, then publishes, in an order that never leaves
 # a half release in public:
 #
-#   1. server   — binaries + web + portable skills/plugins + checksums into a DRAFT
+#   1. server   — every standalone binary + web.tar.gz + checksums into a DRAFT
 #                 GitHub release (notes from RELEASE.md);
 #   2. desktop  — Mercury Desktop for macOS (arm64, x64), Windows and Linux,
 #                 plus the updater's latest.json, into the same draft;
@@ -105,9 +105,7 @@ jobs:
           fi
           gh release delete "v$v" --yes 2>/dev/null || true
           tail -n +3 RELEASE.md > notes.md
-          # The verifier has already rejected any unrecognized files. Upload
-          # the complete verified set, including both versioned plugin archives.
-          files=$(find "$dir" -maxdepth 1 -type f | sort)
+          files=$(find "$dir" -maxdepth 1 -type f \( -name 'mercury-*' -o -name 'web.tar.gz' -o -name 'checksums.txt' \) | sort)
           gh release create "v$v" --draft --verify-tag --title "Mercury v$v" --notes-file notes.md $files
           id=$(gh api "repos/${{ github.repository }}/releases" --jq ".[] | select(.tag_name==\"v$v\") | .id" | head -1)
           [ -n "$id" ] || { echo "::error::draft not found"; exit 1; }
@@ -194,20 +192,6 @@ jobs:
           done
       - run: npm ci --no-audit --no-fund
       - run: npm run build
-      - name: Verify the draft's portable content and server checksums before publishing
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          v="${{ needs.server.outputs.version }}"
-          dir="$RUNNER_TEMP/verified-release/v$v"
-          mkdir -p "$dir"
-          # Exact portable names come from the checked-in plugin manifests,
-          # not loose globs that could accept a missing or stale plugin version.
-          for name in $(node -e "console.log(require('./scripts/release-content.cjs').contentAssets(process.cwd()).join(' '))"); do
-            gh release download "v$v" --pattern "$name" --dir "$dir"
-          done
-          gh release download "v$v" --pattern 'mercury-macos-*' --pattern 'mercury-linux-*' --pattern 'mercury-win-*' --pattern web.tar.gz --pattern checksums.txt --dir "$dir"
-          node scripts/verify-standalone-release.cjs "$dir"
       # npm first: its token is the credential most likely to have expired,
       # and a failure here still leaves nothing public.
       - name: Publish to npm

@@ -3,17 +3,20 @@ name: mercury-shell-wrapper-reliability
 description: Specify reliable shell boundaries for exit status, structured output and bounded process lifetime.
 category: development
 id: development/shell-wrapper-reliability
-version: 0.1.0
+version: 0.2.0
 license: MIT
 author: Cosmic Stack
 intents: [harden-shell-wrapper, validate-shell-output-boundaries]
 tags: [shell, reliability, process-control]
-allowed-tools: [read_file, list_dir, create_file, run_command, ask_user, use_skill]
+allowed-tools: []
 ---
 
 # Shell Wrapper Reliability
 
 An independently authored Mercury procedure, not an executable wrapper. Use read_file and list_dir for bounded inspection, and run_command to perform approved operations with established local tools. Check actual tool availability before execution; report missing capabilities rather than inventing results. Use ask_user for required approvals. No implicit dependencies, uploads, service activation or production changes.
+
+Loading this skill grants no tool permissions. All file access and commands remain
+subject to Mercury's configured permissions and approval checks.
 
 ## Approval and contract
 

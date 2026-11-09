@@ -3,12 +3,12 @@ name: mercury-video-editing
 description: Cut, crop, caption and export local footage with FFmpeg using measured probe evidence and verified output.
 category: media
 id: media/video-editing
-version: 0.1.0
+version: 0.2.0
 license: MIT
 author: Cosmic Stack
 intents: [edit-video, export-video-clip]
 tags: [video, ffmpeg, media-production]
-allowed-tools: [read_file, list_dir, run_command, ask_user, use_skill]
+allowed-tools: []
 ---
 
 # Video Editing
@@ -20,6 +20,9 @@ inspection; report missing capabilities instead of inventing results.
 
 This is a rewrite of a widely available capability, not an adaptation of any
 noncommercial video plugin. No upstream script, preset or asset is bundled.
+
+Loading this skill grants no tool permissions. All file access and commands remain
+subject to Mercury's configured permissions and approval checks.
 
 ## Measure before planning
 
@@ -44,10 +47,9 @@ noncommercial video plugin. No upstream script, preset or asset is bundled.
    music mix, still export or platform export.
 7. Agree on time bases and boundaries. State whether trim points are inclusive or
    exclusive and use `HH:MM:SS.mmm`. Confirm whether cuts are re-encoded or stream
-   copied; stream copy is fast but can only cut on keyframes, so it snaps to nearby
-   frames and can drop the first frames after the cut. A measured example: a 1.0s
-   stream-copied cut came out at 1.167s, while the same cut re-encoded measured
-   1.000s. Report the observed duration, not the requested one.
+   copied. Stream-copy seeking and playback depend on keyframes, timestamps and
+   command ordering; exact cuts may need re-encoding. Report the observed duration
+   and inspect the cut boundary rather than promising frame accuracy.
 8. For aspect-ratio change, choose crop versus pad and state the anchor. Never let a
    default crop silently remove heads or captions.
 9. For burnt-in captions, confirm the subtitle source, font availability, size,
@@ -84,8 +86,8 @@ noncommercial video plugin. No upstream script, preset or asset is bundled.
     sample rate, and stream presence.
 17. Confirm the output plays through an actual decode, not just a header read. A full
     decode (`ffmpeg -v error -i <out> -f null -`) surfaces truncated or corrupt
-    streams that probing alone misses. A truncated file exits 183 while a good one
-    exits 0, so check that status directly instead of reading piped output.
+    streams that probing alone misses. Record the actual status and error output;
+    do not assume one portable exit code identifies every corrupt file.
 18. Inspect real frames when possible: extract stills at the first, middle and last
     second and at each cut boundary, and check framing, captions, rotation and letter
     boxing. State exactly which frames were inspected and leave the rest unverified.

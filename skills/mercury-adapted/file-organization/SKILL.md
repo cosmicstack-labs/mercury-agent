@@ -3,17 +3,20 @@ name: mercury-file-organization
 description: Design approval-bound, no-clobber file moves with manifests and conflict-aware rollback.
 category: productivity
 id: productivity/file-organization
-version: 0.1.0
+version: 0.2.0
 license: MIT
 author: Cosmic Stack
 intents: [organize-files, plan-file-moves, recover-file-moves]
 tags: [files, manifests, recovery]
-allowed-tools: [read_file, list_dir, create_file, run_command, ask_user, use_skill]
+allowed-tools: []
 ---
 
 # File Organization
 
 An independently authored Mercury procedure. Use read_file and list_dir for bounded inspection, and run_command to perform approved operations with established local tools. Check actual tool availability before execution; report missing capabilities rather than inventing results. Use ask_user for required approvals. No implicit dependencies, uploads, service activation or production changes.
+
+Loading this skill grants no tool permissions. All file access and commands remain
+subject to Mercury's configured permissions and approval checks.
 
 ## Bound the inventory
 

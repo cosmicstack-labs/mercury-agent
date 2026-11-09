@@ -2,14 +2,15 @@
 const { execSync, execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, writeFileSync, mkdtempSync } = require('fs');
 const assert = require('node:assert/strict');
-const { join, resolve } = require('path');
+const { dirname, join, resolve } = require('path');
 const { tmpdir } = require('os');
+const { packageVerificationEnv } = require('./package-verification-env.cjs');
 
 const ROOT = resolve(__dirname, '..');
 // Single source of truth for the packaged skill count. The slug list itself is
 // derived from the directory below; this constant exists only so an accidental
 // stray directory or a forgotten skill cannot pass silently.
-const EXPECTED_SKILLS = 42;
+const EXPECTED_SKILLS = 9;
 const TMP = mkdtempSync(join(tmpdir(), 'mercury-pv-'));
 let tarballPath;
 
@@ -31,8 +32,15 @@ console.log('1/5 Building...');
 execSync('npm run build', { cwd: ROOT, stdio: 'inherit' });
 
 console.log('\n2/5 Packing tarball...');
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const tarball = JSON.parse(execFileSync(npm, ['pack', '--json', '--pack-destination', TMP], {
+// execFileSync cannot execute .cmd files on Windows. Use npm's JavaScript
+// entry point there instead of a shell, preserving paths with spaces as data.
+const npmCli = process.platform === 'win32'
+  ? (process.env.npm_execpath || join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'))
+  : null;
+if (npmCli && !existsSync(npmCli)) throw new Error(`npm CLI not found: ${npmCli}`);
+const npm = npmCli ? process.execPath : 'npm';
+const npmArgs = npmCli ? [npmCli] : [];
+const tarball = JSON.parse(execFileSync(npm, [...npmArgs, 'pack', '--json', '--pack-destination', TMP], {
   cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
 }))[0].filename;
 tarballPath = join(TMP, tarball);
@@ -42,7 +50,7 @@ console.log('\n3/5 Installing from tarball...');
 const installDir = join(TMP, 'install');
 mkdirSync(installDir, { recursive: true });
 writeFileSync(join(installDir, 'package.json'), '{}');
-execFileSync(npm, ['install', tarballPath, '--omit=dev', '--no-save', '--no-audit', '--no-fund'], {
+execFileSync(npm, [...npmArgs, 'install', tarballPath, '--omit=dev', '--no-save', '--no-audit', '--no-fund'], {
   cwd: installDir, stdio: 'pipe', timeout: 300_000,
 });
 
@@ -126,11 +134,7 @@ check('engines requires >=22', () => {
 
 // Exercise the installed package, not the checkout. A fresh home prevents
 // accidental access to the owner's daemon, plugin state or skill index.
-const mercuryHome = join(TMP, 'mercury home');
-const cliEnv = {
-  ...process.env, HOME: TMP, USERPROFILE: TMP, MERCURY_HOME: mercuryHome,
-  MERCURY_PLUGIN_CATALOG_URL: 'off', MERCURY_PLUGINS: 'on', NO_COLOR: '1',
-};
+const cliEnv = packageVerificationEnv(TMP);
 function cli(...args) {
   return execFileSync(process.execPath, [join(modDir, 'dist', 'index.js'), ...args], {
     cwd: installDir, env: cliEnv, encoding: 'utf8', timeout: 60_000,
@@ -138,7 +142,7 @@ function cli(...args) {
   });
 }
 
-check('all 42 packaged skills install and reload byte-identically via the CLI', () => {
+check('all nine packaged skills install and reload byte-identically via the CLI', () => {
   const sourceRoot = join(ROOT, 'skills', 'mercury-adapted');
   const shippedRoot = join(modDir, 'skills', 'mercury-adapted');
   for (const name of ['README.md', 'LICENSE']) {
@@ -161,27 +165,6 @@ check('all 42 packaged skills install and reload byte-identically via the CLI', 
   const listed = JSON.parse(cli('skills', '--json', 'list'));
   assert.deepEqual(listed.skills.map((skill) => skill.id).sort(), ids.sort());
   assert.equal(new Set(ids).size, EXPECTED_SKILLS);
-});
-
-check('both packaged plugins validate, install and validate again from their installed paths', () => {
-  for (const id of ['live-time', 'hardlight']) {
-    const folder = join(modDir, 'plugins', id);
-    const source = join(ROOT, 'plugins', id);
-    const files = readdirSync(source).sort();
-    assert.deepEqual(readdirSync(folder).sort(), files, id);
-    for (const file of files) assert.deepEqual(readFileSync(join(folder, file)), readFileSync(join(source, file)), `${id}/${file}`);
-    const report = JSON.parse(cli('plugins', 'validate', folder, '--json'));
-    assert.equal(report.ok, true, JSON.stringify(report));
-    assert.equal(report.id, id);
-    cli('plugins', 'install', folder, '--yes', '--no-setup');
-    const state = JSON.parse(readFileSync(join(mercuryHome, 'plugins', 'state.json'), 'utf8'));
-    assert.equal(state.plugins[id].enabled, true, id);
-    const manifest = JSON.parse(readFileSync(join(folder, 'mercury-plugin.json'), 'utf8'));
-    const installedFolder = join(mercuryHome, 'plugins', id, 'versions', manifest.version);
-    for (const file of files) assert.deepEqual(readFileSync(join(installedFolder, file)), readFileSync(join(source, file)), `installed ${id}/${file}`);
-    const installedReport = JSON.parse(cli('plugins', 'validate', installedFolder, '--json'));
-    assert.equal(installedReport.ok, true, JSON.stringify(installedReport));
-  }
 });
 
 } catch (err) {

@@ -1,69 +1,9 @@
 MIT License
 
-Copyright (c) 2026 Cosmic Stack (Mercury adaptations)
-Copyright (c) 2026 Seth Wilson and Hardlight UI contributors (Hardlight material)
+Copyright © 2026 Cosmic Stack
 
-These curated adaptations acknowledge the installed MIT-labelled source skills:
-- obra/superpowers and Hermes Agent: systematic-debugging,
-  test-driven-development, verification-before-completion and writing-plans.
-- obra/superpowers, MorAlekss and Hermes Agent: requesting-code-review.
-- Hermes Agent: spec-compliance-review.
-- Ben Barclay (benbarclay) and Hermes Agent: document-to-action-items.
-- Seth Wilson and Hermes Agent / Hardlight UI: frontend-design.
-- Teknium and Hermes Agent: rss-feeds.
-- Hermes Agent: grounded-citations, batch-ingest-quality-audits,
-  linux-desktop-entry-repair, skill-install-security-gate,
-  skill-security-triage and cron-ops-conventions (scheduled-task-operations).
-- Hermes Agent: read-only-audit-brief, repository-implementation-analysis,
-  resumable-batch-extraction and writing-for-agents (the last after
-  Matt Pocock's agent-document guidance, MIT).
-- Hermes Agent: simplify-code (after Claude Code /simplify) and
-  skill-fleet-quality-audit, retargeted to Mercury's native skill loader.
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-- obra/superpowers and Hermes Agent: receiving-code-review,
-  using-git-worktrees and finishing-a-development-branch.
-- Hermes Curator and Hermes Agent: transactional-workflow-recovery and
-  llm-judge-output-contracts.
-- Hermes Agent: financial-estimate-refutation.
-- Hermes Agent, itself adapted from gsd-build/get-shit-done (MIT, Lex
-  Christopherson): spike.
-- Hermes Agent, itself adapted from obra/superpowers: subagent-delegation.
-- Hermes Agent: blocked-page-recovery.
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-The shell-wrapper-reliability, deterministic-release-zip-builder,
-mcp-server-patterns, image-pdf-production, file-organization and
-agent-workstation-backup-recovery workflows are independently authored
-Cosmic Stack instructions; no unresolved-license source payloads are bundled.
-
-video-editing is an independently authored Cosmic Stack instruction that drives the
-host's own ffmpeg and ffprobe. It is a rewrite of a general capability, not a port
-of the PolyForm-Noncommercial-1.0.0 hermes-video-editor plugin, and bundles none of
-that plugin's code, presets, schemas or assets.
-
-tabular-data-processing and document-text-extraction are independently authored
-Cosmic Stack instructions. They drive only the host's Python standard library,
-poppler and Tesseract, and are rewrites of general capabilities rather than ports of
-any specific upstream CSV toolkit or OCR wrapper. No upstream code, model, script or
-dataset is bundled.
-
-The adaptations are rewritten for Mercury and are not upstream-endorsed or
-claims of complete compatibility. Original author attribution is retained in
-each skill's metadata. The Hardlight upstream copyright notice is retained above.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
