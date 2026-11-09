@@ -8,7 +8,7 @@ import { OwnerApprovals, _setOwnerApprovals, ownerApprovals } from './owner-appr
 import { closeStreams, trackStream } from './live-streams.js';
 import { readRemoteSettings, writeRemoteSettings } from './remote-settings.js';
 import { parseApprovalReply, isOwnerSender } from './approval-messages.js';
-import { commandTouchesMercuryCredentials, isMercuryCredentialPath, protectedReason, realInside } from './protected-paths.js';
+import { commandTouchesMercuryCredentials, commandTouchesOtherAppCredentials, isMercuryCredentialPath, isOtherAppCredentialPath, protectedReason, realInside } from './protected-paths.js';
 
 const LOCAL = { incoming: { socket: { remoteAddress: '127.0.0.1' } } };
 const LAN = { incoming: { socket: { remoteAddress: '192.168.1.20' } } };
@@ -237,6 +237,76 @@ describe('files', () => {
     expect(commandTouchesMercuryCredentials(`cat ${home}/devices.json`)).toBe(true);
     expect(commandTouchesMercuryCredentials('cat ~/.mercury/web-sessions.json')).toBe(true);
     expect(commandTouchesMercuryCredentials('ls ~/.mercury/bots')).toBe(false);
+  });
+});
+
+describe("other programs' sign-in files", () => {
+  let fakeHome: string;
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+
+  beforeEach(() => {
+    fakeHome = mkdtempSync(join(tmpdir(), 'mercury-home-'));
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    mkdirSync(join(fakeHome, '.config', 'gws'), { recursive: true });
+    writeFileSync(join(fakeHome, '.config', 'gws', 'credentials.enc'), 'x');
+  });
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(fakeHome, { recursive: true, force: true });
+  });
+
+  it("refuses gws's and workspace-mcp's sign-in files to Mercury's tools", () => {
+    for (const file of [
+      ['.config', 'gws'],
+      ['.config', 'gws', 'credentials.enc'],
+      ['.config', 'gws', 'credentials.json'],
+      ['.config', 'gws', 'client_secret.json'],
+      ['.config', 'gws', '.encryption_key'],
+      ['Library', 'Application Support', 'gws', 'credentials.json'],
+      ['AppData', 'Roaming', 'gws', 'credentials.json'],
+      ['.google_workspace_mcp', 'credentials', 'me@example.com.json'],
+    ]) {
+      expect(isOtherAppCredentialPath(join(fakeHome, ...file))).toBe(true);
+    }
+  });
+
+  it('leaves the rest of ~/.config alone', () => {
+    expect(isOtherAppCredentialPath(join(fakeHome, '.config', 'gwsx', 'a.json'))).toBe(false);
+    expect(isOtherAppCredentialPath(join(fakeHome, '.config', 'nvim', 'init.lua'))).toBe(false);
+    expect(isOtherAppCredentialPath(join(fakeHome, 'notes.md'))).toBe(false);
+  });
+
+  it('follows a link that points into the gws folder', () => {
+    const ws = join(fakeHome, 'ws');
+    mkdirSync(ws);
+    symlinkSync(join(fakeHome, '.config', 'gws'), join(ws, 'link'), 'junction');
+    expect(isOtherAppCredentialPath(join(ws, 'link', 'credentials.enc'))).toBe(true);
+  });
+
+  it('blocks shell commands that name those files', () => {
+    for (const command of [
+      'cat ~/.config/gws/credentials.json',
+      'type %USERPROFILE%\\.config\\gws\\credentials.json',
+      'type %APPDATA%\\gws\\credentials.json',
+      'Get-Content $env:APPDATA\\gws\\credentials.json',
+      'cat "$HOME/Library/Application Support/gws/credentials.json"',
+      'cat ~/Library/Application\\ Support/gws/credentials.json',
+      'cp ~/.google_workspace_mcp/credentials/me.json /tmp/x',
+      'cat .encryption_key',
+    ]) {
+      expect(commandTouchesOtherAppCredentials(command)).toBe(true);
+    }
+    for (const command of ['gws drive files list', 'ls ~/.config/nvim', 'cat ~/.config/gwsx/a.json', 'grep -rn gws docs']) {
+      expect(commandTouchesOtherAppCredentials(command)).toBe(false);
+    }
+  });
+
+  it('refuses them to remote devices through the file endpoints', () => {
+    expect(protectedReason(join(fakeHome, '.config', 'gws', 'credentials.enc'), true)).toMatch(/Keys/);
+    expect(protectedReason(join(fakeHome, '.google_workspace_mcp', 'credentials', 'me.json'), true)).toMatch(/Keys/);
   });
 });
 

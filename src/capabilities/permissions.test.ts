@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, linkSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PermissionManager, splitShellSegments, commandFamily } from './permissions.js';
 
@@ -778,5 +778,24 @@ describe('gws commands', () => {
     expect(commandFamily(SEND)).toBeNull();
     expect(commandFamily('gws auth export')).toBeNull();
     expect(commandFamily('pandoc book.epub -o book.md')).toBe('pandoc');
+  });
+});
+
+describe("other programs' sign-in files", () => {
+  it('are refused to the file and shell tools, even under Allow All', async () => {
+    const permissions = new PermissionManager();
+    const manifest = permissions.getManifest();
+    manifest.capabilities.shell.enabled = true;
+    manifest.capabilities.shell.blocked = [];
+    manifest.capabilities.filesystem.scopes = [{ path: homedir(), read: true, write: true }];
+    permissions.setAutoApproveAll(true);
+    permissions.setCurrentContext('cli', 'cli');
+    const file = join(homedir(), '.config', 'gws', 'credentials.json');
+    for (const mode of ['read', 'write'] as const) {
+      const check = await permissions.checkFsAccess(file, mode);
+      expect(check.allowed).toBe(false);
+      expect(check.reason).toContain("another program's sign-in");
+    }
+    await expect(permissions.checkShellCommand('cat ~/.config/gws/credentials.json')).resolves.toMatchObject({ allowed: false, needsApproval: false });
   });
 });

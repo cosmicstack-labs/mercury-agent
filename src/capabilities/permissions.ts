@@ -1,4 +1,4 @@
-import { commandTouchesMercuryCredentials, isMercuryCredentialPath } from '../security/protected-paths.js';
+import { commandTouchesMercuryCredentials, commandTouchesOtherAppCredentials, isMercuryCredentialPath, isOtherAppCredentialPath } from '../security/protected-paths.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, lstatSync } from 'node:fs';
 import { join, resolve, sep, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -738,6 +738,9 @@ export class PermissionManager {
     if (isMercuryCredentialPath(path)) {
       return { allowed: false, reason: "Permission denied: that is one of Mercury's login credential files (device tokens, password, sessions). Manage devices with /server.", code: 'denied' };
     }
+    if (isOtherAppCredentialPath(path)) {
+      return { allowed: false, reason: "Permission denied: that file holds another program's sign-in (Google Workspace). Mercury's tools never read it.", code: 'denied' };
+    }
     if (mode === 'write') return this.checkScopedAccess(path, mode);
 
     const resolved = resolve(path);
@@ -966,6 +969,9 @@ export class PermissionManager {
     const trimmed = command.trim();
     if (commandTouchesMercuryCredentials(trimmed)) {
       return { allowed: false, reason: "Blocked: the command names one of Mercury's login credential files (device tokens, password, sessions). Manage devices with /server.", needsApproval: false };
+    }
+    if (commandTouchesOtherAppCredentials(trimmed)) {
+      return { allowed: false, reason: "Permission denied: that file holds another program's sign-in (Google Workspace). Mercury's tools never read it.", needsApproval: false };
     }
     const segments = splitShellSegments(trimmed);
     const ctx = this.ctx();

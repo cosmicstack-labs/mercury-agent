@@ -15,7 +15,8 @@ import { getMercuryHome } from '../utils/config.js';
  */
 
 const MERCURY_SECRETS = ['devices.json', 'web-config.json', 'web-sessions.json', 'attach-token', 'remote.json', 'security', 'mercury.yaml', '.env', 'keys', 'github-session.json', 'chatgpt-session.json'];
-const HOME_SECRETS = ['.ssh', '.gnupg', '.aws', '.azure', '.config/gcloud', '.kube', '.docker/config.json', '.netrc', '.npmrc', '.pypirc', '.git-credentials', '.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile', '.config/fish', 'Library/Keychains'];
+const AGENT_DENIED_HOME = ['.config/gws', 'Library/Application Support/gws', 'AppData/Roaming/gws', '.google_workspace_mcp'];
+const HOME_SECRETS = ['.ssh', '.gnupg', '.aws', '.azure', '.config/gcloud', '.kube', '.docker/config.json', '.netrc', '.npmrc', '.pypirc', '.git-credentials', '.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile', '.config/fish', 'Library/Keychains', ...AGENT_DENIED_HOME];
 
 /** The real path, following symlinks; for a file that doesn't exist yet, its nearest existing parent's. */
 export function realPathOf(p: string): string {
@@ -73,4 +74,16 @@ export function commandTouchesMercuryCredentials(command: string): boolean {
   const home = getMercuryHome();
   const mentionsHome = command.includes('.mercury') || command.includes(home) || /\$MERCURY_HOME|\$\{MERCURY_HOME\}/.test(command);
   return mentionsHome && AGENT_DENIED.some((name) => command.includes(name));
+}
+
+export function isOtherAppCredentialPath(path: string): boolean {
+  const real = realPathOf(path);
+  const home = realPathOf(homedir());
+  return AGENT_DENIED_HOME.some((name) => within(real, join(home, name)) || within(resolve(path), join(resolve(homedir()), name)));
+}
+
+const OTHER_APP_CREDENTIALS = /(?:\.config[\\/]+gws|Application\\? Support[\\/]+gws|AppData[\\/]+Roaming[\\/]+gws|APPDATA%?[\\/]+gws|\.google_workspace_mcp|\.encryption_key)(?![\w.-])/i;
+
+export function commandTouchesOtherAppCredentials(command: string): boolean {
+  return OTHER_APP_CREDENTIALS.test(command);
 }
