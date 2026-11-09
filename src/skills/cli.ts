@@ -11,7 +11,8 @@ import { homedir } from 'node:os';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { RegistryClient, RegistryError, searchFeed, type RegistrySkillSummary, type ScoredSkill } from './registry.js';
-import { SkillStore, isValidSkillId } from './store.js';
+import { SkillStore, isValidSkillId, parseFrontmatter } from './store.js';
+import { SkillLoader } from './loader.js';
 import { renderMarkdown } from '../utils/markdown.js';
 import { getMercuryHome } from '../utils/config.js';
 import { openUrl } from '../utils/open-url.js';
@@ -253,6 +254,12 @@ async function cmdInstall(ids: string[], _opts: unknown, cmd: Command): Promise<
     if (ids.length > 0) fail(flags, 'Cannot combine --from with positional ids.');
     try {
       const body = await loadBodyFromSource(opts.from);
+      if (!parseFrontmatter(body).id) {
+        const saved = new SkillLoader(store.installRoot, { seedDefaults: false }).installFromContent(body);
+        if (flags.json) { emitJson({ ok: true, name: saved.name, path: saved.skillDir }); return; }
+        out(flags, chalk.green(`✓ ${saved.name} — installed from ${opts.from}`));
+        return;
+      }
       const result = store.installFromBody(body, { source: opts.from });
       if (flags.json) { emitJson({ ok: true, ...result }); return; }
       out(flags, chalk.green(`✓ ${result.id} (v${result.version}) — installed from ${opts.from}`));
