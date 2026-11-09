@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { WorkLedger } from './work-ledger.js';
-import { EVENT_RECEIPT_TTL_MS, eventMessage, type EventTrigger } from './event-triggers.js';
+import { EVENT_RECEIPT_TTL_MS, eventAllowedToolNames, eventMessage, type EventTrigger } from './event-triggers.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const trigger: EventTrigger = {
-  id: 'ci', enabled: true, secretEnv: 'MERCURY_CI_KEY', task: 'Summarize the result.', allowTools: false,
+  id: 'ci', enabled: true, secretEnv: 'MERCURY_CI_KEY', task: 'Summarize the result.', allowTools: false, networkTools: [],
   destination: { channelType: 'web', sessionId: 'b5d75621-a282-486f-a3e6-f09e06de8002' },
 };
 function message(id: string, payload = '{}') {
@@ -33,6 +33,18 @@ describe('durable event receipts', () => {
     const restarted = new WorkLedger({ filePath });
     expect(restarted.acceptEvent(message('one'))).toMatchObject({ accepted: false, receipt: { status: 'queued' } });
     expect(restarted.recoverInterrupted().map((entry) => entry.key)).toEqual([accepted.receipt.key]);
+  });
+  it.each([undefined, ['fetch_url'] as const].map((networkTools) => ({ networkTools })))('retains queued outbound consent across restart, defaulting old records off: $networkTools', ({ networkTools }) => {
+    const filePath = file();
+    const ledger = new WorkLedger({ filePath });
+    const queued = eventMessage({ trigger: { ...trigger, allowTools: true, networkTools: networkTools ? [...networkTools] : [] }, deliveryId: 'queued', payload: '{}', payloadHash: '0'.repeat(64) });
+    // Deliveries written before networkTools existed have no such metadata.
+    if (networkTools === undefined) delete queued.metadata!.eventNetworkTools;
+    ledger.acceptEvent(queued);
+    const recovered = new WorkLedger({ filePath }).recoverInterrupted();
+    expect(recovered).toHaveLength(1);
+    const consent = recovered[0].message.metadata?.eventNetworkTools as string[] | undefined;
+    expect(eventAllowedToolNames(['fetch_url', 'web_search'], [], consent)).toEqual(networkTools ?? []);
   });
   it('rejects a changed payload for an existing delivery identity', () => {
     const ledger = new WorkLedger({ filePath: file() });

@@ -15,6 +15,14 @@ export const EVENT_PENDING_LIMIT = 100;
 export const EVENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export const EVENT_DELIVERY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
+// A read-only HTTP request can still transmit private data in its URL/query.
+// Subprocess tools also need opt-in: shell commands can send data, and even
+// Git reads may fetch missing objects; Git writes may run hooks/filters.
+const EVENT_NETWORK_TOOL_NAMES = [
+  'fetch_url', 'web_search', 'list_issues', 'run_command',
+  'git_status', 'git_diff', 'git_log', 'git_add', 'git_commit', 'git_push',
+] as const;
+
 const triggerSchema = z.object({
   id: z.string().regex(EVENT_ID_PATTERN),
   enabled: z.boolean().default(true),
@@ -23,6 +31,7 @@ const triggerSchema = z.object({
   destination: z.object({ channelType: z.enum(['web', 'desktop']), sessionId: z.string().uuid() }).strict(),
   // Enabling a trigger does not grant tools or unattended approval.
   allowTools: z.boolean().default(false),
+  networkTools: z.array(z.enum(EVENT_NETWORK_TOOL_NAMES)).max(EVENT_NETWORK_TOOL_NAMES.length).default([]),
   integrationTools: z.array(z.string().max(128).regex(/^[A-Za-z0-9_-]+__[A-Za-z0-9_-]+(?:__[A-Za-z0-9_-]+)*$/)).max(32).optional(),
 }).strict();
 export const eventTriggerConfigSchema = z.object({
@@ -96,23 +105,26 @@ export function eventMessage(input: EventTriggerInput, now = Date.now()): Channe
       eventDeliveryId: input.deliveryId,
       eventPayloadHash: input.payloadHash,
       eventAllowTools: input.trigger.allowTools,
+      eventNetworkTools: input.trigger.networkTools ?? [],
       eventIntegrationTools: input.trigger.integrationTools ?? [],
       ...(!input.trigger.allowTools ? { channelAccess: 'general' } : {}),
     },
   };
 }
 
-// Only built-ins that are read-only or already enforce the owner's action
-// permissions. Unknown future built-ins stay unavailable until reviewed.
+// Enabling ordinary tools does not implicitly allow outbound requests or
+// subprocesses. Unknown future built-ins stay unavailable until reviewed.
 const EVENT_BUILTIN_TOOLS = new Set([
   'read_file', 'write_file', 'create_file', 'list_dir', 'delete_file', 'edit_file',
-  'run_command', 'git_status', 'git_diff', 'git_log', 'git_add', 'git_commit', 'git_push',
-  'fetch_url', 'web_search', 'list_issues', 'budget_status',
-  'ask_user', 'update_plan',
+  'budget_status', 'ask_user', 'update_plan',
 ]);
+const EVENT_NETWORK_TOOLS: ReadonlySet<string> = new Set(EVENT_NETWORK_TOOL_NAMES);
 
-/** Namespaced plugin/MCP tools have their own permission gates. */
-export function eventAllowedToolNames(names: readonly string[], integrationTools: readonly string[] = []): string[] {
+/** Exact owner configuration is capability consent, not an approval bypass. */
+export function eventAllowedToolNames(names: readonly string[], integrationTools: readonly string[] = [], networkTools: readonly string[] = []): string[] {
   const integrations = new Set(integrationTools);
-  return names.filter((name) => EVENT_BUILTIN_TOOLS.has(name) || (name.includes('__') && integrations.has(name)));
+  const network = new Set(networkTools);
+  return names.filter((name) => EVENT_BUILTIN_TOOLS.has(name)
+    || (EVENT_NETWORK_TOOLS.has(name) && network.has(name))
+    || (name.includes('__') && integrations.has(name)));
 }

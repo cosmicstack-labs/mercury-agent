@@ -19,7 +19,7 @@ async function setup(allowTools = false) {
   const harness = await EvalHarness.create({ name: 'event-triggers', channel: { type: 'web', style: 'plain' }, turns: [] }, { fakeTimers: false });
   harnesses.push(harness);
   const session = harness.sessions.getOrCreateBound('web', 'event-fixture');
-  const trigger: EventTrigger = { id: 'ci', enabled: true, secretEnv: 'TEST_EVENT_KEY', task: 'Summarize this event.', allowTools, destination: { channelType: 'desktop', sessionId: session.id } };
+  const trigger: EventTrigger = { id: 'ci', enabled: true, secretEnv: 'TEST_EVENT_KEY', task: 'Summarize this event.', allowTools, networkTools: [], destination: { channelType: 'desktop', sessionId: session.id } };
   const ingress = new EventTriggerIngress({
     config: { enabled: true, triggers: [trigger] }, env: { TEST_EVENT_KEY: secret },
     backend: { accept: (input) => harness.agent.acceptEventTrigger(input), status: (id, delivery) => harness.agent.getEventTriggerDelivery(id, delivery) },

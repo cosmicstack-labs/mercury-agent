@@ -22,8 +22,8 @@ const { writeRemoteSettings } = await import('../../security/remote-settings.js'
 const secret = 'test-only-random-event-secret-32-bytes-minimum';
 const destination = { channelType: 'web' as const, sessionId: 'b5d75621-a282-486f-a3e6-f09e06de8002' };
 const config: EventTriggerConfig = { enabled: true, triggers: [
-  { id: 'ci', enabled: true, secretEnv: 'TEST_EVENT_KEY', task: 'Summarize this event.', allowTools: false, destination },
-  { id: 'other', enabled: true, secretEnv: 'TEST_EVENT_KEY', task: 'A separate task.', allowTools: false, destination },
+  { id: 'ci', enabled: true, secretEnv: 'TEST_EVENT_KEY', task: 'Summarize this event.', allowTools: false, networkTools: [], destination },
+  { id: 'other', enabled: true, secretEnv: 'TEST_EVENT_KEY', task: 'A separate task.', allowTools: false, networkTools: [], destination },
 ] };
 const servers: Server[] = [];
 const LOCAL = { incoming: { socket: { remoteAddress: '127.0.0.1' } } };

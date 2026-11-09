@@ -18,8 +18,13 @@ it('keeps reviewRequired after an event tool completes but session persistence f
     return append(id, message);
   });
   h.player.load({ message: '', steps: [toolStep([call('create_file', { path: target, content: 'effect already happened' })]), textStep('Done.')] });
-  h.agent.acceptEventTrigger({ trigger: { id: 'ci', enabled: true, secretEnv: 'TEST_EVENT_SECRET', task: 'Write a result.', allowTools: true, destination: { channelType: 'web', sessionId: session.id } }, deliveryId: 'one', payload: '{}', payloadHash: '0'.repeat(64) });
-  await vi.waitFor(() => expect(h.agent.lifecycle.is('idle')).toBe(true));
+  h.agent.acceptEventTrigger({ trigger: { id: 'ci', enabled: true, secretEnv: 'TEST_EVENT_SECRET', task: 'Write a result.', allowTools: true, networkTools: [], destination: { channelType: 'web', sessionId: session.id } }, deliveryId: 'one', payload: '{}', payloadHash: '0'.repeat(64) });
+  // Like the other real-Agent event evaluations, wait for the durable
+  // outcome as well as idle; a busy runner may take more than one second.
+  await vi.waitFor(() => {
+    expect(h.agent.getEventTriggerDelivery('ci', 'one')?.status).toBe('paused');
+    expect(h.agent.lifecycle.is('idle')).toBe(true);
+  }, { timeout: 10_000, interval: 10 });
   expect(readFileSync(target, 'utf8')).toBe('effect already happened');
   expect(h.agent.getEventTriggerDelivery('ci', 'one')?.status).toBe('paused');
 });

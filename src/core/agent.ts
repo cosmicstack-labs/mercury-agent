@@ -2173,11 +2173,14 @@ export class Agent {
               // ambient Allow All or a scheduled turn's permission grants.
               const integrations = Array.isArray(msg.metadata?.eventIntegrationTools)
                 ? msg.metadata.eventIntegrationTools.filter((name): name is string => typeof name === 'string') : [];
+              const network = Array.isArray(msg.metadata?.eventNetworkTools)
+                ? msg.metadata.eventNetworkTools.filter((name): name is string => typeof name === 'string') : [];
               const context = makeContext({
                 channelType: msg.channelType,
                 channelId: msg.channelId,
                 rememberApprovals: false,
-                allowedTools: eventAllowedToolNames(Object.keys(this.capabilities.getTools()), integrations),
+                allowedTools: msg.metadata?.eventAllowTools === true
+                  ? eventAllowedToolNames(Object.keys(this.capabilities.getTools()), integrations, network) : [],
               });
               await this.capabilities.permissions.withContext(context, () => this.handleMessage(msg));
             } finally { this.programmingMode.restore(previousMode); }

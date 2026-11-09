@@ -22,7 +22,7 @@ function fixture() {
   return { root, filePath: join(root, 'work-ledger.json') };
 }
 function message(id: string) {
-  return eventMessage({ trigger: { id: 'ci', enabled: true, secretEnv: 'TEST_EVENT_SECRET', task: 'summarize', allowTools: false, destination: { channelType: 'web', sessionId: '00000000-0000-4000-8000-000000000001' } }, deliveryId: id, payload: '{}', payloadHash: '0'.repeat(64) });
+  return eventMessage({ trigger: { id: 'ci', enabled: true, secretEnv: 'TEST_EVENT_SECRET', task: 'summarize', allowTools: false, networkTools: [], destination: { channelType: 'web', sessionId: '00000000-0000-4000-8000-000000000001' } }, deliveryId: id, payload: '{}', payloadHash: '0'.repeat(64) });
 }
 
 describe('event ledger persistence failures', () => {
