@@ -104,6 +104,7 @@ import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
 import { setProgressPulse } from './progress-pulse.js';
 import { selectActiveTools } from './tool-exposure.js';
+import { ToolDiscovery } from './tool-discovery.js';
 import { createTaskSurface, type DoneInput } from './task-surface.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
 import { whatsNewText } from '../utils/whats-new.js';
@@ -2197,6 +2198,7 @@ export class Agent {
     channelId: string;
     /** Mechanically force the first step to contain a tool call. */
     forceFirstTool?: boolean;
+    toolDiscovery: ToolDiscovery;
     onStep: (toolCalls: any[] | undefined, toolResults: any[] | undefined) => void | Promise<void>;
   }): Promise<{ text: string; usage: any; reasoning?: any; finishReason?: string }> {
     this.markProgress(`Resuming with ${opts.provider.name}...`);
@@ -2207,14 +2209,9 @@ export class Agent {
       // opting in stops the SDK printing a warning on every call.
       allowSystemInMessages: true,
       messages: this.withCachedSystem(opts.systemPrompt, opts.messages, opts.volatileSystem),
-      tools: this.capabilities.getTools(),
+      ...opts.toolDiscovery.request(undefined, { forceFirstTool: opts.forceFirstTool }),
       maxOutputTokens: opts.maxOutputTokens,
       stopWhen: stepCountIs(opts.maxSteps),
-      // forceFirstTool: the first step MUST contain a tool call — narration
-      // rounds are converted into action rounds mechanically.
-      prepareStep: opts.forceFirstTool
-        ? ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const } : {})
-        : undefined,
       // Live tool-step UI during continuation rounds: forced/verification
       // rounds land file writes, and the user must SEE which file is being
       // written at the bottom, exactly as in the main loop.
@@ -3224,6 +3221,10 @@ export class Agent {
       this.capabilities.setChannelContext(msg.channelId, msg.channelType);
       this.capabilities.permissions.setCurrentChannelType(msg.channelType);
       this.capabilities.permissions.setCurrentSenderRole(msg.senderRole);
+      const toolDiscovery = new ToolDiscovery(
+        () => this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+        this.config.toolDiscovery?.enabled === true,
+      );
 
       const providerContextId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : msg.channelId);
       const channelOverride = this.channelProviderOverrides.get(providerContextId);
@@ -3809,9 +3810,8 @@ export class Agent {
               // opting in stops the SDK printing a warning on every call.
               allowSystemInMessages: true,
               messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              ...toolDiscovery.request(activeTools),
               maxOutputTokens: providerMaxOutputTokens,
-              ...(activeTools ? { activeTools } : {}),
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
               // Memory: the SDK retains a structuredClone of the whole
@@ -3935,7 +3935,7 @@ export class Agent {
                         ? toolTruncationContinuationPrompt(msg.content)
                         : truncationContinuationPrompt(msg.content) },
                     ], volatileSystem),
-                    tools: this.capabilities.getTools(),
+                    ...toolDiscovery.request(),
                     maxOutputTokens: effectiveMaxOutputTokens,
                     // FULL budget: a one-step round can only read files — the
                     // model could never reach the write, which is exactly the
@@ -3980,9 +3980,8 @@ export class Agent {
               // opting in stops the SDK printing a warning on every call.
               allowSystemInMessages: true,
               messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              ...toolDiscovery.request(activeTools),
               maxOutputTokens: providerMaxOutputTokens,
-              ...(activeTools ? { activeTools } : {}),
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
               // Same O(N²) step retention as streamText (see comment above).
@@ -4335,14 +4334,13 @@ export class Agent {
             // opting in stops the SDK printing a warning on every call.
             allowSystemInMessages: true,
             messages: this.withCachedSystem(systemPrompt, messages, volatileSystem),
-            tools: this.capabilities.getTools(),
+            ...toolDiscovery.request(undefined, { forceFirstTool: true, firstStepTools: FORCED_ACTION_TOOLS }),
             maxOutputTokens: effectiveMaxOutputTokens,
             stopWhen: stepCountIs(effectiveMaxSteps),
             // Mechanical enforcement, not a polite nudge: the first step of
             // this round MUST contain a tool call. Text nudges alone let
             // narration-only models loop for every round; a provider-enforced
             // toolChoice converts "describing the work" into doing it.
-            prepareStep: ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const, activeTools: FORCED_ACTION_TOOLS } : {}),
             experimental_onToolCallStart: ({ toolCall }) => {
               const tc = toolCall as any;
               this.markProgress(formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
@@ -4500,6 +4498,7 @@ export class Agent {
             abortController: loopAbortController,
             channel,
             channelId: msg.channelId,
+            toolDiscovery,
             onStep: continuationStepHandler,
           });
           if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning, finishReason: round.finishReason };
@@ -4563,6 +4562,7 @@ export class Agent {
               channelId: msg.channelId,
               // Verification must produce evidence, not prose about evidence.
               forceFirstTool: true,
+              toolDiscovery,
               onStep: continuationStepHandler,
             });
             if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning, finishReason: round.finishReason };

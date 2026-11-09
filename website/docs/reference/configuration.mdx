@@ -31,3 +31,20 @@ web:
 The sign-in password is set during `mercury setup` (or `mercury web-reset-password`) and stored as a bcrypt hash, never in this file. The port can also come from `MERCURY_PORT`.
 
 Remote access (other devices, the IP allow-list, device limits) is managed with `/server` in the terminal or `mercury server`.
+
+## Optional tool discovery
+
+If you have many plugin or MCP tools, you can load their schemas only when the main agent needs them. Add this to `~/.mercury/mercury.yaml` and restart Mercury:
+
+```yaml
+toolDiscovery:
+  enabled: true
+```
+
+Or set `MERCURY_TOOL_DISCOVERY=true` when no YAML override is present. It is **off by default**. Built-in tools retain their existing exposure; bots and sub-agents keep their existing tool behavior.
+
+When enabled, the main agent gets a `discover_tools` tool instead of every optional integration schema. It searches tool names and descriptions by service or task keywords, then loads up to ten matching schemas for the next model step (five by default). An empty search browses the catalog with pagination; exact tool names can also be loaded. Loaded tools stay available through provider fallback and continuation in the current turn, then reset on the next user turn. Integrations connected during a model request become discoverable in the next request.
+
+Discovery does not approve an action. MCP allow/deny rules, plugin approvals, scheduled grants, sender roles, plan mode, and channels with no tool access still apply. Disabling a plugin also prevents execution of its previously loaded tool. Results and schemas from integrations remain untrusted content.
+
+This option trades an extra discovery step for smaller repeated tool schemas. It uses keyword search, so a model may need to rephrase a query or browse when its first query misses. Scripted real-agent tests verify search → schema loading → execution and permission denial. The synthetic schema benchmark in `src/core/tool-discovery.test.ts` measures JSON bytes; it does not estimate model tokens, latency, cost, or live-model task success. Try it with your own model and integrations before enabling it broadly; set `enabled: false` to restore eager exposure.

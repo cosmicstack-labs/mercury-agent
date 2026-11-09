@@ -309,6 +309,8 @@ export interface MercuryConfig {
     allowedHosts?: string[];
   };
   mcp?: McpConfig;
+  /** Opt-in: discover plugin and MCP schemas on demand in the main agent's tool loop. */
+  toolDiscovery?: { enabled?: boolean };
   /** Where the files Mercury makes go (default ~/mercury-artifacts): Research/ and one folder per chat. */
   artifacts?: {
     outputDir?: string;
@@ -628,6 +630,7 @@ export function getDefaultConfig(): MercuryConfig {
       accountId: '',
       product: '',
     },
+    toolDiscovery: { enabled: getEnvBool('MERCURY_TOOL_DISCOVERY', false) },
     web: {
       enabled: getEnvBool('MERCURY_WEB_ENABLED', false),
       port: getEnvNum('MERCURY_PORT', 6174),
