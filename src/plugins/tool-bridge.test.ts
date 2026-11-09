@@ -62,3 +62,29 @@ describe('plugin tool images (plugin API 1.2)', () => {
     expect(model.value).toContain("can't view images");
   });
 });
+
+
+describe('Optimus optional zoom compatibility', () => {
+  afterEach(() => resetToolBridge());
+
+  it.each([
+    ['optimus', 'look', { zoom: [], display: 2 }, { display: 2 }],
+    ['optimus', 'look', {}, {}],
+    ['optimus', 'look', { zoom: null }, { zoom: null }],
+    ['optimus', 'look', { zoom: [0, 0, 100, 100] }, { zoom: [0, 0, 100, 100] }],
+    ['optimus', 'look', { zoom: [1] }, { zoom: [1] }],
+    ['optimus', 'act', { zoom: [] }, { zoom: [] }],
+    ['other', 'look', { zoom: [] }, { zoom: [] }],
+  ])('%s %s preserves real arguments and omits only empty optional zoom', async (pluginId, name, input, expected) => {
+    const original = structuredClone(input);
+    let received: unknown;
+    publishTool({
+      ...liveTool('ok'), pluginId, name,
+      invoke: async (args) => { received = args; return 'ok'; },
+    });
+    const t = getPluginTools({} as PermissionManager)[`${pluginId}__${name}`];
+    await t.execute!(input, { toolCallId: 'zoom-test', messages: [] });
+    expect(received).toEqual(expected);
+    expect(input).toEqual(original);
+  });
+});
