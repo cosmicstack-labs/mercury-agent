@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Providers
+- **Remote Ollama behind a username and password.** Set `username` and `password` on Ollama Local, OpenAI-compatible, LM Studio, LiteLLM or Atomic Chat in `mercury.yaml`. Mercury sends them as HTTP Basic auth for chat and for model lists, instead of a Bearer key.
+
+### MCP
+- MCP text resources can be enabled per server: list bounded catalog pages and read sourced documents or schemas, with separate URI permissions and exact unattended approvals. Resource reads still ask under Web Allow All; cancellation and reconnect never replay a read.
+
 ## 1.5.1 — speech uses the voice you chose, Gemini included
 
 ### Speech
@@ -46,7 +52,12 @@
 
 
 ### MCP servers (ADR-029)
-- **MCP servers: Mercury can use tools from Model Context Protocol servers.** Add a local server (`mercury mcp add files --stdio npx -- -y @modelcontextprotocol/server-filesystem ~/Documents`) or a remote one (`--http <url>`), allow the tools you want (`mercury mcp allow`), and the agent can call them next to its built-in tools. Every MCP call asks first in Ask Me mode, and Allow All does not cover MCP tools; only tools you list in `autoApprove` run without a prompt, and only those run in scheduled tasks. Secrets stay in `.env` as `${env:NAME}` references and are masked everywhere they could appear. Local servers get a minimal environment, never Mercury's API keys, and remote servers go through the SSRF guard. Check health with `mercury mcp test`, `mercury doctor --mcp`, `/mcp` in chat, or the new read-only **MCP** dashboard page. The agent's file tools now always ask before writing `mercury.yaml`, `permissions.yaml` or `.env`, even under Allow All. See [MCP Servers](https://mercuryagent.sh/docs/integrations/mcp) and ADR-029.
+- **MCP servers: Mercury can use tools from Model Context Protocol servers.** Add a local server (`mercury mcp add files --stdio npx -- -y @modelcontextprotocol/server-filesystem ~/Documents`) or a remote one (`--http <url>`), allow the tools you want (`mercury mcp allow`), and the agent can call them next to its built-in tools. Every MCP call asks first in Ask Me mode, and Allow All does not cover MCP tools; only tools you list in `autoApprove` run without a prompt, and only those run when nobody can be asked. Secrets stay in `.env` as `${env:NAME}` references and are masked everywhere they could appear. Local servers get a minimal environment, never Mercury's API keys, and remote servers go through the SSRF guard. Check health with `mercury mcp test`, `mercury doctor --mcp`, `/mcp` in chat, or the new read-only **MCP** dashboard page. The agent's file tools now always ask before writing `mercury.yaml`, `permissions.yaml` or `.env`, even under Allow All. See [MCP Servers](https://mercuryagent.sh/docs/integrations/mcp) and ADR-029.
+- **Allow All in the terminal, the web dashboard and Mercury Cloud no longer skips MCP prompts.** The terminal attached to the background service (what `mercury` opens), the dashboard and Cloud sessions share one web channel, and in Allow All it answered every approval with yes on its own. So MCP tool calls, shell commands that change MCP setup, and writes to `mercury.yaml`, `permissions.yaml` or `.env` ran without asking there. They now ask in every channel, as documented. Other prompts still follow the session's mode.
+- **MCP tools can show the model pictures.** Up to 4 images per call (PNG, JPEG, WebP or GIF) from an MCP server now reach the model as images, the same way plugin screenshots do, when the model and provider can take images in tool results (Anthropic, and OpenAI's Responses API). Elsewhere the model is told an image was left out. Chat history and logs keep only the text, never the base64.
+
+### Plugins
+- **Plugin images reach the model only where the provider can take them.** On Chat Completions providers (Mercury Cloud, GitHub Copilot, Ollama, LM Studio, LiteLLM, AI/ML API and other OpenAI-compatible endpoints) the AI SDK sent a plugin's screenshot as JSON text, so the model got megabytes of base64 instead of a picture. Images in tool results now go only to Anthropic and to OpenAI's Responses API; every other provider, Grok and ChatGPT Web included until they are verified, gets the usual "this model can't view images" note.
 
 ## 1.4.2 — search that finds things, and a research prompt that asks only when you mean it
 

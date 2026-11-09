@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Trash2, Download, MessageSquare } from "lucide-react";
+import { Plus, Trash2, Download, MessageSquare, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -14,12 +14,15 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import type { ChatThread } from "@/lib/api";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 
 interface ThreadListProps {
   threads: ChatThread[];
   activeThreadId: string | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => Promise<void>;
   onNew: () => void;
   onExport: (id: string) => void;
 }
@@ -29,10 +32,29 @@ export function ThreadList({
   activeThreadId,
   onSelect,
   onDelete,
+  onRename,
   onNew,
   onExport,
 }: ThreadListProps) {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<ChatThread | null>(null);
+  const [title, setTitle] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const normalizedTitle = title.replace(/\s+/g, " ").trim();
+  const titleLength = Array.from(normalizedTitle).length;
+
+  async function saveTitle(event: React.FormEvent) {
+    event.preventDefault();
+    if (!renameTarget || saving || !titleLength || titleLength > 120) return;
+    setSaving(true);
+    setRenameError(null);
+    try {
+      await onRename(renameTarget.id, normalizedTitle);
+      setRenameTarget(null);
+    } catch (error) { setRenameError(error instanceof Error ? error.message : "Could not save the chat name."); }
+    finally { setSaving(false); }
+  }
 
   function formatDate(iso: string): string {
     const d = new Date(iso);
@@ -86,6 +108,7 @@ export function ThreadList({
                   formatDate={formatDate}
                   onSelect={() => onSelect(thread.id)}
                   onDelete={() => setDeleteTarget(thread.id)}
+                  onRename={() => { setRenameTarget(thread); setTitle(thread.title ?? ""); setRenameError(null); }}
                   onExport={() => onExport(thread.id)}
                 />
               );
@@ -93,6 +116,27 @@ export function ThreadList({
           </div>
         )}
       </ScrollArea>
+
+      <Dialog open={renameTarget !== null} onOpenChange={open => { if (!open && !saving) setRenameTarget(null); }}>
+        <DialogContent>
+          <form onSubmit={saveTitle}>
+            <DialogHeader>
+              <DialogTitle>Rename chat</DialogTitle>
+              <DialogDescription>Choose a name up to 120 characters. Mercury will keep the name you choose.</DialogDescription>
+            </DialogHeader>
+            <div className="my-4 space-y-2">
+              <label htmlFor="chat-title" className="text-sm font-medium">Chat name</label>
+              <Input id="chat-title" value={title} disabled={saving} autoFocus onFocus={event => event.target.select()} onChange={event => setTitle(event.target.value)} aria-describedby="chat-title-length" />
+              <p id="chat-title-length" className={cn("text-xs", titleLength > 120 ? "text-destructive" : "text-muted-foreground")}>{titleLength}/120 characters</p>
+              {renameError && <p role="alert" className="text-sm text-destructive">{renameError}</p>}
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" disabled={saving} onClick={() => setRenameTarget(null)}>Cancel</Button>
+              <Button type="submit" disabled={saving || !titleLength || titleLength > 120}>{saving ? "Saving…" : "Save"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Delete confirmation */}
       <AlertDialog
@@ -135,6 +179,7 @@ function ThreadItem({
   formatDate,
   onSelect,
   onDelete,
+  onRename,
   onExport,
 }: {
   thread: ChatThread;
@@ -142,6 +187,7 @@ function ThreadItem({
   formatDate: (iso: string) => string;
   onSelect: () => void;
   onDelete: () => void;
+  onRename: () => void;
   onExport: () => void;
 }) {
   return (
@@ -162,6 +208,13 @@ function ThreadItem({
           {formatDate(thread.createdAt)}
         </div>
       </div>
+
+      <button
+        onClick={event => { event.stopPropagation(); onRename(); }}
+        className={cn("shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-opacity focus-visible:opacity-100", isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100")}
+        aria-label={`Rename ${thread.title || "chat"}`} title="Rename chat">
+        <Pencil className="h-3.5 w-3.5" />
+      </button>
 
       {/* Delete button */}
       <button

@@ -48,6 +48,19 @@ describe('resolveShell', () => {
     expect(resolveShell({ MERCURY_SHELL: '/missing', SHELL: '/shell/sh' }, fileExists)).toBe('/shell/sh');
   });
 
+  it('uses the Windows command interpreter, including paths with spaces', () => {
+    const comspec = 'C:\\Windows System\\System32\\cmd.exe';
+    expect(resolveShell({ ComSpec: comspec }, (path) => path === comspec, 'win32')).toBe(comspec);
+    expect(resolveShell({ COMSPEC: comspec }, (path) => path === comspec, 'win32')).toBe(comspec);
+    expect(resolveShell({ SHELL: '/missing/sh' }, () => false, 'win32')).toBe('cmd.exe');
+    expect(resolveShell({}, () => false, 'win32')).toBe('cmd.exe');
+  });
+
+  it('preserves explicit shell configuration on Windows', () => {
+    expect(resolveShell({ MERCURY_SHELL: '/custom/sh', ComSpec: 'cmd.exe' }, fileExists, 'win32'))
+      .toBe('/custom/sh');
+  });
+
   it('uses the Termux prefix shell before /bin/sh', () => {
     expect(resolveShell({ TERMUX_VERSION: '0.119', PREFIX: '/data/data/com.termux/files/usr' }, fileExists, 'linux'))
       .toBe('/data/data/com.termux/files/usr/bin/sh');

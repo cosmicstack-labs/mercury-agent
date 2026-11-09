@@ -79,6 +79,9 @@ interface EditForm {
   delaySeconds: string;
   prompt: string;
   skillName: string;
+  timezone: string;
+  missedRunPolicy: 'skip' | 'run_once';
+  resume: boolean;
 }
 
 export function SchedulesPage() {
@@ -96,6 +99,9 @@ export function SchedulesPage() {
     delaySeconds: "",
     prompt: "",
     skillName: "",
+    timezone: "",
+    missedRunPolicy: 'skip',
+    resume: false,
   });
   const [saving, setSaving] = useState(false);
 
@@ -134,6 +140,9 @@ export function SchedulesPage() {
       delaySeconds: schedule.delaySeconds?.toString() ?? "",
       prompt: schedule.prompt ?? "",
       skillName: schedule.skillName ?? "",
+      timezone: schedule.timezone ?? "",
+      missedRunPolicy: schedule.missedRunPolicy ?? 'skip',
+      resume: false,
     });
     setEditOpen(true);
   }
@@ -142,11 +151,16 @@ export function SchedulesPage() {
     if (!editId) return;
     setSaving(true);
     try {
-      const payload: Partial<Schedule> = {
+      const payload: Partial<Schedule> & { resume?: boolean } = {
         description: editForm.description,
+        timezone: editForm.timezone.trim(),
+        missedRunPolicy: editForm.missedRunPolicy,
+        resume: editForm.resume,
       };
       if (editForm.cron.trim()) payload.cron = editForm.cron.trim();
-      if (editForm.delaySeconds.trim())
+      const original = schedules.find((s) => s.id === editId);
+      if (!editForm.cron.trim() && editForm.delaySeconds.trim()
+        && (editForm.resume || original?.cron || Number(editForm.delaySeconds) !== original?.delaySeconds))
         payload.delaySeconds = Number(editForm.delaySeconds);
       if (editForm.prompt.trim()) payload.prompt = editForm.prompt.trim();
       if (editForm.skillName.trim())
@@ -286,7 +300,7 @@ export function SchedulesPage() {
                       {schedule.cron && (
                         <Badge variant="secondary" className="gap-1">
                           <Calendar className="h-3 w-3" />
-                          {humanizeCron(schedule.cron)}
+                          {humanizeCron(schedule.cron)} · {schedule.timezone ?? 'host timezone'}
                         </Badge>
                       )}
                       {schedule.delaySeconds != null && (
@@ -295,6 +309,9 @@ export function SchedulesPage() {
                           {humanizeDelay(schedule.delaySeconds)}
                         </Badge>
                       )}
+                      <Badge variant={schedule.paused ? 'destructive' : 'outline'}>
+                        {schedule.lastRun?.status ?? 'pending'}{schedule.paused ? ' · paused' : ''}
+                      </Badge>
                       {schedule.skillName && (
                         <Badge variant="default" className="gap-1">
                           <Sparkles className="h-3 w-3" />
@@ -308,6 +325,8 @@ export function SchedulesPage() {
                       variant="ghost"
                       size="icon"
                       onClick={() => openEdit(schedule)}
+                      disabled={schedule.lastRun?.status === 'running'}
+                      aria-label="Edit schedule"
                     >
                       <Pencil className="h-4 w-4" />
                     </Button>
@@ -322,6 +341,9 @@ export function SchedulesPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-col gap-2 text-sm">
+                    {schedule.lastRun?.error && <p className="text-destructive">{schedule.lastRun.error}</p>}
+                    {schedule.lastRun?.status === 'dispatched' && <p className="text-muted-foreground">Accepted by the bot queue; see the bot's runs for its outcome.</p>}
+                    {!schedule.cron && <p className="text-muted-foreground">Due: {schedule.executeAt ? formatDate(schedule.executeAt) : 'unknown'} · If offline: {schedule.missedRunPolicy === 'run_once' ? 'run once on restart' : 'skip'}</p>}
                     {schedule.prompt && (
                       <p className="text-muted-foreground">
                         <span className="font-medium text-foreground">Prompt: </span>
@@ -329,11 +351,11 @@ export function SchedulesPage() {
                       </p>
                     )}
                     <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
-                      {schedule.lastRun && (
+                      {schedule.lastRun?.startedAt && (
                         <span>
                           Last run:{" "}
                           <span className="font-medium tabular-nums text-foreground">
-                            {formatDate(schedule.lastRun)}
+                            {formatDate(schedule.lastRun.startedAt)}
                           </span>
                         </span>
                       )}
@@ -360,7 +382,7 @@ export function SchedulesPage() {
           <DialogHeader>
             <DialogTitle>Edit Schedule</DialogTitle>
             <DialogDescription>
-              Update the schedule configuration.
+              Update the schedule configuration. Failed or interrupted work stays paused until you choose to schedule it again.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-4 py-2">
@@ -397,6 +419,26 @@ export function SchedulesPage() {
                 />
               </div>
             </div>
+            {editForm.cron.trim() ? (
+              <div className="space-y-1.5">
+                <label htmlFor="schedule-timezone" className="text-sm font-medium">Timezone</label>
+                <Input id="schedule-timezone" value={editForm.timezone} placeholder="Host timezone (e.g. America/New_York)" onChange={(e) => setEditForm((f) => ({ ...f, timezone: e.target.value }))} />
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <label htmlFor="schedule-missed" className="text-sm font-medium">If Mercury is offline when due</label>
+                <select id="schedule-missed" className="w-full rounded border bg-background p-2" value={editForm.missedRunPolicy} onChange={(e) => setEditForm((f) => ({ ...f, missedRunPolicy: e.target.value as 'skip' | 'run_once' }))}>
+                  <option value="skip">Skip the missed run</option>
+                  <option value="run_once">Run once after restart</option>
+                </select>
+              </div>
+            )}
+            {schedules.find((s) => s.id === editId)?.lastRun && (
+              <label className="flex gap-2 text-sm">
+                <input type="checkbox" checked={editForm.resume} onChange={(e) => setEditForm((f) => ({ ...f, resume: e.target.checked }))} />
+                Schedule again. I checked the prior run's effects; repeating the work is intended.
+              </label>
+            )}
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Prompt</label>
               <Input

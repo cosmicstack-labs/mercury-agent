@@ -83,16 +83,24 @@ describe('POST /api/chat/send with attachments', () => {
     await expect(res.json()).resolves.toEqual({ error: 'Message content required' });
   });
 
+  it('accepts text attachments without a caption', async () => {
+    const { seen } = recordingChannel();
+    const res = await send({ attachments: [{ name: 'notes.md', data: Buffer.from('# Plan\nDo the work').toString('base64') }] });
+    expect(res.status).toBe(200);
+    expect(seen[0].content).toBe('(Attached: notes.md)');
+    expect(seen[0].metadata?.attachments).toMatchObject([{ kind: 'document', mime: 'text/markdown', name: 'notes.md' }]);
+  });
+
   it('rejects an unsupported file instead of silently dropping it', async () => {
     recordingChannel();
     const res = await send({
       content: 'read this',
-      attachments: [{ name: 'notes.txt', data: Buffer.from('hello').toString('base64') }],
+      attachments: [{ name: 'notes.html', data: Buffer.from('hello').toString('base64') }],
     });
 
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toEqual({
-      error: 'attachment 1 is not a supported image (png, jpeg, webp, gif) or PDF',
+      error: 'attachment 1 is not a supported image (png, jpeg, webp, gif), PDF, TXT or Markdown file',
     });
   });
 

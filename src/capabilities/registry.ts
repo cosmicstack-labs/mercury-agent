@@ -23,6 +23,8 @@ import { createCancelTaskTool } from './scheduler/cancel-task.js';
 import { createBudgetStatusTool } from './system/budget-status.js';
 import { createSaveMemoryTool } from './system/save-memory.js';
 import { createSearchMemoryTool } from './system/search-memory.js';
+import { createSessionHistoryTools } from './system/session-history.js';
+import type { SessionRepository } from '../sessions/repository.js';
 import { createForgetMemoryTool } from './system/forget-memory.js';
 import { createConfirmBeliefTool } from './system/confirm-belief.js';
 import { createCorrectBeliefTool } from './system/correct-belief.js';
@@ -69,9 +71,12 @@ import { createDelegateTaskTool, createListAgentsTool, createStopAgentTool } fro
 import { getPluginTools } from '../plugins/tool-bridge.js';
 import { createDispatchBotTool } from '../bots/tools/dispatch-bot.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
+import type { CwdSource } from './filesystem/resolve-path.js';
 import { logger } from '../utils/logger.js';
 import type { McpManager } from './mcp/manager.js';
 import type { McpServerStatus } from './mcp/types.js';
+import { IsolatedBrowserReader } from './browser/reader.js';
+import { createBrowserTools } from './browser/tools.js';
 
 export interface ChatCommandContext {
   toolNames: () => string[];
@@ -105,6 +110,7 @@ export class CapabilityRegistry {
   private currentCwd = process.cwd();
   private researchModeGetter: (() => boolean) | null = null;
   private mcp?: McpManager;
+  private browser?: IsolatedBrowserReader;
 
   /**
    * Mercury Bots dispatch handler — set once the BotManager exists
@@ -132,6 +138,27 @@ export class CapabilityRegistry {
     this.researchModeGetter = getter;
   }
 
+  setSessionRepository(sessions: SessionRepository): void {
+    Object.assign(this.tools, createSessionHistoryTools(sessions, (name) => this.canReadSessions(name)));
+  }
+
+  private canReadSessions(name: string): boolean {
+    const context = this.permissions.currentContext();
+    // Some remote adapters do not authenticate a top-level senderRole. An
+    // absent role there must not grant access to the owner's other chats.
+    return !this.toolsDisabled && context.senderRole !== 'member'
+      && (context.senderRole === 'admin' || ['cli', 'web', 'desktop', 'internal'].includes(context.channelType))
+      && (context.allowedTools === undefined || context.allowedTools.includes(name));
+  }
+
+  private filterSessionTools(tools: Record<string, Tool>): Record<string, Tool> {
+    const filtered = { ...tools };
+    for (const name of ['search_sessions', 'read_session']) {
+      if (!this.canReadSessions(name)) delete filtered[name];
+    }
+    return filtered;
+  }
+
   isResearchMode(): boolean {
     return this.researchModeGetter ? this.researchModeGetter() : false;
   }
@@ -149,8 +176,8 @@ export class CapabilityRegistry {
    * sub-agent (running under its own context) never overwrites the main
    * agent's channel, and its prompts route to its own source channel.
    */
-  setChannelContext(channelId: string, channelType: string): void {
-    this.permissions.setCurrentContext(channelType, channelId);
+  setChannelContext(channelId: string, channelType: string, sessionId?: string): void {
+    this.permissions.setCurrentContext(channelType, channelId, sessionId);
   }
 
   getChannelContext(): { channelId: string; channelType: string } {
@@ -177,8 +204,29 @@ export class CapabilityRegistry {
     return this.currentCwd;
   }
 
-  setCwd(dir: string): void {
+  /** Returns false (and keeps the current directory) when the cwd guard refuses. */
+  setCwd(dir: string): boolean {
+    if (this.cwdGuard && !this.cwdGuard(dir)) return false;
     this.currentCwd = dir;
+    return true;
+  }
+
+  private cwdGuard: ((dir: string) => boolean) | null = null;
+  private pathRoots: Array<readonly [string, string]> = [];
+  /** What file and git tools resolve relative paths against (cwd + named roots). */
+  private readonly cwdSource: CwdSource = Object.assign(() => this.getCwd(), { roots: () => this.pathRoots });
+
+  /** Limit where `cd` (tool or shell) may move this registry's cwd. */
+  setCwdGuard(guard: ((dir: string) => boolean) | null): void {
+    this.cwdGuard = guard;
+  }
+
+  /**
+   * Relative paths starting with one of these prefixes resolve under the
+   * given directory, regardless of cwd (e.g. a bot's "_shared/…").
+   */
+  setPathRoots(roots: Array<readonly [prefix: string, dir: string]>): void {
+    this.pathRoots = roots;
   }
 
   setSendFileHandler(handler: (filePath: string, channel?: string) => Promise<void>): void {
@@ -219,19 +267,23 @@ export class CapabilityRegistry {
   registerAll(): void {
     const manifest = this.permissions.getManifest();
 
+    if (manifest.capabilities.browser?.enabled && !this.permissions.isFailClosed()) {
+      this.browser ??= new IsolatedBrowserReader({ executable: manifest.capabilities.browser.executable });
+    }
+
     if (manifest.capabilities.filesystem.enabled) {
-      this.tools.read_file = createReadFileTool(this.permissions, () => this.getCwd());
-      this.tools.write_file = createWriteFileTool(this.permissions, () => this.getCwd());
-      this.tools.create_file = createCreateFileTool(this.permissions, () => this.getCwd());
-      this.tools.list_dir = createListDirTool(this.permissions, () => this.getCwd());
-      this.tools.delete_file = createDeleteFileTool(this.permissions, () => this.getCwd());
-      this.tools.edit_file = createEditFileTool(this.permissions, () => this.getCwd());
+      this.tools.read_file = createReadFileTool(this.permissions, this.cwdSource);
+      this.tools.write_file = createWriteFileTool(this.permissions, this.cwdSource);
+      this.tools.create_file = createCreateFileTool(this.permissions, this.cwdSource);
+      this.tools.list_dir = createListDirTool(this.permissions, this.cwdSource);
+      this.tools.delete_file = createDeleteFileTool(this.permissions, this.cwdSource);
+      this.tools.edit_file = createEditFileTool(this.permissions, this.cwdSource);
 
       if (this.sendFileHandler) {
-        this.tools.send_file = createSendFileTool(this.permissions, () => this.getCwd(), this.sendFileHandler);
+        this.tools.send_file = createSendFileTool(this.permissions, this.cwdSource, this.sendFileHandler);
       }
 
-      this.tools.approve_scope = createApproveScopeTool(this.permissions, () => this.getCwd());
+      this.tools.approve_scope = createApproveScopeTool(this.permissions, this.cwdSource);
 
       logger.info('Filesystem tools registered');
     }
@@ -279,12 +331,12 @@ export class CapabilityRegistry {
     }
 
     if (manifest.capabilities.git?.enabled) {
-      this.tools.git_status = createGitStatusTool(this.permissions, () => this.getCwd());
-      this.tools.git_diff = createGitDiffTool(this.permissions, () => this.getCwd());
-      this.tools.git_log = createGitLogTool(this.permissions, () => this.getCwd());
-      this.tools.git_add = createGitAddTool(this.permissions, () => this.getCwd());
-      this.tools.git_commit = createGitCommitTool(this.permissions, () => this.getCwd());
-      this.tools.git_push = createGitPushTool(this.permissions, () => this.getCwd());
+      this.tools.git_status = createGitStatusTool(this.permissions, this.cwdSource);
+      this.tools.git_diff = createGitDiffTool(this.permissions, this.cwdSource);
+      this.tools.git_log = createGitLogTool(this.permissions, this.cwdSource);
+      this.tools.git_add = createGitAddTool(this.permissions, this.cwdSource);
+      this.tools.git_commit = createGitCommitTool(this.permissions, this.cwdSource);
+      this.tools.git_push = createGitPushTool(this.permissions, this.cwdSource);
       logger.info('Git tools registered');
     }
 
@@ -317,12 +369,14 @@ export class CapabilityRegistry {
     this.mcp = manager;
   }
 
+  async closeBrowserSessions(): Promise<void> { await this.browser?.closeAll(); }
+
   getMcpManager(): McpManager | undefined {
     return this.mcp;
   }
 
   private allTools(): Record<string, Tool> {
-    return this.mcp ? { ...this.tools, ...this.mcp.getTools() } : this.tools;
+    return { ...this.tools, ...this.mcp?.getTools(), ...(this.browser ? createBrowserTools(this.permissions, this.browser) : {}) };
   }
 
   getTools(): Record<string, Tool> {
@@ -335,10 +389,11 @@ export class CapabilityRegistry {
   }
 
   private filterContextTools(tools: Record<string, Tool>): Record<string, Tool> {
+    const filtered = this.filterSessionTools(tools);
     const allowed = this.permissions.currentContext().allowedTools;
-    if (allowed === undefined) return tools;
+    if (allowed === undefined) return filtered;
     const names = new Set(allowed);
-    return Object.fromEntries(Object.entries(tools).filter(([name]) => names.has(name)));
+    return Object.fromEntries(Object.entries(filtered).filter(([name]) => names.has(name)));
   }
 
   private getToolsInner(): Record<string, Tool> {
@@ -349,7 +404,7 @@ export class CapabilityRegistry {
     if (this.permissions.getCurrentSenderRole() === 'member') {
       const filtered: Record<string, Tool> = {};
       for (const [name, tool] of Object.entries(this.tools)) {
-        if (name !== 'install_skill' && name !== 'create_skill') filtered[name] = tool;
+        if (name !== 'install_skill' && name !== 'create_skill' && !name.startsWith('browser_')) filtered[name] = tool;
       }
       return filtered;
     }
@@ -381,6 +436,7 @@ export class CapabilityRegistry {
       'git_add', 'git_commit', 'git_push',
       'create_pr', 'create_issue',
       'delegate_task',
+      'browser_navigate', 'browser_snapshot', 'browser_close',
     ]);
     const filtered: Record<string, Tool> = {};
     for (const [name, tool] of Object.entries(this.tools)) {

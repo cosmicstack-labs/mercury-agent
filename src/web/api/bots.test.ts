@@ -383,6 +383,14 @@ describe('web bots API — files on a bot message', () => {
     });
   });
 
+  it('queues a captionless Markdown file as a durable document attachment', async () => {
+    const enqueue = vi.spyOn(manager, 'enqueue');
+    const res = await send({ attachments: [{ name: 'notes.md', data: Buffer.from('# Notes\nHello').toString('base64') }] });
+    expect(res.status).toBe(202);
+    await expect(jreq(res)).resolves.toMatchObject({ accepted: true, attachments: [{ name: 'notes.md', kind: 'document' }] });
+    expect(enqueue).toHaveBeenCalledWith('painter', expect.objectContaining({ attachments: [expect.objectContaining({ name: 'notes.md', kind: 'document', mime: 'text/markdown', path: expect.stringMatching(/\.md$/) })] }));
+  });
+
   it('deletes the files of a retry the queue already holds', async () => {
     // The first copy belongs to the queued job; the retry's copy has no job to read it.
     vi.spyOn(manager, 'enqueue').mockReturnValue({ jobId: 'queued', accepted: true, duplicated: true });
@@ -408,7 +416,7 @@ describe('web bots API — files on a bot message', () => {
 
     expect(res.status).toBe(400);
     await expect(jreq(res)).resolves.toEqual({
-      error: 'attachment 1 is not a supported image (png, jpeg, webp, gif) or PDF',
+      error: 'attachment 1 is not a supported image (png, jpeg, webp, gif), PDF, TXT or Markdown file',
     });
     expect(existsSync(join(root, 'uploads'))).toBe(before);
   });

@@ -155,6 +155,38 @@ describe('WebChannel durable streaming', () => {
 
     await expect(channel.askPermission('Write file?', 'request-allowed')).resolves.toBe('yes');
   });
+
+  it('still asks in an allow-all session when the prompt must always ask', async () => {
+    const channel = new WebChannel('Mercury');
+    const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+    channel.setSessionPermissionMode('session-allowed', 'allow-all');
+    channel.emitCloudMessage('work', 'request-allowed', 'session-allowed', 'conversation-1', undefined, (event) => {
+      events.push(event);
+      return true;
+    });
+
+    const decision = channel.askPermission('MCP tool call', 'request-allowed', { alwaysAsk: true });
+    const id = events.find((event) => event.type === 'permission_request')?.data?.id as string;
+    expect(id).toBeTruthy();
+    expect(channel.resolveApproval(id, 'no', 'request-allowed')).toBe(true);
+    await expect(decision).resolves.toBe('no');
+  });
+
+  it('still asks under the global bypass when the prompt must always ask', async () => {
+    const channel = new WebChannel('Mercury');
+    const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+    channel.setBypassPermissions(true);
+    channel.emitCloudMessage('work', 'request-bypass', 'session-bypass', 'conversation-1', undefined, (event) => {
+      events.push(event);
+      return true;
+    });
+
+    await expect(channel.askPermission('Write file?', 'request-bypass')).resolves.toBe('yes');
+    const decision = channel.askPermission('MCP tool call', 'request-bypass', { alwaysAsk: true });
+    const id = events.find((event) => event.type === 'permission_request')?.data?.id as string;
+    expect(channel.resolveApproval(id, 'yes', 'request-bypass')).toBe(true);
+    await expect(decision).resolves.toBe('yes');
+  });
 });
 
 describe('WebChannel plan checklist', () => {

@@ -5,6 +5,8 @@ import type { ProviderConfig } from '../utils/config.js';
 import type { LLMResponse, LLMStreamChunk } from './base.js';
 import { logger } from '../utils/logger.js';
 import { aimlapiHeaders } from './aimlapi-attribution.js';
+import { basicAuthHeaders } from './basic-auth.js';
+import { registerSecretValue } from '../utils/redact.js';
 import { applyReasoningToBody, effectiveReasoning, providerHasReasoningControl } from '../utils/model-prefs.js';
 
 /**
@@ -34,18 +36,26 @@ export class OpenAICompatProvider extends BaseProvider {
   readonly model: string;
   private client: ReturnType<typeof createOpenAI>;
   private modelInstance: ReturnType<ReturnType<typeof createOpenAI>['languageModel']>;
+  private readonly usesResponsesApi: boolean;
 
   constructor(config: ProviderConfig, { useChatApi }: { useChatApi?: boolean } = {}) {
     super(config);
     this.name = config.name;
     this.model = config.model;
+    this.usesResponsesApi = !useChatApi;
+
+    const attribution = aimlapiHeaders(config.baseUrl);
+    const basicAuth = basicAuthHeaders(config);
+    // So a `cat mercury.yaml` or an error that echoes it never shows the password.
+    if (config.password) registerSecretValue(config.password);
 
     this.client = createOpenAI({
       apiKey: config.apiKey || 'no-key',
       baseURL: config.baseUrl,
       // `undefined` for every host but AI/ML API's, so no other provider
-      // reached through this class sends anything extra.
-      headers: aimlapiHeaders(config.baseUrl),
+      // reached through this class sends anything extra. Basic auth, when
+      // configured, overrides the SDK's Bearer header.
+      headers: basicAuth ? { ...attribution, ...basicAuth } : attribution,
       // Only providers with a reasoning control get the hook; the rest keep
       // the SDK's default fetch untouched.
       fetch: providerHasReasoningControl(config.name) ? withReasoningPref(config.name) : undefined,
@@ -116,10 +126,14 @@ export class OpenAICompatProvider extends BaseProvider {
     if (this.config.name === 'litellm' || this.config.name === 'ollamaLocal') {
       return this.config.baseUrl.length > 0;
     }
-    return this.config.apiKey.length > 0;
+    return this.config.apiKey.length > 0 || !!this.config.username;
   }
 
   getModelInstance(): any {
     return this.modelInstance;
+  }
+
+  supportsToolResultImages(): boolean {
+    return this.usesResponsesApi && this.name === 'openai';
   }
 }

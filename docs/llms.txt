@@ -21,6 +21,7 @@ Install: `curl -fsSL https://mercuryagent.sh/install.sh | sh` (macOS/Linux), `ir
 
 ## Blog
 
+- [9 Safest, Most Secure, and Permission-Aware AI Agents for Real-World Tasks](https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work.md) (2026-11-05): Grok, ChatGPT Work, Mercury, OpenClaw, Manus, Gemini agent for work, Devin, Claude Cowork and Comet compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.
 - [Mercury 1.5: Mercury Desktop](https://mercuryagent.sh/blog/mercury-1-5.md) (2026-11-03): Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.
 - [A tour of Mercury Desktop: one app, every Mercury you run](https://mercuryagent.sh/blog/mercury-desktop-tour.md) (2026-11-03): What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.
 - [Your agent returned 200 OK. It may still have failed](https://mercuryagent.sh/blog/agent-observability-first-wrong-step.md) (2026-10-31): What to record in an AI agent run to find its first wrong step, and what Mercury records today. Based on OpenTelemetry's GenAI agent spans and a code review.

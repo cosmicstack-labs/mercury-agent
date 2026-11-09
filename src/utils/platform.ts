@@ -34,7 +34,9 @@ export function resolveShell(
   if (isTermux(env, platform)) {
     candidates.push(env.PREFIX ? posixPath.join(env.PREFIX, 'bin', 'sh') : undefined);
   }
-  candidates.push('/bin/sh');
+  const fallback = platform === 'win32' ? 'cmd.exe' : '/bin/sh';
+  if (platform === 'win32') candidates.push(env.ComSpec || env.COMSPEC);
+  candidates.push(fallback);
 
-  return candidates.find((candidate) => candidate && fileExists(candidate)) || '/bin/sh';
+  return candidates.find((candidate) => candidate && fileExists(candidate)) || fallback;
 }

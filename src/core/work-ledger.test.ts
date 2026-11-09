@@ -214,3 +214,17 @@ describe('WorkLedger', () => {
     expect(ledger.get(entry.key)?.status).toBe('cancelled');
   });
 });
+
+describe('scheduled work recovery', () => {
+  it.each(['queued', 'running', 'paused', 'failed'] as const)('never replays %s scheduled work after restart', (state) => {
+    const { ledger, filePath } = setup();
+    const entry = ledger.accept(message('schedule', { scheduledTaskId: 'task-1', scheduledRunId: 'run-1' })).entry;
+    if (state === 'running') ledger.markRunning(entry.key);
+    if (state === 'paused') ledger.markPaused(entry.key, 'Side effects may be partial');
+    if (state === 'failed') ledger.markFailed(entry.key, 'interrupted/ambiguous');
+    const restarted = new WorkLedger({ filePath });
+    expect(restarted.recoverInterrupted()).toEqual([]);
+    expect(restarted.get(entry.key)).toMatchObject({ status: 'failed', error: expect.stringContaining('explicitly reschedule') });
+    expect(new WorkLedger({ filePath }).recoverInterrupted()).toEqual([]);
+  });
+});

@@ -14,8 +14,10 @@ import type { WebChannel } from '../../channels/web.js';
 import type { ProgrammingMode, ProgrammingModeState } from '../../core/programming-mode.js';
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { join, extname, basename, relative, resolve } from 'node:path';
-import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
+import { getMercuryHome, loadConfig, getActiveProviders, type ProviderConfig } from '../../utils/config.js';
+import { basicAuthHeaders } from '../../providers/basic-auth.js';
 import type { SessionRepository } from '../../sessions/index.js';
+import { SessionTitleError } from '../../sessions/repository.js';
 import { loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
 import {
   getModelPref, setModelPref, humanizeModelName, modelGroupLabel,
@@ -260,7 +262,7 @@ chat.post('/api/chat/send', async (c) => {
     content?: string;
     sessionId?: string;
     threadId?: string;
-    /** Base64 files: photos and PDFs become real attachments for this turn. */
+    /** Base64 files: images, PDFs and UTF-8 text become attachments for this turn. */
     attachments?: unknown;
     /** Session-scoped coding: 'auto' | 'plan' | 'execute' for this turn only. */
     programming?: unknown;
@@ -319,15 +321,18 @@ chat.get('/api/chat/uploads/:month/:file', (c) => {
   const path = resolveUploadRef(c.req.param('month'), c.req.param('file'));
   if (!path) return c.json({ error: 'Not found' }, 404);
   const bytes = readFileSync(path);
-  const mime = uploadMime(bytes);
+  const mime = uploadMime(bytes, c.req.param('file'));
   if (!mime) return c.json({ error: 'Not found' }, 404);
+  const name = c.req.param('file').slice(37);
+  const fallbackName = name.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  const encodedName = encodeURIComponent(name).replace(/['()*]/g, ch => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
   return new Response(bytes, {
     headers: {
       'Content-Type': mime,
       'Content-Length': String(bytes.length),
       'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'private, max-age=31536000, immutable',
-      'Content-Disposition': `inline; filename="${c.req.param('file').slice(37).replace(/["\\\r\n]/g, '_')}"`,
+      'Content-Disposition': `inline; filename="${fallbackName}"; filename*=UTF-8''${encodedName}`,
     },
   });
 });
@@ -423,12 +428,12 @@ function recentlyFailed(key: string): boolean {
 }
 
 /** Every model the local Ollama server has pulled (empty if unreachable). */
-async function listOllamaModels(baseUrl: string): Promise<string[]> {
-  const root = baseUrl.replace(/\/+$/, '').replace(/\/(v1|api)$/, '');
+async function listOllamaModels(server: Pick<ProviderConfig, 'baseUrl' | 'username' | 'password'>): Promise<string[]> {
+  const root = server.baseUrl.replace(/\/+$/, '').replace(/\/(v1|api)$/, '');
   const lookup = `ollama:${root}`;
   if (recentlyFailed(lookup)) return [];
   try {
-    const res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${root}/api/tags`, { headers: basicAuthHeaders(server), signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = (await res.json()) as { models?: { name?: string }[] };
     failedLookups.delete(lookup);
@@ -464,8 +469,8 @@ async function listChatGPTModels(): Promise<string[]> {
 }
 
 /** Providers that serve many models list each one; others list their configured model. */
-async function listProviderModels(p: { name: string; baseUrl: string }): Promise<string[]> {
-  if (p.name === 'ollamaLocal') return listOllamaModels(p.baseUrl);
+async function listProviderModels(p: ProviderConfig): Promise<string[]> {
+  if (p.name === 'ollamaLocal') return listOllamaModels(p);
   if (p.name === 'chatgptWeb') return [...(await listChatGPTModels())];
   return [];
 }
@@ -749,6 +754,24 @@ chat.get('/api/chat/threads/:id', (c) => {
     return c.json(toThread(sessions.get(id), true));
   } catch {
     return c.json({ error: 'Thread not found' }, 404);
+  }
+});
+
+/** Owner titles survive automatic naming and keep the conversation's position. */
+chat.put('/api/chat/threads/:id/title', async (c) => {
+  if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+  const body: unknown = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || !('title' in body) || typeof body.title !== 'string') {
+    return c.json({ error: 'Send { title: "New chat name" }.' }, 400);
+  }
+  const id = c.req.param('id');
+  try { sessions.get(id); } catch { return c.json({ error: 'Thread not found' }, 404); }
+  try {
+    const session = sessions.updateTitle(id, body.title, 'user', { touch: false });
+    return c.json({ id: session.id, title: session.title });
+  } catch (error) {
+    if (error instanceof SessionTitleError) return c.json({ error: error.message }, 400);
+    return c.json({ error: 'Could not save the chat name. Please try again.' }, 500);
   }
 });
 

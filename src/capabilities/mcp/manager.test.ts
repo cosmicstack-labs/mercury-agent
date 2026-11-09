@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import type { Tool } from 'ai';
 import { McpManager, probeMcpServer, type McpManagerOptions } from './manager.js';
 import type { McpGate, McpServerConfig } from './types.js';
+import { setToolImagesAllowed } from '../tool-images.js';
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/mcp-fixture-server.mjs', import.meta.url));
 const allowAll: McpGate = async () => ({ allowed: true });
@@ -79,6 +80,29 @@ describe('McpManager', () => {
     expect(await run(tools.mcp__fx__echo, { text: 'hi' })).toBe('Error: User denied: echo');
     expect(m.isAutoApproved('mcp__fx__add')).toBe(true);
     expect(m.isAutoApproved('mcp__fx__echo')).toBe(false);
+  }, 20_000);
+
+  it('passes MCP images to the model but keeps base64 out of the result text', async () => {
+    const m = manager({ fx: fixture({ tools: { allow: ['image'] } }) });
+    await m.connectAll();
+    const tool = m.getTools().mcp__fx__image;
+    const text = await run(tool, {});
+    expect(text).toBe('a pixel\n[1 image attached]');
+
+    const shown = await tool!.toModelOutput!({ toolCallId: 'call-1', input: {}, output: text });
+    expect(shown).toMatchObject({
+      type: 'content',
+      value: [{ type: 'text', text }, { type: 'image-data', mediaType: 'image/png' }],
+    });
+
+    setToolImagesAllowed(false);
+    try {
+      const noted = await tool!.toModelOutput!({ toolCallId: 'call-1', input: {}, output: text });
+      expect(noted).toMatchObject({ type: 'text' });
+      expect(JSON.stringify(noted)).toMatch(/can't view images/);
+    } finally {
+      setToolImagesAllowed(true);
+    }
   }, 20_000);
 
   it('returns an error string when the gate throws', async () => {

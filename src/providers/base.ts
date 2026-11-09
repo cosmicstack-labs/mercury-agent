@@ -48,4 +48,8 @@ export abstract class BaseProvider {
   getMaxOutputTokens(): number | undefined {
     return this.config.maxOutputTokens;
   }
+
+  supportsToolResultImages(): boolean {
+    return false;
+  }
 }

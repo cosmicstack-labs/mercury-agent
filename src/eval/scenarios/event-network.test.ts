@@ -9,6 +9,8 @@ import { createEventTriggerRoutes, EventTriggerIngress, eventSignature } from '.
 import { guardedFetch } from '../../utils/ssrf.js';
 import { githubRequest } from '../../utils/github.js';
 import { makeContext } from '../../capabilities/permission-context.js';
+import { buildResourceTools } from '../../capabilities/mcp/resources.js';
+import { publishTool, resetToolBridge } from '../../plugins/tool-bridge.js';
 
 // Keep the real tools and Agent loop, replacing only network transports. A
 // regression must fail without sending even the fixture canary to a service.
@@ -27,6 +29,8 @@ afterEach(async () => {
   for (const harness of harnesses.splice(0)) await harness.dispose();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  resetToolBridge();
 });
 const secret = 'fixture-event-secret-with-at-least-32-bytes';
 const canary = 'LOCAL-FILE-CANARY-8294';
@@ -144,5 +148,48 @@ describe('event outbound tool consent', () => {
     expect(deny).toHaveBeenCalledTimes(1);
     expect(await permissions.withContext(owner, () => permissions.checkShellCommand(command))).toMatchObject({ allowed: true });
     expect(deny).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps discovery, browser, MCP resources, and past-session recall inside event policy', async () => {
+    vi.stubEnv('MERCURY_TOOL_DISCOVERY', 'true');
+    const approved = vi.fn(async () => 'Approved integration result.');
+    const unlisted = vi.fn(async () => 'Must never run.');
+    for (const [name, invoke] of [['approved', approved], ['unlisted', unlisted]] as const) {
+      publishTool({ pluginId: 'fixture', pluginName: 'Fixture', name, description: 'An event fixture tool',
+        inputSchema: { type: 'object', properties: {} }, readOnly: true, timeoutMs: 1000, invoke });
+    }
+    const { harness, post } = await setup({ integrationTools: ['fixture__approved'] });
+    harness.capabilities.permissions.getManifest().capabilities.browser = { enabled: true };
+    harness.capabilities.registerAll();
+    const servers = vi.fn(async () => ['fixture']);
+    const list = vi.fn(async () => 'Must never list.');
+    const read = vi.fn(async () => 'Must never read.');
+    // Register real resource helpers with transport-only fixtures. This checks
+    // filtering even when optional browser/resource/recall tools are present.
+    Object.assign(Reflect.get(harness.capabilities, 'tools'), buildResourceTools({ servers, list, read }));
+    const blocked = ['fixture__unlisted', 'fetch_url', 'browser_navigate', 'list_mcp_resources', 'read_mcp_resource', 'search_sessions', 'read_session'];
+    expect(Object.keys(harness.capabilities.getTools())).toEqual(expect.arrayContaining(blocked));
+    harness.player.load({ message: '', steps: [
+      toolStep([call('discover_tools', { names: ['fixture__approved', ...blocked] })]),
+      toolStep([call('fixture__approved', {}), call('fixture__unlisted', {}), networkCalls[0],
+        call('browser_navigate', { url: 'https://collector.example/' }), call('list_mcp_resources', {}),
+        call('read_mcp_resource', { server: 'fixture', uri: 'fixture://private' }),
+        call('search_sessions', { query: 'private' }), call('read_session', { sessionId: 'owner' }),
+      ]), textStep('Only the configured integration was used.'),
+    ] });
+    expect((await post({ integrationTools: blocked, networkTools: ['fetch_url'] })).status).toBe(202);
+    await completed(harness);
+    expect(harness.player.calls[0].toolNames).toContain('discover_tools');
+    expect(harness.player.calls[1].toolNames).toContain('fixture__approved');
+    for (const request of harness.player.calls) {
+      for (const name of blocked) expect(request.toolNames).not.toContain(name);
+    }
+    expect(harness.capabilities.toolLog.map((entry) => entry.tool)).toEqual(['fixture__approved']);
+    expect(approved).toHaveBeenCalledTimes(1);
+    expect(unlisted).not.toHaveBeenCalled();
+    expect(servers).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    expect(guardedFetch).not.toHaveBeenCalled();
   });
 });

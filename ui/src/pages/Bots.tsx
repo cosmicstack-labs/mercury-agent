@@ -8,6 +8,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { cn, formatDate } from "@/lib/utils";
 import api, { type BotStatus, type BotRunRecord, type BotDlqEntry, type BotManifest } from "@/lib/api";
 import { useBotEvents } from "@/components/bots/useBotEvents";
+import { BotFace } from "@/components/bots/BotFace";
 import { BotDetail } from "@/components/bots/BotDetail";
 import { OnboardWizard } from "@/components/bots/OnboardWizard";
 import { DeliverablesList } from "@/components/bots/DeliverablesList";
@@ -102,7 +103,7 @@ export function BotsPage() {
           <CardHeader className="pb-2" onClick={() => void openBot(bot.id)}>
             <div className="flex items-center justify-between">
               <CardTitle className="flex items-center gap-2 text-base">
-                <Bot className="h-4 w-4" /> {bot.name}
+                <BotFace id={bot.id} name={bot.name} hasAvatar={bot.hasAvatar} version={live.rosterSeq} size={28} /> {bot.name}
                 {bot.fleetRole === "lead" && <Badge variant="secondary" className="text-yellow-500"><Crown className="h-3 w-3" /> lead</Badge>}
                 {crewCount > 0 && <Badge variant="secondary"><Users className="h-3 w-3" /> {crewCount}</Badge>}
               </CardTitle>
@@ -124,7 +125,7 @@ export function BotsPage() {
                   const cl = live.activity[c.id];
                   return (
                     <span key={c.id} className="inline-flex items-center gap-1 mr-2">
-                      ↳ {c.name}
+                      <BotFace id={c.id} name={c.name} hasAvatar={c.hasAvatar} version={live.rosterSeq} size={18} /> {c.name}
                       {cl && <span className="text-emerald-400"> {cl.slice(0, 30)}</span>}
                       {c.needsYou && <AlertTriangle className="h-3 w-3 text-yellow-500" />}
                     </span>

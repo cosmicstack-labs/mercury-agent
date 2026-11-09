@@ -41,8 +41,8 @@ export interface ChannelMessage {
 
 /**
  * A file the owner attached to a message. The runtime reads `path` at turn time
- * and hands images/PDFs to the model when it can take them
- * (`src/core/attachments.ts`); other kinds stay a path in the transcript.
+ * and hands images/PDFs to the model when it can take them. TXT and Markdown
+ * are included as bounded text for every model (`src/core/attachments.ts`).
  */
 export interface ChannelAttachment {
   /** `image` and `document` are the kinds the runtime can hand to a model. */

@@ -6,6 +6,8 @@ describe('MCP tool naming', () => {
     expect(exposedToolName('github', 'search_issues', new Set())).toBe('mcp__github__search_issues');
     expect(isMcpToolName('mcp__github__search_issues')).toBe(true);
     expect(isMcpToolName('read_file')).toBe(false);
+    expect(isMcpToolName('list_mcp_resources')).toBe(true);
+    expect(isMcpToolName('read_mcp_resource')).toBe(true);
   });
 
   it('replaces characters providers reject', () => {

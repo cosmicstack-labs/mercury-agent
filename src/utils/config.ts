@@ -43,6 +43,12 @@ export interface ProviderConfig {
    * local Qwen-VL called `qwen3.8-flash-next` was refused for that reason.
    */
   vision?: boolean;
+  /**
+   * HTTP Basic credentials for a server behind a reverse proxy. When `username`
+   * is set, Mercury sends `Authorization: Basic ...` instead of the Bearer key.
+   */
+  username?: string;
+  password?: string;
 }
 
 export interface TelegramAccessUser {
@@ -72,6 +78,7 @@ export type ProviderName =
   | 'grok'
   | 'atlascloud'
   | 'runcrate'
+  | 'cloudgpu'
   | 'ollamaCloud'
   | 'ollamaLocal'
   | 'atomicChat'
@@ -117,6 +124,7 @@ export interface MercuryConfig {
     grok: ProviderConfig;
     atlascloud: ProviderConfig;
     runcrate: ProviderConfig;
+    cloudgpu: ProviderConfig;
     ollamaCloud: ProviderConfig;
     ollamaLocal: ProviderConfig;
     atomicChat: ProviderConfig;
@@ -301,6 +309,8 @@ export interface MercuryConfig {
     allowedHosts?: string[];
   };
   mcp?: McpConfig;
+  /** Opt-in: discover plugin and MCP schemas on demand in the main agent's tool loop. */
+  toolDiscovery?: { enabled?: boolean };
   /** Where the files Mercury makes go (default ~/mercury-artifacts): Research/ and one folder per chat. */
   artifacts?: {
     outputDir?: string;
@@ -418,6 +428,13 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('RUNCRATE_BASE_URL', 'https://api.runcrate.ai/v1'),
         model: getEnv('RUNCRATE_MODEL', 'deepseek-ai/DeepSeek-V4.1-Flash'),
         enabled: getEnvBool('RUNCRATE_ENABLED', true),
+      },
+      cloudgpu: {
+        name: 'cloudgpu',
+        apiKey: getEnv('CLOUDGPU_API_KEY', ''),
+        baseUrl: getEnv('CLOUDGPU_BASE_URL', 'https://cloudgpu.app/v1'),
+        model: getEnv('CLOUDGPU_MODEL', 'deepseek-v4.1-flash'),
+        enabled: getEnvBool('CLOUDGPU_ENABLED', true),
       },
       ollamaCloud: {
         name: 'ollamaCloud',
@@ -613,6 +630,7 @@ export function getDefaultConfig(): MercuryConfig {
       accountId: '',
       product: '',
     },
+    toolDiscovery: { enabled: getEnvBool('MERCURY_TOOL_DISCOVERY', false) },
     web: {
       enabled: getEnvBool('MERCURY_WEB_ENABLED', false),
       port: getEnvNum('MERCURY_PORT', 6174),
@@ -838,7 +856,7 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
   if (provider.name === 'ollamaCloud') {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0;
   }
-  if (provider.name === 'atlascloud' || provider.name === 'runcrate') {
+  if (provider.name === 'atlascloud' || provider.name === 'runcrate' || provider.name === 'cloudgpu') {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0 && provider.model.length > 0;
   }
   if (provider.name === 'openaiCompat' || provider.name === 'litellm') {

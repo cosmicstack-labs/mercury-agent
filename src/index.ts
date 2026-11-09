@@ -96,6 +96,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
+import { withBaseUrl } from './providers/basic-auth.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
 import { loadEventTriggers } from './core/event-triggers.js';
@@ -208,6 +209,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'atlascloud', label: 'Atlas Cloud' },
   { key: 'runcrate', label: 'Runcrate' },
+  { key: 'cloudgpu', label: 'CloudGPU' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
   { key: 'atomicChat', label: 'Atomic Chat' },
@@ -470,10 +472,7 @@ async function promptOllamaLocalModelSelection(config: MercuryConfig, isReconfig
 
   console.log(chalk.dim('  Fetching Ollama Local models...'));
   try {
-    const catalog = await fetchProviderModelCatalog('ollamaLocal', {
-      ...existingConfig,
-      baseUrl,
-    });
+    const catalog = await fetchProviderModelCatalog('ollamaLocal', withBaseUrl(existingConfig, baseUrl));
     const model = await chooseProviderModel(
       'Ollama Local',
       catalog.recommendedModel,
@@ -528,10 +527,7 @@ async function promptLmStudioModelSelection(config: MercuryConfig, isReconfig: b
 
   console.log(chalk.dim('  Fetching LM Studio models...'));
   try {
-    const catalog = await fetchProviderModelCatalog('lmStudio', {
-      ...existingConfig,
-      baseUrl,
-    });
+    const catalog = await fetchProviderModelCatalog('lmStudio', withBaseUrl(existingConfig, baseUrl));
     const model = await chooseProviderModel(
       'LM Studio',
       catalog.recommendedModel,
@@ -587,10 +583,7 @@ async function promptAtomicChatModelSelection(config: MercuryConfig, isReconfig:
 
   console.log(chalk.dim('  Fetching Atomic Chat models...'));
   try {
-    const catalog = await fetchProviderModelCatalog('atomicChat', {
-      ...existingConfig,
-      baseUrl,
-    });
+    const catalog = await fetchProviderModelCatalog('atomicChat', withBaseUrl(existingConfig, baseUrl));
     const model = await chooseProviderModel(
       'Atomic Chat',
       catalog.recommendedModel,
@@ -639,8 +632,7 @@ async function promptOpenAICompatSetup(config: MercuryConfig, isReconfig: boolea
   console.log(chalk.dim('  Fetching models from server...'));
   try {
     const catalog = await fetchProviderModelCatalog('openaiCompat', {
-      ...existingConfig,
-      baseUrl,
+      ...withBaseUrl(existingConfig, baseUrl),
       apiKey: resolvedApiKey,
     });
     const model = await chooseProviderModel(
@@ -1514,6 +1506,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.runcrate.apiKey = result.apiKey;
           config.providers.runcrate.model = result.model;
           config.providers.runcrate.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'cloudgpu') {
+        const mask = isReconfig && config.providers.cloudgpu.apiKey ? ` [${maskKey(config.providers.cloudgpu.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'cloudgpu',
+          'CloudGPU',
+          chalk.white(`  CloudGPU API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.cloudgpu.apiKey = result.apiKey;
+          config.providers.cloudgpu.model = result.model;
+          config.providers.cloudgpu.enabled = true;
         }
         continue;
       }
@@ -2723,6 +2732,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   // terminal attached to a live daemon must not start every stdio server twice.
   const mcpManager = daemonOwnsRuntime ? undefined : new McpManager(mcpConfig.servers, {
     gate: (request) => capabilities.permissions.checkMcpTool(request),
+    resourceGate: (request) => capabilities.permissions.checkMcpResource(request),
   });
   if (mcpManager) {
     capabilities.attachMcp(mcpManager);

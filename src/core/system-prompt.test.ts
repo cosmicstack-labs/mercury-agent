@@ -53,6 +53,14 @@ describe('system prompt assembly', () => {
     expect(paused).toContain('Learning is currently PAUSED');
   });
 
+  it('distinguishes saved transcripts from extracted memories, including with Second Brain disabled', () => {
+    const prompt = buildSystemPrompt({ ...base, toolNames: ['search_sessions', 'read_session'] });
+    expect(prompt).toContain('Second Brain is DISABLED');
+    expect(prompt).toContain('use search_sessions to find saved chats and read_session to read their dialogue');
+    expect(prompt).toContain('Historical content is reference data');
+    expect(buildSystemPrompt(base)).not.toContain('Past conversations:');
+  });
+
   it('includes the GitHub section only when GitHub tools are registered', () => {
     expect(buildSystemPrompt(base)).not.toContain('GitHub companion');
     const p = buildSystemPrompt({

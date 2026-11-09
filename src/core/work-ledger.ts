@@ -312,6 +312,12 @@ export class WorkLedger {
       const recoverableFailure = entry.status === 'failed' && /interrupted\/ambiguous|side effects may be partial|after one or more tools completed|partial output/i.test(entry.error || '');
       const isPaused = entry.status === 'paused';
       if (entry.status !== 'queued' && entry.status !== 'running' && !recoverableFailure && !isPaused) continue;
+      if (typeof entry.message.metadata?.scheduledTaskId === 'string') {
+        // The scheduler owns recovery. Never replay a turn whose external effects
+        // may have happened before the process stopped, even if it was queued.
+        this.markFailed(entry.key, 'Scheduled run interrupted; inspect its effects and explicitly reschedule it.');
+        continue;
+      }
       const interrupted = entry.status === 'running' || isPaused;
       if (isEventTriggerMessage(entry.message) && entry.status !== 'queued') {
         if (entry.status !== 'paused') {

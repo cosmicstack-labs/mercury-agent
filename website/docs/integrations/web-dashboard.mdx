@@ -50,10 +50,16 @@ A multi-thread chat interface with SSE streaming.
 
 - **Thread sidebar** — Lists all conversations. Click any thread to switch; the URL updates to `/chat/<id>` so you can bookmark or share links.
 - **New Chat** button — Creates a new thread and navigates to its URL.
+- **Rename** — Use the pencil beside a conversation to choose a name (up to 120 characters). Save applies it; Cancel or Escape keeps the existing name. Your name survives restarts and automatic title generation.
 - **Delete** — Hover a thread (or open it) to reveal a trash icon. Confirmation dialog prevents accidents.
 - **Model switcher** — Top of the chat header. Pick any configured provider; the choice is per-thread.
 - **Code Mode toggle** — Switches the agent into coding mode for the active thread (file edits, shell calls allowed under your permission policy).
 - **Streaming** — Assistant tokens arrive via Server-Sent Events; you can interrupt mid-stream.
+- **Attachments** — Use the paperclip, paste files, or drop them into the composer. Up to four files can accompany a message, including a message with no caption. Images and PDFs keep their existing model requirements; UTF-8 `.txt`, `.md`, and `.markdown` files work with every model.
+
+Text attachments are limited to 256 KiB each. Mercury includes the first 16,000 characters per file, up to 32,000 characters across the turn, with a filename and an explicit truncation notice. The complete original remains available from the message's file link. Binary files, invalid UTF-8, and control characters other than tabs and line breaks are rejected. Markdown is passed as text and downloaded as plain text; embedded HTML is not rendered.
+
+The same text-file support is available in Mercury Desktop and through the chat and bot message APIs using `attachments: [{ name: "notes.md", data: "<base64 UTF-8>" }]`. Channel adapters that already supply document paths use the same bounded text reader.
 
 ### Tasks (`/tasks`)
 

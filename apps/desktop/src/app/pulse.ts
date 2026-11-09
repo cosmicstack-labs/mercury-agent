@@ -25,7 +25,12 @@ export interface ScheduleInfo {
   prompt?: string;
   botId?: string;
   nextRun?: string;
-  lastRun?: string;
+  executeAt?: string;
+  timezone?: string;
+  missedRunPolicy?: 'skip' | 'run_once';
+  paused?: boolean;
+  /** Older runtimes returned only a timestamp. */
+  lastRun?: string | { id: string; status: 'running' | 'completed' | 'failed' | 'interrupted' | 'skipped' | 'dispatched'; startedAt: string; finishedAt?: string; error?: string };
 }
 
 export interface BackgroundInfo {

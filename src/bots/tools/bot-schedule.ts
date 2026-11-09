@@ -23,7 +23,7 @@ export interface BotScheduler {
   }): void;
   persistSchedules(): void;
   /** All live manifests, used for the per-bot self-schedule cap. */
-  getManifests(): Array<{ id: string; botId?: string }>;
+  getManifests(): Array<{ id: string; botId?: string; lastRun?: { status: string } }>;
 }
 
 const SELF_PREFIX = 'self-';
@@ -107,7 +107,7 @@ export function createBotScheduleTool(scheduler: BotScheduler, botId: string) {
       }
 
       // One-shot with a pending cap — this is the runaway-loop guard.
-      const pending = scheduler.getManifests().filter(m => m.botId === botId && m.id.includes(`:${SELF_PREFIX}`)).length;
+      const pending = scheduler.getManifests().filter(m => m.botId === botId && m.id.includes(`:${SELF_PREFIX}`) && (!m.lastRun || m.lastRun.status === 'running')).length;
       if (pending >= MAX_PENDING_SELF_SCHEDULES) {
         return `Error: you already have ${MAX_PENDING_SELF_SCHEDULES} pending self-scheduled runs — complete or let them fire before adding more.`;
       }
