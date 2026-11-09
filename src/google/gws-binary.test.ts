@@ -117,13 +117,13 @@ describe("Mercury's gws on run_command's PATH", () => {
     expect(withMercuryGwsOnPath({ PATH: '/usr/bin' }, join(work, 'gws-bin'))).toBeUndefined();
   });
 
-  it('puts the folder first, keeping the existing key', () => {
+  it("adds the folder last, so the owner's own gws wins, keeping the existing key", () => {
     const dir = join(work, 'gws-bin');
     mkdirSync(dir);
     const windows = withMercuryGwsOnPath({ Path: 'C:\\Windows', HOME: 'x' }, dir);
     expect(Object.keys(windows ?? {}).filter((key) => key.toUpperCase() === 'PATH')).toEqual(['Path']);
-    expect(windows?.Path?.startsWith(dir)).toBe(true);
-    expect(windows?.Path?.endsWith('C:\\Windows')).toBe(true);
+    expect(windows?.Path?.startsWith('C:\\Windows')).toBe(true);
+    expect(windows?.Path?.endsWith(dir)).toBe(true);
     expect(withMercuryGwsOnPath({}, dir)).toEqual({ PATH: dir });
   });
 

@@ -86,7 +86,7 @@ export function withMercuryGwsOnPath(env: NodeJS.ProcessEnv = process.env, dir: 
   if (!existsSync(dir)) return undefined;
   const key = pathKey(env);
   const current = env[key];
-  return { ...env, [key]: current ? `${dir}${delimiter}${current}` : dir };
+  return { ...env, [key]: current ? `${current}${delimiter}${dir}` : dir };
 }
 
 function systemTar(): string {
