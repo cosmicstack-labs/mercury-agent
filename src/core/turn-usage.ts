@@ -43,6 +43,17 @@ export interface TurnUsageTotals {
   steps: number;
 }
 
+/** The provider and model a step was sent to. */
+export interface UsageSource {
+  name: string;
+  model: string;
+}
+
+export interface SourceUsageTotals extends TurnUsageTotals {
+  provider: string;
+  model: string;
+}
+
 const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
 
 export class TurnUsage {
@@ -52,10 +63,25 @@ export class TurnUsage {
   private output = 0;
   private reasoning = 0;
   private stepCount = 0;
+  /** Per provider+model, so a fallback turn bills each provider its own steps. */
+  private readonly sources = new Map<string, { source: UsageSource; usage: TurnUsage }>();
 
-  /** Add one step's usage. Missing or malformed fields count as 0. */
-  add(usage: StepUsageLike | null | undefined): void {
+  /**
+   * Add one step's usage. Missing or malformed fields count as 0. `source`
+   * is the provider the step was sent to; steps without one count toward
+   * the turn total only.
+   */
+  add(usage: StepUsageLike | null | undefined, source?: UsageSource | null): void {
     if (!usage || typeof usage !== 'object') return;
+    if (source) {
+      const key = `${source.name}\u0000${source.model}`;
+      let bucket = this.sources.get(key);
+      if (!bucket) {
+        bucket = { source: { name: source.name, model: source.model }, usage: new TurnUsage() };
+        this.sources.set(key, bucket);
+      }
+      bucket.usage.add(usage);
+    }
     const input = count(usage.inputTokens);
     const cached = count(usage.inputTokenDetails?.cacheReadTokens ?? usage.cachedInputTokens);
     const noCacheReported = usage.inputTokenDetails?.noCacheTokens;
@@ -81,4 +107,43 @@ export class TurnUsage {
       steps: this.stepCount,
     };
   }
+
+  /** Totals per provider+model, in the order each was first used. */
+  bySource(): SourceUsageTotals[] {
+    return [...this.sources.values()].map(({ source, usage }) => ({
+      provider: source.name,
+      model: source.model,
+      ...usage.totals(),
+    }));
+  }
+}
+
+/**
+ * The budget entries for one turn: one per provider+model that ran steps,
+ * so a turn that fell back bills the failed provider for its finished steps
+ * and the fallback for the rest. Usage not tagged with a provider (or a
+ * turn whose totals came from somewhere other than step callbacks) goes to
+ * `fallback`. The entries always add up to `totals`.
+ */
+export function billingEntries(
+  totals: TurnUsageTotals,
+  sources: SourceUsageTotals[],
+  fallback: UsageSource | null,
+): SourceUsageTotals[] {
+  const rest: SourceUsageTotals = {
+    provider: fallback?.name ?? 'unknown',
+    model: fallback?.model ?? 'unknown',
+    ...totals,
+  };
+  for (const s of sources) {
+    rest.inputTokens -= s.inputTokens;
+    rest.cachedInputTokens -= s.cachedInputTokens;
+    rest.noCacheInputTokens -= s.noCacheInputTokens;
+    rest.outputTokens -= s.outputTokens;
+    rest.reasoningTokens -= s.reasoningTokens;
+    rest.totalTokens -= s.totalTokens;
+    rest.steps -= s.steps;
+  }
+  if (sources.length > 0 && rest.totalTokens <= 0) return sources;
+  return [...sources, rest];
 }

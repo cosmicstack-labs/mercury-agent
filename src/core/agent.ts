@@ -134,7 +134,7 @@ const NOTE_COOLDOWN_MS = 3 * 60 * 1000;
 import { runReflection } from '../learning/reflection.js';
 import { createOwnerSectionsMemo } from '../learning/owner-brief.js';
 import type { ApplyResult } from '../memory/beliefs.js';
-import { TurnUsage, type StepUsageLike } from './turn-usage.js';
+import { TurnUsage, billingEntries, type StepUsageLike } from './turn-usage.js';
 
 /**
  * Step-aware text stream for the TUI. The SDK's textStream concatenates
@@ -3256,8 +3256,10 @@ export class Agent {
       const turnUsage = new TurnUsage();
       let usedProvider: { name: string; model: string } | null = null;
       // The provider most recently called, even if that attempt never
-      // completed (/stop, abort, error). Usage accounting falls back to it so
-      // a stopped turn's billed steps aren't filed under "unknown".
+      // completed (/stop, abort, error). Set before every model call (main
+      // loop, guard, resume, verification): each step's usage is billed to
+      // it, so steps from a provider that failed before a fallback stay
+      // billed to that provider, and a stopped turn isn't filed as "unknown".
       let attemptedProvider: { name: string; model: string } | null = null;
       let lastError: any = null;
       let hasCompletedTool = false;
@@ -3456,7 +3458,7 @@ export class Agent {
       // continuation rounds (resume / verification) share a lighter handler.
       const stepHandler = (path: 'stream' | 'gen') => async ({ toolCalls, toolResults, usage }: { toolCalls?: any[]; toolResults?: any[]; usage?: StepUsageLike }): Promise<void> => {
                 this.completedStepCount++;
-                turnUsage.add(usage);
+                turnUsage.add(usage, attemptedProvider);
                 // Completion-contract tracking: per-round step usage and how
                 // the step ended (tool calls pending = work in progress).
                 lastRoundSteps++;
@@ -3758,7 +3760,7 @@ export class Agent {
               };
       const continuationStepHandler = async (toolCalls: any[] | undefined, toolResults: any[] | undefined, usage?: StepUsageLike): Promise<void> => {
               this.completedStepCount++;
-              turnUsage.add(usage);
+              turnUsage.add(usage, attemptedProvider);
               lastRoundSteps++;
               lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
               const cliChResume = this.channels.get('cli');
@@ -3971,7 +3973,7 @@ export class Agent {
                     abortSignal: loopAbortController.signal,
                     experimental_include: { requestBody: false },
                     // Billed like any other step: count it in the turn total.
-                    onStepFinish: ({ usage }) => { turnUsage.add(usage); },
+                    onStepFinish: ({ usage }) => { turnUsage.add(usage, attemptedProvider); },
                   })),
                   loopAbortController,
                   providerDeadlineAt,
@@ -4354,6 +4356,7 @@ export class Agent {
         const guardProvider = providersForAttempt[guardProviderCursor % providersForAttempt.length];
         guardProviderCursor++;
         if (!guardProvider) break;
+        attemptedProvider = { name: guardProvider.name, model: guardProvider.getModel() };
         try {
           this.markProgress(`Resuming with ${guardProvider.name}...`);
           const guardDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
@@ -4389,7 +4392,7 @@ export class Agent {
             experimental_include: { requestBody: false },
             onStepFinish: async ({ toolCalls, toolResults, usage }) => {
               this.completedStepCount++;
-              turnUsage.add(usage);
+              turnUsage.add(usage, attemptedProvider);
               // Completion-contract tracking for the guard round.
               lastRoundSteps++;
               lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
@@ -4516,6 +4519,7 @@ export class Agent {
           ? (providersForAttempt.find((p) => p.name === usedProvider!.name && p.getModel() === usedProvider!.model) ?? providersForAttempt[0])
           : providersForAttempt[0];
         if (!resumeProvider) break;
+        attemptedProvider = { name: resumeProvider.name, model: resumeProvider.getModel() };
         lastRoundSteps = 0;
         try {
           const round = await this.runInlineContinuationRound({
@@ -4578,6 +4582,7 @@ export class Agent {
           ? (providersForAttempt.find((p) => p.name === usedProvider!.name && p.getModel() === usedProvider!.model) ?? providersForAttempt[0])
           : providersForAttempt[0];
         if (verifyProvider) {
+          attemptedProvider = { name: verifyProvider.name, model: verifyProvider.getModel() };
           lastRoundSteps = 0;
           try {
             const round = await this.runInlineContinuationRound({
@@ -4721,18 +4726,27 @@ export class Agent {
           fallback.add(result.usage);
           return fallback.totals();
         })();
-      this.tokenBudget.recordUsage({
-        provider: billedProvider?.name ?? 'unknown',
-        model: billedProvider?.model ?? 'unknown',
-        inputTokens: turnTotals.inputTokens,
-        outputTokens: turnTotals.outputTokens,
-        totalTokens: turnTotals.totalTokens,
-        // The split lets tokens.cachedWeight discount cache hits in the budget.
-        cachedInputTokens: turnTotals.cachedInputTokens,
-        noCacheInputTokens: turnTotals.noCacheInputTokens,
-        channelType: msg.channelType,
-        agentId: this.config.cloud.agentId || undefined,
-      });
+      // One budget entry per provider+model: a turn that fell back bills the
+      // failed provider for its finished steps and the fallback for the rest.
+      const usageEntries = billingEntries(
+        turnTotals,
+        turnUsage.totals().steps > 0 ? turnUsage.bySource() : [],
+        billedProvider,
+      );
+      for (const entry of usageEntries) {
+        this.tokenBudget.recordUsage({
+          provider: entry.provider,
+          model: entry.model,
+          inputTokens: entry.inputTokens,
+          outputTokens: entry.outputTokens,
+          totalTokens: entry.totalTokens,
+          // The split lets tokens.cachedWeight discount cache hits in the budget.
+          cachedInputTokens: entry.cachedInputTokens,
+          noCacheInputTokens: entry.noCacheInputTokens,
+          channelType: msg.channelType,
+          agentId: this.config.cloud.agentId || undefined,
+        });
+      }
       logger.info({
         provider: billedProvider?.name,
         model: billedProvider?.model,
@@ -4743,6 +4757,7 @@ export class Agent {
         reasoningTokens: turnTotals.reasoningTokens,
         steps: this.completedStepCount,
         usageSteps: turnTotals.steps,
+        ...(usageEntries.length > 1 ? { usageByProvider: usageEntries.map((e) => ({ provider: e.provider, model: e.model, inputTokens: e.inputTokens, outputTokens: e.outputTokens })) } : {}),
         toolCalls: turnToolTrace.length,
         historyEntries: recentMemory.length,
         activeTools: activeTools?.length ?? 'all',
