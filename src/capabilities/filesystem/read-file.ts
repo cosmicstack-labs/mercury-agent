@@ -1,7 +1,6 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { readFileSync, closeSync } from 'node:fs';
-import { resolve } from 'node:path';
 import type { PermissionManager } from '../permissions.js';
 import { openVerified, readDenialMessage } from './verified-read.js';
 import { resolveToolPath, type CwdSource } from './resolve-path.js';

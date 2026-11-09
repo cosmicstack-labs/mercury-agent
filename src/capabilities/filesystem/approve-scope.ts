@@ -1,6 +1,5 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
-import { resolve } from 'node:path';
 import type { PermissionManager } from '../permissions.js';
 import { resolveToolPath, type CwdSource } from './resolve-path.js';
 

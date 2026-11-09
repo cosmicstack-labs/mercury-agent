@@ -1,4 +1,3 @@
-import { resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import type { PermissionManager } from '../permissions.js';
 import { readDenialMessage } from '../filesystem/verified-read.js';
