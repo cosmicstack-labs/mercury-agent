@@ -1,10 +1,11 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve, isAbsolute } from 'node:path';
+import { resolve } from 'node:path';
 import type { PermissionManager } from '../permissions.js';
+import { resolveToolPath, type CwdSource } from './resolve-path.js';
 
-export function createEditFileTool(permissions: PermissionManager, getCwd: () => string) {
+export function createEditFileTool(permissions: PermissionManager, getCwd: CwdSource) {
   return tool({
     description: 'Edit a file by replacing an exact string match with new content. Use this instead of write_file when you only need to change part of a file. The old_string must match exactly (including whitespace and indentation). Fails if old_string is not found or found multiple times.',
     inputSchema: zodSchema(z.object({
@@ -13,7 +14,7 @@ export function createEditFileTool(permissions: PermissionManager, getCwd: () =>
       new_string: z.string().describe('The text to replace it with'),
     })),
     execute: async ({ path, old_string, new_string }) => {
-      const resolved = isAbsolute(path) ? resolve(path) : resolve(getCwd(), path);
+      const resolved = resolveToolPath(path, getCwd);
 
       const fsCheck = await permissions.checkFsAccess(resolved, 'write');
       if (!fsCheck.allowed) {
