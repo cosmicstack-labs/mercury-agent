@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-### Skills
-- Add nine opt-in, native instruction workflows for local files, data, media and development. They retain Mercury's Second Brain conventions and grant no tool permissions when loaded.
-- Include the pack in the npm package and verify installation and byte-identical reload in an isolated profile. Git checkout and npm installation instructions are in `skills/mercury-adapted/README.md`.
-- Standalone archives, optional plugins and third-party adaptations are not part of this change. Content tests verify the packaging and permission contract, not end-to-end workflow success.
-
 ## 1.5.1 — speech uses the voice you chose, Gemini included
 
 ### Speech
