@@ -101,6 +101,8 @@ autonomy:
 
 **Persona is a markdown file, not config** (Grok's prompts are literally versioned templates; Hermes/OpenClaw both use markdown persona files; Mercury already does this for soul). `persona.md` holds character, voice, standing instructions, output conventions for each surface the bot serves.
 
+**Fleet hierarchy is a relation, not a record.** `fleetRole: lead|crew` plus `parent: <leadId>` on the crew member's `bot.yaml`, and the profile folder nests physically under its lead (`research-lead/analyst/`). A lead heads exactly one crew; a bot belongs to at most one fleet; a lead may itself have a parent (mid-level lead). The tree is capped at `MAX_FLEET_DEPTH` (3) levels — CEO → Engineering Lead → Backend — and the cap is checked at creation and on every save, so what can exist is what `list()`/`crewOf()` walk and the roster can show.
+
 ### 2.2 Execution model — the decision
 
 **Chosen: in-process async coroutines with a bot lane queue. No per-bot processes, no per-bot threads.**
