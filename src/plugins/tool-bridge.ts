@@ -78,6 +78,9 @@ let imagesAllowed = true;
 export function setPluginImagesAllowed(allowed: boolean): void {
   imagesAllowed = allowed;
 }
+
+/** Capture once when constructing tools for the current provider request. */
+export function currentToolImagesAllowed(): boolean { return imagesAllowed; }
 const MAX_PENDING = 32;
 
 function holdImages(callId: string, images: PluginImage[]): void {

@@ -3123,7 +3123,7 @@ export class Agent {
 
       // Set this turn's caller before exposing tools or routing a skill. A
       // previous local/owner turn must not determine remote recall access.
-      this.capabilities.setChannelContext(msg.channelId, msg.channelType);
+      this.capabilities.setChannelContext(msg.channelId, msg.channelType, canonicalSession.id);
       this.capabilities.permissions.setCurrentSenderRole(msg.senderRole);
 
       let systemPrompt = this.buildSystemPrompt();
@@ -5350,6 +5350,7 @@ export class Agent {
       await this.supervisor.haltAll();
     }
     this.backgroundTasks.destroy();
+    await this.capabilities.closeBrowserSessions();
     this.providers.destroy();
     await this.sleep();
     logger.info('Mercury has shut down');

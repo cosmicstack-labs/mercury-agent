@@ -81,6 +81,38 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  isolated-browser:
+    name: Isolated browser (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: npm ci
+      # Uses an installed Chrome/Edge. No browser engine download or sandbox override.
+      - run: npm test -- src/capabilities/browser/reader.integration.test.ts --maxWorkers=1
+        env:
+          MERCURY_TEST_BROWSER: '1'
+      - name: Compile reader with the standalone runtime
+        shell: bash
+        run: bun build --compile scripts/smoke-isolated-browser.ts --outfile .browser-smoke
+      - name: Exercise compiled browser pipes and cleanup
+        shell: bash
+        run: |
+          if [ -f .browser-smoke.exe ]; then ./.browser-smoke.exe; else ./.browser-smoke; fi
+        env:
+          MERCURY_HOME: ${{ github.workspace }}/.browser-smoke-home
+
   eval:
     # Replay-based eval harness (ROADMAP P2.3): drives the real agent loop
     # with scripted providers and recorded tool outputs. No network, no keys.

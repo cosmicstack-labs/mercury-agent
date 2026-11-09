@@ -209,6 +209,7 @@ Design notes: [BOTS-ARCHITECTURE.md](BOTS-ARCHITECTURE.md).
 - **Shell:** a blocklist that cannot be overridden (`sudo`, `rm -rf /` and its variants), plus approval for everything outside your allowed scopes.
 - **Files:** read and write scopes per folder, per channel and per role.
 - **Network:** `fetch_url` blocks private address ranges and caps response sizes.
+- **Optional browser reader:** [isolated public-page rendering](docs/isolated-browser.md) uses an installed browser with a separate temporary profile per chat, approved navigation, bounded snapshots and a strict network guard. Page actions and JavaScript are disabled; no browser engine is bundled.
 - **Modes:** *Ask Me* or *Allow All* per session, changeable with `/permissions`.
 - **Secrets:** API keys live in `~/.mercury/.env`, logs redact them, and the dashboard password is random on first run.
 

@@ -139,6 +139,8 @@ export interface PermissionsManifest {
     filesystem: FsPermissions;
     shell: ShellPermissions;
     git: GitPermissions;
+    /** Installed-browser read-only rendering is opt-in; no engine is bundled. */
+    browser?: { enabled: boolean; executable?: string };
   };
 }
 
@@ -554,8 +556,8 @@ export class PermissionManager {
     this.updateContext(() => ({ channelType: type }));
   }
 
-  setCurrentContext(type: string, id: string): void {
-    this.updateContext(() => ({ channelType: type, channelId: id }));
+  setCurrentContext(type: string, id: string, sessionId?: string): void {
+    this.updateContext(() => ({ channelType: type, channelId: id, sessionId }));
   }
 
   getCurrentChannelType(): string {
@@ -595,13 +597,13 @@ export class PermissionManager {
     return out;
   }
 
-  async requestApproval(prompt: string): Promise<boolean> {
+  async requestApproval(prompt: string, options?: AskOptions): Promise<boolean> {
     const ctx = this.ctx();
     // No one can answer on the internal channel: only an allow-all context
     // (the internal turn's own grant) approves; a child of it does not.
     if (ctx.channelType === 'internal') return ctx.autoApprove;
     if (!this.askHandler) return false;
-    const result = await this.askHandler(prompt);
+    const result = await (options ? this.askHandler(prompt, options) : this.askHandler(prompt));
     return result === 'yes' || result === 'always';
   }
 
@@ -1413,6 +1415,10 @@ export class PermissionManager {
 
     return {
       capabilities: {
+        ...(parsed.capabilities?.browser ? { browser: {
+          enabled: parsed.capabilities.browser.enabled === true,
+          ...(typeof parsed.capabilities.browser.executable === 'string' ? { executable: parsed.capabilities.browser.executable } : {}),
+        } } : {}),
         filesystem: {
           enabled: parsed.capabilities?.filesystem?.enabled ?? DEFAULT_MANIFEST.capabilities.filesystem.enabled,
           scopes: parsed.capabilities?.filesystem?.scopes ?? DEFAULT_MANIFEST.capabilities.filesystem.scopes,

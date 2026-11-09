@@ -29,6 +29,8 @@ export interface PermissionContext {
   readonly channelId: string;
   /** External event turns neither consume nor create remembered conversation approvals. */
   readonly rememberApprovals: boolean;
+  /** Canonical repository session, supplied by the agent, never tool arguments. */
+  readonly sessionId?: string;
   readonly senderRole: 'admin' | 'member' | undefined;
   /** Allow-all: approved-scope actions and non-blocked commands run without prompts. */
   readonly autoApprove: boolean;
@@ -54,6 +56,7 @@ export function makeContext(fields: Partial<PermissionContext> = {}): Permission
   return Object.freeze({
     channelType: fields.channelType ?? 'cli',
     channelId: fields.channelId ?? 'cli',
+    ...(fields.sessionId ? { sessionId: fields.sessionId } : {}),
     senderRole: fields.senderRole,
     rememberApprovals: fields.rememberApprovals ?? true,
     autoApprove: fields.autoApprove ?? false,
