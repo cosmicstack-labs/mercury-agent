@@ -18,6 +18,7 @@ const { CapabilityRegistry } = await import('../registry.js');
 const { filterBotTools } = await import('../../bots/registry-factory.js');
 const { formatToolStep } = await import('../../utils/tool-label.js');
 const { registerSecretValue } = await import('../../utils/redact.js');
+const { WebChannel } = await import('../../channels/web.js');
 type McpManager = import('./manager.js').McpManager;
 
 afterAll(() => rmSync(home, { recursive: true, force: true }));
@@ -50,7 +51,7 @@ describe('PermissionManager.checkMcpTool', () => {
   it('shows server, tool and arguments, and honours yes and no', async () => {
     const yes = manager('yes');
     expect(await yes.pm.checkMcpTool(request())).toEqual({ allowed: true });
-    expect(yes.ask).toHaveBeenCalledWith('MCP tool call\nServer: fx\nTool:   echo\nArguments:\n{\n  "text": "hi"\n}');
+    expect(yes.ask).toHaveBeenCalledWith('MCP tool call\nServer: fx\nTool:   echo\nArguments:\n{\n  "text": "hi"\n}', { alwaysAsk: true });
 
     const no = manager('no');
     expect(await no.pm.checkMcpTool(request())).toEqual({ allowed: false, reason: 'User denied MCP tool fx/echo' });
@@ -230,5 +231,54 @@ describe('MCP tools in the registry and filters', () => {
   it('labels MCP tool steps by server and tool', () => {
     expect(formatToolStep('mcp__github__search_issues', {})).toBe('🔌 github › search_issues');
     expect(formatToolStep('some_unknown_tool', {})).toBe('some_unknown_tool');
+  });
+});
+
+describe('always-ask prompts on the web dashboard and Mercury Cloud', () => {
+  function webInAllowAll() {
+    const channel = new WebChannel('Mercury');
+    const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+    channel.setSessionPermissionMode('session-1', 'allow-all');
+    channel.emitCloudMessage('work', 'request-1', 'session-1', 'conversation-1', undefined, (event) => {
+      events.push(event);
+      return true;
+    });
+    const pm = new PermissionManager();
+    pm.onAsk((prompt, options) => channel.askPermission(prompt, 'request-1', options));
+    pm.setCurrentContext('web', 'request-1');
+    pm.getManifest().capabilities.filesystem.scopes = [{ path: home, read: true, write: true }];
+    pm.getManifest().capabilities.shell.enabled = true;
+    pm.getManifest().capabilities.shell.cwdOnly = false;
+    const answerNext = async (answer: string) => {
+      await vi.waitFor(() => expect(events.some((event) => event.type === 'permission_request')).toBe(true));
+      const id = events.filter((event) => event.type === 'permission_request').pop()?.data?.id as string;
+      events.length = 0;
+      expect(channel.resolveApproval(id, answer, 'request-1')).toBe(true);
+    };
+    return { pm, events, answerNext };
+  }
+
+  it('asks before an MCP tool call even when the session is in Allow All', async () => {
+    const { pm, answerNext } = webInAllowAll();
+    const verdict = pm.checkMcpTool(request());
+    await answerNext('no');
+    expect(await verdict).toEqual({ allowed: false, reason: 'User denied MCP tool fx/echo' });
+  });
+
+  it('asks before an MCP setup shell command and a config-file write in Allow All', async () => {
+    const { pm, answerNext } = webInAllowAll();
+    const shell = pm.checkShellCommand('mercury mcp add evil --stdio node -y');
+    await answerNext('no');
+    expect((await shell).allowed).toBe(false);
+
+    const write = pm.checkFsAccess(join(home, 'mercury.yaml'), 'write');
+    await answerNext('no');
+    expect((await write).allowed).toBe(false);
+  });
+
+  it('leaves other prompts to the session mode', async () => {
+    const { pm, events } = webInAllowAll();
+    expect(await pm.approvePluginTool('demo__run', 'Run plugin tool demo → run')).toBe(true);
+    expect(events.some((event) => event.type === 'permission_request')).toBe(false);
   });
 });

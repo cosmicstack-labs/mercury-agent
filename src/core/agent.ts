@@ -3797,7 +3797,7 @@ export class Agent {
           // get plain text.
           // Photos and PDFs from the chat go to models that can take them.
           const seesImages = modelSeesImages(provider.name, provider.getModel(), provider.seesImages);
-          setPluginImagesAllowed(seesImages);
+          setPluginImagesAllowed(seesImages && provider.supportsToolResultImages());
           const providerMessages = withAttachments(
             deepseekProviderOptions ? withReasoningParts(messages) : messages,
             msg,

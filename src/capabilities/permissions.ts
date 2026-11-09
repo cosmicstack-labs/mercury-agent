@@ -999,7 +999,7 @@ export class PermissionManager {
       if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed) {
         return { allowed: false, reason: 'Changing MCP servers or mercury.yaml from a shell command needs the owner; run it yourself in a terminal', needsApproval: false };
       }
-      const answer = await this.askHandler(`Run command (changes Mercury's MCP servers or config, so it always asks): ${trimmed}`);
+      const answer = await this.askOwner(`Run command (changes Mercury's MCP servers or config, so it always asks): ${trimmed}`);
       return answer === 'yes' || answer === 'always'
         ? { allowed: true, needsApproval: false, lane: 'shell' }
         : { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
@@ -1134,7 +1134,7 @@ export class PermissionManager {
         reason: `MCP tool ${label} needs approval; add "${toolName}" to tools.autoApprove for server "${serverId}" to run it unattended`,
       };
     }
-    const answer = await this.askHandler(
+    const answer = await this.askOwner(
       `MCP tool call\nServer: ${serverId}\nTool:   ${toolName}\nArguments:\n${formatMcpArgs(request.args)}`,
     );
     if (answer === 'yes') return { allowed: true };
@@ -1205,11 +1205,15 @@ export class PermissionManager {
         reason: `Permission denied: ${resolved} is a Mercury config file and can only be changed with the owner's confirmation`,
       };
     }
-    const answer = await this.askHandler(
+    const answer = await this.askOwner(
       `Write to Mercury config file: ${resolved}\n(it controls MCP servers, permissions and secrets)`,
     );
     if (answer === 'yes' || answer === 'always') return { allowed: true };
     return { allowed: false, reason: `User denied write to ${path}` };
+  }
+
+  private askOwner(prompt: string): Promise<string> {
+    return this.askHandler ? this.askHandler(prompt, { alwaysAsk: true }) : Promise.resolve('no');
   }
 
   /**
