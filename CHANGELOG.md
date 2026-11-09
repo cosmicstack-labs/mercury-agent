@@ -5,6 +5,9 @@
 ### Providers
 - **Remote Ollama behind a username and password.** Set `username` and `password` on Ollama Local, OpenAI-compatible, LM Studio, LiteLLM or Atomic Chat in `mercury.yaml`. Mercury sends them as HTTP Basic auth for chat and for model lists, instead of a Bearer key.
 
+### MCP
+- MCP text resources can be enabled per server: list bounded catalog pages and read sourced documents or schemas, with separate URI permissions and exact unattended approvals. Resource reads still ask under Web Allow All; cancellation and reconnect never replay a read.
+
 ## 1.5.1 — speech uses the voice you chose, Gemini included
 
 ### Speech

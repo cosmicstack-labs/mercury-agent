@@ -175,6 +175,12 @@ export function formatServerList(config: ConfigWithMcp): string[] {
     lines.push(`  tools: ${allow.length ? `allow ${allow.join(', ')}` : 'none allowed'}`
       + (deny.length ? ` · deny ${deny.join(', ')}` : '')
       + (autoApprove.length ? ` · auto-approve ${autoApprove.join(', ')}` : ''));
+    if (server.resources) {
+      const resources = server.resources;
+      lines.push(redactSecrets(`  resources: ${resources.allow?.length ? `allow ${resources.allow.join(', ')}` : 'none allowed'}`
+        + (resources.deny?.length ? ` · deny ${resources.deny.join(', ')}` : '')
+        + (resources.autoApprove?.length ? ` · auto-approve ${resources.autoApprove.join(', ')}` : '')));
+    }
     if (server.env && Object.keys(server.env).length) lines.push(`  env: ${formatPairs(server.env)}`);
     if (server.headers && Object.keys(server.headers).length) lines.push(`  headers: ${formatPairs(server.headers)}`);
     if (server.allowPrivate) lines.push('  private network: allowed');
