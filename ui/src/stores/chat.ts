@@ -7,6 +7,7 @@ export interface ChatState {
   streamingText: string;
   isStreaming: boolean;
   waiting: boolean;
+  eventVersion: number;
 
   // Threads
   threads: ChatThread[];
@@ -55,6 +56,7 @@ export const useChatStore = create<ChatState>((set) => ({
   streamingText: "",
   isStreaming: false,
   waiting: false,
+  eventVersion: 0,
 
   threads: [],
   activeThreadId: getStoredThreadId(),
@@ -103,7 +105,10 @@ export const useChatStore = create<ChatState>((set) => ({
     } else {
       localStorage.removeItem(STORAGE_KEY);
     }
-    set({ activeThreadId: id });
+    set((state) => state.activeThreadId === id ? {} : {
+      activeThreadId: id, messages: [], streamingText: "", isStreaming: false, waiting: false,
+      totalSteps: 0, completedSteps: 0, currentStepTool: "",
+    });
   },
 
   setProvider: (provider) => set({ provider }),

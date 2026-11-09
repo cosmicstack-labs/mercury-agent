@@ -39,6 +39,7 @@ function makeSupervisor() {
     episodic: { record() {} } as any,
     userMemory: null,
     capabilities: {
+      withExecutionContext: (fn: () => unknown) => fn(),
       getCwd: () => process.cwd(),
       setCwd() {},
       setChannelContext() {},

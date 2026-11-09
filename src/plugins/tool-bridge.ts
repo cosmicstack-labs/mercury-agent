@@ -13,6 +13,7 @@
 import { jsonSchema, tool, type Tool } from 'ai';
 import { isMcpToolName } from '../capabilities/mcp/naming.js';
 import type { PermissionManager } from '../capabilities/permissions.js';
+import { currentToolExecutionScope, trackToolExecution, type ToolExecutionScope } from '../capabilities/tool-execution-scope.js';
 import { logger } from '../utils/logger.js';
 
 export interface LiveTool {
@@ -71,16 +72,35 @@ function isToolContent(v: unknown): v is PluginToolContent {
  * base64); toModelOutput() adds the images when the result goes to the model.
  * Bounded: a result the SDK never converts can't leak memory.
  */
-const pendingImages = new Map<string, PluginImage[]>();
-/** Whether the model in use can take images (set by the agent before each provider call). */
-let imagesAllowed = true;
+interface ImageState {
+  readonly pendingImages: Map<string, PluginImage[]>;
+  readonly imagesAllowed: boolean;
+}
+let fallbackImageState: ImageState = { pendingImages: new Map(), imagesAllowed: true };
+let scopedImages = new WeakMap<ToolExecutionScope, ImageState>();
 
+function imageState(): ImageState {
+  const scope = currentToolExecutionScope();
+  if (!scope) return fallbackImageState;
+  let state = scopedImages.get(scope);
+  if (!state) {
+    state = { pendingImages: new Map(), imagesAllowed: true };
+    scopedImages.set(scope, state);
+  }
+  return state;
+}
+
+/** Start an image-result namespace for this provider attempt, within its turn. */
 export function setPluginImagesAllowed(allowed: boolean): void {
-  imagesAllowed = allowed;
+  const state: ImageState = { pendingImages: new Map(), imagesAllowed: allowed };
+  const scope = currentToolExecutionScope();
+  if (scope) scopedImages.set(scope, state);
+  else fallbackImageState = state;
 }
 const MAX_PENDING = 32;
 
-function holdImages(callId: string, images: PluginImage[]): void {
+function holdImages(state: ImageState, callId: string, images: PluginImage[]): void {
+  const { pendingImages } = state;
   pendingImages.set(callId, images);
   while (pendingImages.size > MAX_PENDING) pendingImages.delete(pendingImages.keys().next().value as string);
 }
@@ -177,25 +197,30 @@ function describeArgs(args: Record<string, unknown>): string {
  */
 function wrap(t: LiveTool, permissions: PermissionManager): Tool {
   const full = pluginToolName(t.pluginId, t.name);
+  const state = imageState();
+  const imageKey = (callId: string) => `${full}:${callId}`;
   return tool<Record<string, unknown>, string>({
     description: `[Plugin: ${t.pluginName}] ${t.description}`,
     inputSchema: jsonSchema<Record<string, unknown>>(t.inputSchema as Parameters<typeof jsonSchema>[0]),
     toModelOutput: ({ toolCallId, output }) => {
       const text = typeof output === 'string' ? output : stringifyResult(output);
-      const images = pendingImages.get(toolCallId);
+      const images = state.pendingImages.get(imageKey(toolCallId));
       if (!images?.length) return { type: 'text', value: text };
-      if (!imagesAllowed) return { type: 'text', value: `${text}\n(The current model can't view images, so the attached image was left out. Say so if it matters.)` };
+      if (!state.imagesAllowed) return { type: 'text', value: `${text}\n(The current model can't view images, so the attached image was left out. Say so if it matters.)` };
       return {
         type: 'content',
         value: [{ type: 'text', text }, ...images.map((i) => ({ type: 'image-data' as const, data: i.data, mediaType: i.mimeType }))],
       };
     },
     execute: async (input, options) => {
+      if (options?.toolCallId) state.pendingImages.delete(imageKey(options.toolCallId));
       const args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
       if (!t.readOnly) {
         const approved = await permissions.approvePluginTool(full, `Run plugin tool ${t.pluginName} → ${t.name} with ${describeArgs(args)}`);
         if (!approved) return `Not run: the plugin tool ${full} was not approved.`;
       }
+      // Approval may have been pending when the user stopped this turn.
+      if (options?.abortSignal?.aborted) return `Not run: the plugin tool ${full} was cancelled.`;
       const ac = new AbortController();
       const onOuterAbort = () => ac.abort(new Error('cancelled'));
       options?.abortSignal?.addEventListener('abort', onOuterAbort, { once: true });
@@ -209,11 +234,12 @@ function wrap(t: LiveTool, permissions: PermissionManager): Tool {
         }, t.timeoutMs);
       });
       try {
-        const result = await Promise.race([Promise.resolve().then(() => t.invoke(args, ac.signal)), timeout]);
+        const invocation = trackToolExecution(Promise.resolve().then(() => t.invoke(args, ac.signal)));
+        const result = await Promise.race([invocation, timeout]);
         outcomeSink(t.pluginId, { ok: true });
         if (isToolContent(result)) {
           const images = result.images.filter((i) => PLUGIN_IMAGE_TYPES.has(i.mimeType) && i.data.length <= MAX_IMAGE_CHARS).slice(0, MAX_IMAGES);
-          if (images.length && options?.toolCallId) holdImages(options.toolCallId, images);
+          if (images.length && options?.toolCallId) holdImages(state, imageKey(options.toolCallId), images);
           const note = images.length ? `\n[${images.length} image${images.length > 1 ? 's' : ''} attached]` : '';
           return stringifyResult(`${result.text || 'Done.'}${note}`);
         }
@@ -247,7 +273,8 @@ export function getPluginTools(permissions: PermissionManager, opts: { readOnlyO
 
 /** Test hook. */
 export function resetToolBridge(): void {
-  pendingImages.clear();
+  fallbackImageState = { pendingImages: new Map(), imagesAllowed: true };
+  scopedImages = new WeakMap();
   liveTools.clear();
   liveCommands.clear();
   outcomeSink = () => {};

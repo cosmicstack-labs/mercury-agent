@@ -19,9 +19,11 @@ import {
   permissionContextStore,
   type PermissionContext,
   type ContextScope,
+  type ContextCell,
 } from './permission-context.js';
 
 import type { McpGateRequest, McpGateResult } from './mcp/types.js';
+import { isToolExecutionCancelled } from './tool-execution-scope.js';
 
 export type { PermissionContext } from './permission-context.js';
 
@@ -471,23 +473,33 @@ export class PermissionManager {
    * (session plus any internal-turn grant).
    */
   currentContext(): PermissionContext {
-    const cell = permissionContextStore.getStore();
-    if (cell && cell.owner === this) return cell.ctx;
+    const cell = this.contextCell();
+    if (cell) return this.applyTurnGrant(cell.ctx, cell.turnGrant);
     return this.rootContext();
+  }
+
+  /** Root session defaults, excluding any caller's turn grant or skill elevation. */
+  sessionContext(): PermissionContext {
+    return this.session.elevated.length ? withChanges(this.session, { elevated: [] }) : this.session;
+  }
+
+  private contextCell(): ContextCell | undefined {
+    const cell = permissionContextStore.getStore();
+    return cell?.owner === this ? cell : undefined;
+  }
+
+  private applyTurnGrant(ctx: PermissionContext, grant: { scopes: ContextScope[] } | null): PermissionContext {
+    return grant ? withChanges(ctx, {
+      autoApprove: true,
+      autoApproveOrigin: ctx.autoApprove ? ctx.autoApproveOrigin : 'turn',
+      scopes: [...ctx.scopes, ...grant.scopes],
+    }) : ctx;
   }
 
   private rootContext(): PermissionContext {
     if (this.rootCache) return this.rootCache;
-    let ctx = this.session;
-    if (this.turnGrant) {
-      ctx = withChanges(ctx, {
-        autoApprove: true,
-        autoApproveOrigin: ctx.autoApprove ? ctx.autoApproveOrigin : 'turn',
-        scopes: [...ctx.scopes, ...this.turnGrant.scopes],
-      });
-    }
-    this.rootCache = ctx;
-    return ctx;
+    this.rootCache = this.applyTurnGrant(this.session, this.turnGrant);
+    return this.rootCache;
   }
 
   private ctx(): PermissionContext {
@@ -516,22 +528,39 @@ export class PermissionManager {
    * the main agent's root context changes concurrently.
    */
   withContext<T>(ctx: PermissionContext, fn: () => T): T {
-    return permissionContextStore.run({ owner: this, ctx: Object.isFrozen(ctx) ? ctx : makeContext(ctx) }, fn);
+    return permissionContextStore.run({
+      owner: this,
+      ctx: Object.isFrozen(ctx) ? ctx : makeContext(ctx),
+      turnGrant: null,
+      turnPluginGrants: new Set(),
+      turnAnswers: [],
+    }, fn);
   }
 
   /**
    * Start the grant of one internal (scheduled/background) turn on the
-   * root context: allow-all plus `scopes`, origin `turn`. Not visible to
+   * current context: allow-all plus `scopes`, origin `turn`. Not visible to
    * sub-agents already running, and not inherited by ones spawned during
    * the turn. `endTurnGrant()` removes it and leaves the session (e.g. a
    * user's Allow All) untouched.
    */
   beginTurnGrant(grant: { scopes?: Array<{ path: string; read: boolean; write: boolean }> } = {}): void {
-    this.turnGrant = { scopes: (grant.scopes ?? []).map((s) => ({ ...s, path: resolve(s.path) })) };
+    const turnGrant = { scopes: (grant.scopes ?? []).map((s) => ({ ...s, path: resolve(s.path) })) };
+    const cell = this.contextCell();
+    if (cell) {
+      cell.turnGrant = turnGrant;
+      return;
+    }
+    this.turnGrant = turnGrant;
     this.rootCache = null;
   }
 
   endTurnGrant(): void {
+    const cell = this.contextCell();
+    if (cell) {
+      cell.turnGrant = null;
+      return;
+    }
     this.turnGrant = null;
     this.rootCache = null;
   }
@@ -571,11 +600,15 @@ export class PermissionManager {
     // Every answer the owner gives is evidence for the Owner Model (autonomy,
     // risk per action type); the learning loop drains it once per turn.
     this.askHandler = async (prompt: string) => {
+      if (isToolExecutionCancelled()) return 'no';
       const answer = await handler(prompt);
+      // The prompt may resolve after Stop; a late approval cannot resume work.
+      if (isToolExecutionCancelled()) return 'no';
       if (answer === 'yes' || answer === 'no' || answer === 'always') {
         const action = prompt.split('\n')[0].replace(/:.*$/, '').trim().slice(0, 40) || 'action';
-        this.turnAnswers.push({ action, answer });
-        if (this.turnAnswers.length > 20) this.turnAnswers.shift();
+        const answers = this.contextCell()?.turnAnswers ?? this.turnAnswers;
+        answers.push({ action, answer });
+        if (answers.length > 20) answers.shift();
       }
       return answer;
     };
@@ -583,6 +616,12 @@ export class PermissionManager {
 
   /** Permission answers given since the last drain (the learning loop reads them each turn). */
   drainAnswers(): Array<{ action: string; answer: 'yes' | 'no' | 'always' }> {
+    const cell = this.contextCell();
+    if (cell) {
+      const out = cell.turnAnswers;
+      cell.turnAnswers = [];
+      return out;
+    }
     const out = this.turnAnswers;
     this.turnAnswers = [];
     return out;
@@ -613,13 +652,15 @@ export class PermissionManager {
   private turnPluginGrants = new Set<string>();
 
   setTurnPluginGrants(tools: string[]): void {
-    this.turnPluginGrants = new Set(tools);
+    const cell = this.contextCell();
+    if (cell) cell.turnPluginGrants = new Set(tools);
+    else this.turnPluginGrants = new Set(tools);
   }
 
   async approvePluginTool(toolKey: string, prompt: string): Promise<boolean> {
     const ctx = this.ctx();
     if (this.failClosed) return true;
-    if (this.turnPluginGrants.has(toolKey)) return true;
+    if ((this.contextCell()?.turnPluginGrants ?? this.turnPluginGrants).has(toolKey)) return true;
     if (ctx.channelType === 'internal') return ctx.autoApprove;
     if (this.isGlobalAutoApproveActive()) return true;
     if (this.approvedPluginToolsByContext.get(ctx.channelId)?.has(toolKey)) return true;

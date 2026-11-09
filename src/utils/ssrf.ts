@@ -167,10 +167,31 @@ export async function assertFetchableTarget(rawUrl: string): Promise<URL> {
   return (await resolveAndValidate(rawUrl)).url;
 }
 
+export class PinTable {
+  private readonly pins = new Map<string, { pin: { address: string; family: number }; count: number }>();
+
+  acquire(host: string, pin: { address: string; family: number }): void {
+    const entry = this.pins.get(host);
+    this.pins.set(host, { pin, count: (entry?.count ?? 0) + 1 });
+  }
+
+  release(host: string): void {
+    const entry = this.pins.get(host);
+    if (!entry) return;
+    if (entry.count <= 1) this.pins.delete(host);
+    else entry.count -= 1;
+  }
+
+  get(host: string): { address: string; family: number } | undefined {
+    return this.pins.get(host)?.pin;
+  }
+}
+
 // Pinned lookups for the current in-flight requests, keyed by hostname. The
 // guarded agent consults this table so its connection goes to the exact
-// address that was validated instead of re-resolving.
-const pinnedByHost = new Map<string, PinnedAddress>();
+// address that was validated instead of re-resolving. Retain a host's pin
+// until every overlapping request has released it.
+const pinnedByHost = new PinTable();
 
 const guardedAgent = new Agent({
   connect: {
@@ -196,7 +217,7 @@ export async function guardedFetch(rawUrl: string, signal: AbortSignal, headers?
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const { url, pinned } = await resolveAndValidate(target);
     const host = url.hostname;
-    if (pinned) pinnedByHost.set(host, pinned);
+    if (pinned) pinnedByHost.acquire(host, pinned);
     try {
       const init: FetchInitWithDispatcher = {
         signal,
@@ -215,35 +236,13 @@ export async function guardedFetch(rawUrl: string, signal: AbortSignal, headers?
       }
       return resp;
     } finally {
-      if (pinned && pinnedByHost.get(host)?.address === pinned.address) {
-        pinnedByHost.delete(host);
-      }
+      if (pinned) pinnedByHost.release(host);
     }
   }
   throw new Error('Blocked: too many redirects');
 }
 
 export type GuardedFetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
-
-export class PinTable {
-  private readonly pins = new Map<string, { pin: { address: string; family: number }; count: number }>();
-
-  acquire(host: string, pin: { address: string; family: number }): void {
-    const entry = this.pins.get(host);
-    this.pins.set(host, { pin, count: (entry?.count ?? 0) + 1 });
-  }
-
-  release(host: string): void {
-    const entry = this.pins.get(host);
-    if (!entry) return;
-    if (entry.count <= 1) this.pins.delete(host);
-    else entry.count -= 1;
-  }
-
-  get(host: string): { address: string; family: number } | undefined {
-    return this.pins.get(host)?.pin;
-  }
-}
 
 const guardedFetchPins = new PinTable();
 

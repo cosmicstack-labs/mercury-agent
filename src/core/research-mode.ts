@@ -20,6 +20,23 @@ export class ResearchMode {
   /** The last run in each chat, for Continue / Retry and screens that open later. */
   private lastRuns = new Map<string, ResearchRun>();
 
+  /** Claim this chat's next-run settings without sharing a foreground run. */
+  forkForSession(sessionId: string): ResearchMode {
+    const fork = new ResearchMode();
+    // Screens and Continue / Retry keep observing runs through the root mode.
+    fork.lastRuns = this.lastRuns;
+    if (this.armedForSession(sessionId)) {
+      fork.state = 'on';
+      fork.topic = this.topic;
+      fork.armedFor = sessionId;
+      fork.planFirst = this.planFirst;
+      // Synchronous ownership transfer: another chat cannot claim the same
+      // unscoped arm, and an unrelated chat never consumes a scoped one.
+      this.setOff();
+    }
+    return fork;
+  }
+
   getState(): ResearchModeState {
     return this.run ? 'on' : this.state;
   }

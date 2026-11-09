@@ -34,6 +34,8 @@ export class SaverMode {
   private autoEnabled: boolean;
   /** Opt-in cheap-provider routing flag (off by default). */
   private routingEnabled = false;
+  /** Session snapshots may change locally without rewriting shared settings. */
+  private persistSettings = true;
 
   constructor(private config: MercuryConfig) {
     const cfg = config.tokens as any;
@@ -42,6 +44,19 @@ export class SaverMode {
     if (cfg.saverMode === true) {
       this.state = 'on';
     }
+  }
+
+  /** Independent state/settings for a concurrent session; never persists. */
+  fork(): SaverMode {
+    const fork = new SaverMode({ ...this.config, tokens: { ...this.config.tokens } });
+    fork.state = this.state;
+    fork.autoThreshold = this.autoThreshold;
+    fork.autoNotified = this.autoNotified;
+    fork.postActivationHints = this.postActivationHints;
+    fork.autoEnabled = this.autoEnabled;
+    fork.routingEnabled = this.routingEnabled;
+    fork.persistSettings = false;
+    return fork;
   }
 
   /** Get current state. */
@@ -81,7 +96,7 @@ export class SaverMode {
     this.autoNotified = false;
     this.postActivationHints = 0;
     (this.config.tokens as any).saverMode = true;
-    saveConfig(this.config);
+    if (this.persistSettings) saveConfig(this.config);
     logger.info('Token Saver Mode: manually enabled');
   }
 
@@ -91,7 +106,7 @@ export class SaverMode {
     this.autoNotified = false;
     this.postActivationHints = 0;
     (this.config.tokens as any).saverMode = false;
-    saveConfig(this.config);
+    if (this.persistSettings) saveConfig(this.config);
     logger.info('Token Saver Mode: disabled');
   }
 
@@ -110,7 +125,7 @@ export class SaverMode {
     const clamped = Math.max(0, Math.min(100, Math.round(percent)));
     this.autoThreshold = clamped;
     (this.config.tokens as any).saverAutoThreshold = clamped;
-    saveConfig(this.config);
+    if (this.persistSettings) saveConfig(this.config);
     logger.info({ threshold: clamped }, 'Token Saver auto-threshold updated');
   }
 
@@ -118,7 +133,7 @@ export class SaverMode {
   setAutoEnabled(enabled: boolean): void {
     this.autoEnabled = enabled;
     (this.config.tokens as any).saverAutoEnabled = enabled;
-    saveConfig(this.config);
+    if (this.persistSettings) saveConfig(this.config);
     // If auto is disabled and we were in auto state, drop back to off.
     if (!enabled && this.state === 'auto') {
       this.state = 'off';

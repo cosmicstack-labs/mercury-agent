@@ -150,6 +150,9 @@ export function isSubsetContext(child: PermissionContext, parent: PermissionCont
 export interface ContextCell {
   readonly owner: object;
   ctx: PermissionContext;
+  turnGrant: { scopes: ContextScope[] } | null;
+  turnPluginGrants: Set<string>;
+  turnAnswers: Array<{ action: string; answer: 'yes' | 'no' | 'always' }>;
 }
 
 export const permissionContextStore = new AsyncLocalStorage<ContextCell>();
