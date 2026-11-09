@@ -73,7 +73,7 @@ describe('portable content built by the real Mercury CLI', () => {
     for (const name of ['LICENSE', 'README.md', 'verification-before-completion/SKILL.md', 'skill-install-security-gate/SKILL.md']) {
       expect(skills.has(`mercury-adapted/${name}`)).toBe(true);
     }
-    expect([...skills.keys()].filter((n: string) => n.endsWith('/SKILL.md'))).toHaveLength(40);
+    expect([...skills.keys()].filter((n: string) => n.endsWith('/SKILL.md'))).toHaveLength(42);
     verifyContent(root, dir);
     const catalog = JSON.parse(readFileSync(join(dir, 'mercury-community-plugins.json'), 'utf8'));
     expect(catalog.plugins.map((e: { tier: string }) => e.tier)).toEqual(['community', 'community']);

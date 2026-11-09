@@ -17,14 +17,15 @@ const slugs = ['systematic-debugging', 'test-driven-development', 'verification-
   'shell-wrapper-reliability', 'deterministic-release-zip-builder', 'mcp-server-patterns',
   'image-pdf-production', 'file-organization', 'agent-workstation-backup-recovery',
   'spike', 'blocked-page-recovery', 'static-artifact-release', 'local-file-retrieval',
-  'automation-calibration', 'subagent-delegation', 'video-editing'];
+  'automation-calibration', 'subagent-delegation', 'video-editing',
+  'tabular-data-processing', 'document-text-extraction'];
 const names = slugs.map((s) => `mercury-${s}`).sort();
 
 describe('curated Mercury adaptation pack', () => {
-  it('contains exactly forty unique, discoverable skills without seeding defaults', () => {
+  it('contains exactly forty-two unique, discoverable skills without seeding defaults', () => {
     const loader = new SkillLoader(root, { seedDefaults: false });
     expect(loader.discover().map((s) => s.name).sort()).toEqual(names);
-    expect(readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).length).toBe(40);
+    expect(readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).length).toBe(42);
     for (const name of names) {
       const skill = loader.load(name);
       expect(skill?.version).toBe('0.1.0');

@@ -40,6 +40,12 @@ host's own ffmpeg and ffprobe. It is a rewrite of a general capability, not a po
 of the PolyForm-Noncommercial-1.0.0 hermes-video-editor plugin, and bundles none of
 that plugin's code, presets, schemas or assets.
 
+tabular-data-processing and document-text-extraction are independently authored
+Cosmic Stack instructions. They drive only the host's Python standard library,
+poppler and Tesseract, and are rewrites of general capabilities rather than ports of
+any specific upstream CSV toolkit or OCR wrapper. No upstream code, model, script or
+dataset is bundled.
+
 The adaptations are rewritten for Mercury and are not upstream-endorsed or
 claims of complete compatibility. Original author attribution is retained in
 each skill's metadata. The Hardlight upstream copyright notice is retained above.

@@ -45,14 +45,14 @@ maintains the index. Keep local sources at a stable location. These are local
 `mercury skills update` is registry-oriented. Installation normally targets
 `~/.mercury/skills`, or `$MERCURY_HOME/skills` if overridden.
 
-A fresh profile should list exactly 40 pack skills; an existing profile may have
+A fresh profile should list exactly 42 pack skills; an existing profile may have
 more. Doctor checks index health and registry reachability, so registry outages
 do not establish local installation failure. `mercury skills view <category/slug>
 --raw` reads installed content. Invoke names use the `mercury-` prefix, e.g.
 `#mercury-grounded-citations`, independently of their directory names.
 
 `node scripts/verify-package.cjs` builds and installs the npm tarball, then uses
-its CLI in a temporary Mercury home to install all 40 skills and compare loaded
+its CLI in a temporary Mercury home to install all 42 skills and compare loaded
 bytes with source. It also validates and installs the two optional plugins in
 that temporary profile; it does not change your live profile.
 
@@ -81,6 +81,18 @@ no upstream tool, preset or script is bundled, and it drives only the host's own
 `ffmpeg` and `ffprobe`. Its key commands were executed against a generated test clip
 before shipping, which is where the measured figures in it (keyframe snapping,
 full-decode exit status, loudness offsets) come from.
+
+The fifth addition is the data-handling pair: `tabular-data-processing` for CSV and
+TSV work, and `document-text-extraction` for reading PDFs and images. Both are
+native procedures over tools already on the host — the Python standard library,
+poppler and Tesseract — so neither adds a dependency, an API key or a network call.
+They cover gaps the pack previously had: nothing handled tabular data at all, and
+`image-pdf-production` only built PDFs rather than reading them. Every measured
+figure in both skills was reproduced on this host before shipping: the 1-byte
+form-feed result from `pdftotext` on an image-only page against 1414 bytes recovered
+by Tesseract, the `'\ufeffid'` BOM header key, the 5-token naive comma split against
+3 parsed fields, leading-zero loss (`01234` to `1234`), and the silent `None`/`None:`
+keys from ragged records.
 
 Inventory triage covered 347 active source cards, with 46 archived cards excluded.
 This is not a claim that all source workflows have been implemented or audited in

@@ -6,6 +6,10 @@ const { join, resolve } = require('path');
 const { tmpdir } = require('os');
 
 const ROOT = resolve(__dirname, '..');
+// Single source of truth for the packaged skill count. The slug list itself is
+// derived from the directory below; this constant exists only so an accidental
+// stray directory or a forgotten skill cannot pass silently.
+const EXPECTED_SKILLS = 42;
 const TMP = mkdtempSync(join(tmpdir(), 'mercury-pv-'));
 let tarballPath;
 
@@ -134,14 +138,14 @@ function cli(...args) {
   });
 }
 
-check('all 40 packaged skills install and reload byte-identically via the CLI', () => {
+check('all 42 packaged skills install and reload byte-identically via the CLI', () => {
   const sourceRoot = join(ROOT, 'skills', 'mercury-adapted');
   const shippedRoot = join(modDir, 'skills', 'mercury-adapted');
   for (const name of ['README.md', 'LICENSE']) {
     assert.equal(readFileSync(join(shippedRoot, name), 'utf8'), readFileSync(join(sourceRoot, name), 'utf8'));
   }
   const slugs = readdirSync(sourceRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
-  assert.equal(slugs.length, 40);
+  assert.equal(slugs.length, EXPECTED_SKILLS);
   assert.deepEqual(readdirSync(shippedRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort(), slugs);
   const ids = [];
   for (const slug of slugs) {
@@ -156,7 +160,7 @@ check('all 40 packaged skills install and reload byte-identically via the CLI', 
   }
   const listed = JSON.parse(cli('skills', '--json', 'list'));
   assert.deepEqual(listed.skills.map((skill) => skill.id).sort(), ids.sort());
-  assert.equal(new Set(ids).size, 40);
+  assert.equal(new Set(ids).size, EXPECTED_SKILLS);
 });
 
 check('both packaged plugins validate, install and validate again from their installed paths', () => {
