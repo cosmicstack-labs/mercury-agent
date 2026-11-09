@@ -594,6 +594,12 @@ export function ChatPage() {
     }
   }
 
+  async function handleRenameThread(id: string, title: string) {
+    const renamed = await api.chat.threads.rename(id, title);
+    const { threads, setThreads } = useChatStore.getState();
+    setThreads(threads.map(thread => thread.id === renamed.id ? { ...thread, title: renamed.title } : thread));
+  }
+
   async function handleDeleteThread(id: string) {
     try {
       await api.chat.threads.delete(id);
@@ -655,6 +661,7 @@ export function ChatPage() {
             activeThreadId={activeThreadId}
             onSelect={handleSelectThread}
             onDelete={handleDeleteThread}
+            onRename={handleRenameThread}
             onNew={() => handleNewThread()}
             onExport={handleExportThread}
           />
@@ -687,6 +694,7 @@ export function ChatPage() {
                   setSidebarOpen(false);
                 }}
                 onDelete={handleDeleteThread}
+                onRename={handleRenameThread}
                 onNew={() => {
                   handleNewThread();
                   setSidebarOpen(false);

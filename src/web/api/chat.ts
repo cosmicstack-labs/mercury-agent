@@ -17,6 +17,7 @@ import { join, extname, basename, relative, resolve } from 'node:path';
 import { getMercuryHome, loadConfig, getActiveProviders, type ProviderConfig } from '../../utils/config.js';
 import { basicAuthHeaders } from '../../providers/basic-auth.js';
 import type { SessionRepository } from '../../sessions/index.js';
+import { SessionTitleError } from '../../sessions/repository.js';
 import { loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
 import {
   getModelPref, setModelPref, humanizeModelName, modelGroupLabel,
@@ -753,6 +754,24 @@ chat.get('/api/chat/threads/:id', (c) => {
     return c.json(toThread(sessions.get(id), true));
   } catch {
     return c.json({ error: 'Thread not found' }, 404);
+  }
+});
+
+/** Owner titles survive automatic naming and keep the conversation's position. */
+chat.put('/api/chat/threads/:id/title', async (c) => {
+  if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+  const body: unknown = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || !('title' in body) || typeof body.title !== 'string') {
+    return c.json({ error: 'Send { title: "New chat name" }.' }, 400);
+  }
+  const id = c.req.param('id');
+  try { sessions.get(id); } catch { return c.json({ error: 'Thread not found' }, 404); }
+  try {
+    const session = sessions.updateTitle(id, body.title, 'user', { touch: false });
+    return c.json({ id: session.id, title: session.title });
+  } catch (error) {
+    if (error instanceof SessionTitleError) return c.json({ error: error.message }, 400);
+    return c.json({ error: 'Could not save the chat name. Please try again.' }, 500);
   }
 });
 

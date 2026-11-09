@@ -217,6 +217,7 @@ export const chat = {
   threads: {
     list: () => get<{ threads: ChatThread[] }>("/api/chat/threads"),
     create: (title?: string) => post<ChatThread>("/api/chat/threads", { title }),
+    rename: (id: string, title: string) => put<{ id: string; title: string }>(`/api/chat/threads/${encodeURIComponent(id)}/title`, { title }),
     get: (id: string) => get<ChatThread>(`/api/chat/threads/${id}`),
     delete: (id: string) => post<{ deleted: boolean; syncPending: boolean }>(`/api/chat/threads/${id}/delete`, { confirmSessionId: id }),
     addMessage: (id: string, role: string, content: string) =>

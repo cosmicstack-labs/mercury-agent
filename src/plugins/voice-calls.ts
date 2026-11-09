@@ -30,7 +30,7 @@ export function recordVoiceCalls(sessions: SessionRepository): () => void {
       if (ev.type === 'state') {
         if (s.active && s.callId && current?.callId !== s.callId) {
           const startedAt = s.startedAt ?? Date.now();
-          const session = sessions.create({ title: `Voice call · ${clock(startedAt)}`, titleSource: 'user' });
+          const session = sessions.create({ title: `Voice call · ${clock(startedAt)}`, titleSource: 'generated' });
           current = { callId: s.callId, threadId: session.id, startedAt, saved: 0 };
           voiceFeed.setThread(session.id);
         } else if (!s.active && current && s.endedAt) {
@@ -42,7 +42,7 @@ export function recordVoiceCalls(sessions: SessionRepository): () => void {
             return;
           }
           const secs = (s.endedAt - done.startedAt) / 1000;
-          sessions.updateTitle(done.threadId, `Voice call · ${clock(done.startedAt)} · ${callDuration(secs)}`, 'user');
+          sessions.updateTitle(done.threadId, `Voice call · ${clock(done.startedAt)} · ${callDuration(secs)}`, 'generated');
         }
         return;
       }

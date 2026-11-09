@@ -298,6 +298,13 @@ export async function refreshThreads(): Promise<void> {
   } catch { /* offline: keep what we have */ }
 }
 
+/** Only update local labels after the runtime has persisted the owner's title. */
+export async function renameThread(threadId: string, title: string): Promise<void> {
+  const renamed = await api.chat.renameThread(threadId, title);
+  const { threads, setThreads } = useChat.getState();
+  setThreads(threads.map((thread) => thread.id === renamed.id ? { ...thread, title: renamed.title } : thread));
+}
+
 /**
  * Save a thread to come back to, or unsave it. Shows at once; puts it back
  * if the runtime says no.
