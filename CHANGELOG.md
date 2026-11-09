@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Providers
+- **Remote Ollama behind a username and password.** Set `username` and `password` on Ollama Local, OpenAI-compatible, LM Studio, LiteLLM or Atomic Chat in `mercury.yaml`. Mercury sends them as HTTP Basic auth for chat and for model lists, instead of a Bearer key.
+
 ## 1.5.1 — speech uses the voice you chose, Gemini included
 
 ### Speech

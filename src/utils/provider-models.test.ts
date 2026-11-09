@@ -279,6 +279,23 @@ describe('fetchProviderModelCatalog', () => {
   });
 });
 
+describe('model lists behind Basic auth', () => {
+  const expected = `Basic ${Buffer.from('alice:s3cret').toString('base64')}`;
+  const cfg = (name: 'ollamaLocal' | 'openaiCompat' | 'lmStudio' | 'litellm' | 'atomicChat') => ({
+    name, apiKey: '', baseUrl: 'https://ollama.example.test/v1', model: 'm', enabled: true,
+    username: 'alice', password: 's3cret',
+  });
+
+  it.each([['ollamaLocal'], ['openaiCompat'], ['lmStudio'], ['litellm'], ['atomicChat']] as const)('%s sends the Basic header when listing models', async (name) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ models: [{ name: 'm' }], data: [{ id: 'm' }] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchProviderModelCatalog(name, cfg(name));
+
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ Authorization: expected });
+  });
+});
+
 describe('chat models only', () => {
   it('drops rerankers, embedders and speech models from model lists', async () => {
     const { isChatModelId, buildModelCatalog } = await import('./provider-models.js');
