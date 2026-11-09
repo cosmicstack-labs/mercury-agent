@@ -35,11 +35,17 @@ const SECRET_PATTERNS: RegExp[] = [
   /\bAKIA[0-9A-Z]{16}\b/g,
   // Slack tokens
   /\bxox[bapr]-[A-Za-z0-9-]{10,}\b/g,
+  /\bya29\.[A-Za-z0-9._-]{20,}/g,
+  /\b1\/\/[A-Za-z0-9_-]{20,}/g,
+  /\bGOCSPX-[A-Za-z0-9_-]{20,}/g,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
   // Bearer / authorization headers
   /\b(?:Bearer|token|authorization)\s+[:=]?\s*[A-Za-z0-9._~+/-]{24,}/gi,
   // Generic key=value secrets in config output
   /\b(api[_-]?key|secret|password|access[_-]?token|refresh[_-]?token)\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{12,}/gi,
 ];
+
+const JSON_SECRET = /("(?:api[_-]?key|client[_-]?secret|secret|password|token|access[_-]?token|refresh[_-]?token|id[_-]?token|private[_-]?key)"\s*:\s*")((?:[^"\\]|\\.){8,})"/gi;
 
 /** Keep enough of the key to identify it, mask the rest. */
 function maskMatch(match: string): string {
@@ -62,7 +68,7 @@ export function redactSecrets(text: string): string {
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, maskMatch);
   }
-  return out;
+  return out.replace(JSON_SECRET, (_match, key: string, value: string) => `${key}${maskMatch(value)}"`);
 }
 
 /**
