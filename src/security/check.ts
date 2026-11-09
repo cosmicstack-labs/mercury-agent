@@ -123,7 +123,9 @@ export function gwsFindings(opts: GwsCheckOptions = {}): SecurityFinding[] {
       level: 'warn',
       title: "Mercury's background service can't find gws",
       detail: "The service only looks in the system folders and Node.js's folder, so gws commands fail when Mercury runs as a service.",
-      fix: platform === 'win32' ? `Copy gws.exe from a gws release into ${nodeDir}` : 'sudo ln -s "$(command -v gws)" /usr/local/bin/gws',
+      fix: platform === 'win32'
+        ? `Run mercury google connect --install, or copy gws.exe from a gws release into ${nodeDir}`
+        : 'Run mercury google connect --install, or: sudo ln -s "$(command -v gws)" /usr/local/bin/gws',
     });
   }
   if (out.length === 0) out.push({ level: 'ok', title: 'gws keeps your Google sign-in encrypted, and the service can find it' });

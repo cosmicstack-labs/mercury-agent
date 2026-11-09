@@ -72,6 +72,7 @@ describe('mercury doctor --security: gws', () => {
     expect(linux).toHaveLength(1);
     expect(linux[0]).toMatchObject({ level: 'warn', title: "Mercury's background service can't find gws" });
     expect(linux[0].fix).toContain('/usr/local/bin/gws');
+    expect(linux[0].fix).toContain('mercury google connect --install');
     expect(check('win32')[0].fix).toContain('gws.exe');
   });
 

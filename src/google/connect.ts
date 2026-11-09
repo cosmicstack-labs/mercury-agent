@@ -33,6 +33,7 @@ export interface GoogleStatus {
   signedIn: boolean;
   account: string | null;
   scopes: string[];
+  clientConfigured: boolean;
 }
 
 interface LoginState {
@@ -251,7 +252,13 @@ export async function googleStatus(gwsPath: string): Promise<GoogleStatus> {
     signedIn: status.auth_method === 'oauth2' && status.has_refresh_token !== false,
     account: accountOf(status.user),
     scopes: scopesOf(status.scopes),
+    clientConfigured: status.client_config_exists === true,
   };
+}
+
+export function isReadOnly(scopes: string[]): boolean {
+  const access = scopes.filter((scope) => scope.startsWith('https://www.googleapis.com/auth/') && !/\/auth\/userinfo\./.test(scope));
+  return access.every((scope) => scope.endsWith('.readonly'));
 }
 
 export async function googleLogout(gwsPath: string): Promise<{ removed: number }> {

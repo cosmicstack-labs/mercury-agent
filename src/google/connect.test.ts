@@ -7,6 +7,7 @@ import {
   googleLogout,
   googleStatus,
   gwsVersion,
+  isReadOnly,
   startGoogleLogin,
   submitGoogleRedirect,
   type PendingGoogleLogin,
@@ -29,7 +30,7 @@ if (args[0] === '--version') {
   process.exit(0);
 }
 if (args[0] === 'auth' && args[1] === 'status') {
-  console.log(JSON.stringify({ auth_method: 'oauth2', has_refresh_token: true, user: 'owner@example.com', scopes: ['https://www.googleapis.com/auth/gmail.readonly'] }, null, 2));
+  console.log(JSON.stringify({ auth_method: 'oauth2', has_refresh_token: true, client_config_exists: true, user: 'owner@example.com', scopes: ['https://www.googleapis.com/auth/gmail.readonly'] }, null, 2));
   process.exit(0);
 }
 if (args[0] === 'auth' && args[1] === 'logout') {
@@ -185,8 +186,15 @@ describe('finishing a Google sign-in', () => {
 
 describe('gws status, sign-out and version', () => {
   it('reads who is signed in', async () => {
-    await expect(googleStatus(gwsPath)).resolves.toEqual({ signedIn: true, account: 'owner@example.com', scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
+    await expect(googleStatus(gwsPath)).resolves.toEqual({ signedIn: true, account: 'owner@example.com', scopes: ['https://www.googleapis.com/auth/gmail.readonly'], clientConfigured: true });
   }, 20_000);
+
+  it('tells read-only access from write access', () => {
+    const base = ['openid', 'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile'];
+    expect(isReadOnly([...base, 'https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/drive.readonly'])).toBe(true);
+    expect(isReadOnly([...base, 'https://www.googleapis.com/auth/gmail.modify'])).toBe(false);
+    expect(isReadOnly([...base, 'https://www.googleapis.com/auth/documents'])).toBe(false);
+  });
 
   it('signs out', async () => {
     await expect(googleLogout(gwsPath)).resolves.toEqual({ removed: 2 });
