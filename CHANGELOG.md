@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Google Workspace
+- **Gmail, Drive and Docs through Google's `gws` CLI.** Install gws, sign in once in your own terminal, and add Mercury's skill with `mercury skills install --from https://mercuryagent.sh/skills/google-workspace/SKILL.md`. Mercury doesn't bundle gws. See [Google Workspace](https://mercuryagent.sh/docs/integrations/google-workspace) and ADR-037.
+- **Sends, shares, uploads and deletes always ask.** Mercury reads every gws command first: these ask even under Allow All and after "Always", and are refused in scheduled tasks and for bots. Gmail drafts, reads and other writes follow your permission mode, and "Always" on a read covers that service's reads for the rest of the chat. gws sign-in commands such as `gws auth export` are refused in every mode.
+- **Google sign-ins stay out of reach.** Mercury's file and shell tools refuse gws's `~/.config/gws` and workspace-mcp's `~/.google_workspace_mcp`, and Google tokens, client secrets and private keys are masked in command output.
+- **`mercury doctor --security` checks gws:** a sign-in stored unencrypted, an encryption key kept in a file on macOS or Windows, and a background service that can't find gws.
+
+### Skills
+- **`mercury skills install --from` accepts a SKILL.md without an `id`**, such as the gws project's skills, and installs it under its name the way `/skills install` does.
+
 ## 1.5.1 — speech uses the voice you chose, Gemini included
 
 ### Speech

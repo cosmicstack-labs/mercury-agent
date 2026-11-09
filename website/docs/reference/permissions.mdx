@@ -52,6 +52,19 @@ Mercury maintains a whitelist of safe read-only commands that never require appr
 
 Edit `~/.mercury/permissions.yaml` to customize blocked and auto-approved command patterns. Skill elevation: skills with `allowed-tools` in their SKILL.md get automatic approval for those tools during execution.
 
+### Google Workspace commands (`gws`)
+
+Mercury reads every command for [Google's `gws` CLI](../integrations/google-workspace) before it runs and applies stricter rules to some:
+
+| Kind | Examples | Rule |
+|------|----------|------|
+| Read | `gws gmail +triage`, `gws drive files list` | As above. **Always** covers reads of that service in the chat |
+| Write | Gmail drafts, `gws docs +write` | As above. **Always** covers only that exact command |
+| Send, share, upload, delete | `gws gmail +send`, Drive sharing, `--upload` | **Always asks, even in Allow All** and after **Always**. Refused in scheduled tasks and for bots |
+| Sign-in | `gws auth export`, `gws auth login` | **Refused** in every mode |
+
+A gws command Mercury can't read counts as send, share, upload or delete. Mercury's file and shell tools also refuse gws's own sign-in files (`~/.config/gws`) in every mode.
+
 ## File System Scopes
 
 Mercury uses directory scopes to control file access. When the agent tries to access files in a new directory:
