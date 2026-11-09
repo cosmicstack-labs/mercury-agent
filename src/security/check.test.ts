@@ -30,7 +30,7 @@ function installGws(platform: NodeJS.Platform): void {
 }
 
 function check(platform: NodeJS.Platform, env: NodeJS.ProcessEnv = {}) {
-  return gwsFindings({ home, platform, env, serviceDirs: [bin] });
+  return gwsFindings({ home, platform, env, serviceDirs: [bin], mercuryBinDir: join(home, 'mercury-gws-bin') });
 }
 
 describe('mercury doctor --security: gws', () => {
@@ -73,6 +73,14 @@ describe('mercury doctor --security: gws', () => {
     expect(linux[0]).toMatchObject({ level: 'warn', title: "Mercury's background service can't find gws" });
     expect(linux[0].fix).toContain('/usr/local/bin/gws');
     expect(check('win32')[0].fix).toContain('gws.exe');
+  });
+
+  it('counts the gws Mercury installed as found by the service', () => {
+    writeFileSync(join(gwsDir('.config', 'gws'), 'credentials.enc'), 'x');
+    const own = gwsDir('mercury-gws-bin');
+    writeFileSync(join(own, 'gws'), '');
+    chmodSync(join(own, 'gws'), 0o755);
+    expect(check('linux').map((f) => f.level)).toEqual(['ok']);
   });
 
   it('finds the older macOS and Windows folders', () => {

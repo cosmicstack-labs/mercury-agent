@@ -5,6 +5,7 @@ import { compareSync } from 'bcryptjs';
 import { getMercuryHome } from '../utils/config.js';
 import { resolveFromDirs } from '../capabilities/shell/argv-lane.js';
 import { pinnedServicePath } from '../cli/service.js';
+import { mercuryGwsDir } from '../google/gws-binary.js';
 import { loadPermissionMode } from '../capabilities/permission-mode-store.js';
 import { listDevices } from '../web/devices.js';
 import { loadWebAuth } from '../web/auth.js';
@@ -89,6 +90,7 @@ export interface GwsCheckOptions {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   serviceDirs?: string[];
+  mercuryBinDir?: string;
 }
 
 function gwsConfigDir(home: string, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | null {
@@ -115,7 +117,7 @@ export function gwsFindings(opts: GwsCheckOptions = {}): SecurityFinding[] {
     out.push({ level: 'warn', title: "gws's encryption key is a file next to your Google sign-in", detail: 'Anyone who can read your files can decrypt the sign-in. gws normally keeps the key in the system keychain.', fix: 'Remove GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=file if you set it, then run gws auth login again' });
   }
   const nodeDir = dirname(process.execPath);
-  const serviceDirs = opts.serviceDirs ?? pinnedServicePath(platform, nodeDir, env).split(platform === 'win32' ? ';' : ':');
+  const serviceDirs = [...(opts.serviceDirs ?? pinnedServicePath(platform, nodeDir, env).split(platform === 'win32' ? ';' : ':')), opts.mercuryBinDir ?? mercuryGwsDir()];
   if (!resolveFromDirs('gws', serviceDirs, platform)) {
     out.push({
       level: 'warn',

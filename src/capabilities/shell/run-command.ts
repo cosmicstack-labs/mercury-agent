@@ -9,6 +9,7 @@ import { redactSecrets } from '../../utils/redact.js';
 import { logger } from '../../utils/logger.js';
 import { pulseProgress, TOOL_PULSE_INTERVAL_MS } from '../../core/progress-pulse.js';
 import { planArgvExecution, minimalEnv, type ArgvPlan } from './argv-lane.js';
+import { withMercuryGwsOnPath } from '../../google/gws-binary.js';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_BUFFER = 1024 * 1024;
@@ -41,6 +42,7 @@ export function executeCommand(command: string, cwd: string, timeoutMs: number, 
     cwd,
     shell: true,
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: withMercuryGwsOnPath(),
   }), timeoutMs, options);
 }
 

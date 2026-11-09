@@ -8,7 +8,7 @@ import { OwnerApprovals, _setOwnerApprovals, ownerApprovals } from './owner-appr
 import { closeStreams, trackStream } from './live-streams.js';
 import { readRemoteSettings, writeRemoteSettings } from './remote-settings.js';
 import { parseApprovalReply, isOwnerSender } from './approval-messages.js';
-import { commandTouchesMercuryCredentials, commandTouchesOtherAppCredentials, isMercuryCredentialPath, isOtherAppCredentialPath, protectedReason, realInside } from './protected-paths.js';
+import { commandTouchesMercuryCredentials, commandTouchesMercuryPrograms, commandTouchesOtherAppCredentials, isMercuryCredentialPath, isMercuryProgramPath, isOtherAppCredentialPath, protectedReason, realInside } from './protected-paths.js';
 
 const LOCAL = { incoming: { socket: { remoteAddress: '127.0.0.1' } } };
 const LAN = { incoming: { socket: { remoteAddress: '192.168.1.20' } } };
@@ -237,6 +237,15 @@ describe('files', () => {
     expect(commandTouchesMercuryCredentials(`cat ${home}/devices.json`)).toBe(true);
     expect(commandTouchesMercuryCredentials('cat ~/.mercury/web-sessions.json')).toBe(true);
     expect(commandTouchesMercuryCredentials('ls ~/.mercury/bots')).toBe(false);
+  });
+
+  it("Mercury's own tools can't read or replace the gws Mercury installed", () => {
+    expect(isMercuryProgramPath(join(home, 'gws-bin'))).toBe(true);
+    expect(isMercuryProgramPath(join(home, 'gws-bin', 'gws.exe'))).toBe(true);
+    expect(isMercuryProgramPath(join(home, 'skills', 'gws-gmail', 'SKILL.md'))).toBe(false);
+    expect(commandTouchesMercuryPrograms('copy evil.exe %USERPROFILE%\\.mercury\\gws-bin\\gws.exe')).toBe(true);
+    expect(commandTouchesMercuryPrograms('cp evil ~/.mercury/gws-bin/gws')).toBe(true);
+    expect(commandTouchesMercuryPrograms('gws drive files list')).toBe(false);
   });
 });
 

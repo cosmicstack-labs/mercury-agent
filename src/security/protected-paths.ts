@@ -76,6 +76,18 @@ export function commandTouchesMercuryCredentials(command: string): boolean {
   return mentionsHome && AGENT_DENIED.some((name) => command.includes(name));
 }
 
+const MERCURY_PROGRAMS = ['gws-bin'];
+
+export function isMercuryProgramPath(path: string): boolean {
+  const real = realPathOf(path);
+  const mercury = realPathOf(getMercuryHome());
+  return MERCURY_PROGRAMS.some((name) => within(real, join(mercury, name)) || within(resolve(path), join(resolve(getMercuryHome()), name)));
+}
+
+export function commandTouchesMercuryPrograms(command: string): boolean {
+  return MERCURY_PROGRAMS.some((name) => command.includes(name));
+}
+
 export function isOtherAppCredentialPath(path: string): boolean {
   const real = realPathOf(path);
   const home = realPathOf(homedir());

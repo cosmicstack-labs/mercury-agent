@@ -1,4 +1,4 @@
-import { commandTouchesMercuryCredentials, commandTouchesOtherAppCredentials, isMercuryCredentialPath, isOtherAppCredentialPath } from '../security/protected-paths.js';
+import { commandTouchesMercuryCredentials, commandTouchesMercuryPrograms, commandTouchesOtherAppCredentials, isMercuryCredentialPath, isMercuryProgramPath, isOtherAppCredentialPath } from '../security/protected-paths.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, lstatSync } from 'node:fs';
 import { join, resolve, sep, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -741,6 +741,9 @@ export class PermissionManager {
     if (isOtherAppCredentialPath(path)) {
       return { allowed: false, reason: "Permission denied: that file holds another program's sign-in (Google Workspace). Mercury's tools never read it.", code: 'denied' };
     }
+    if (isMercuryProgramPath(path)) {
+      return { allowed: false, reason: "Permission denied: that is the gws program Mercury installed. Mercury's tools can run gws but never read or change its files.", code: 'denied' };
+    }
     if (mode === 'write') return this.checkScopedAccess(path, mode);
 
     const resolved = resolve(path);
@@ -972,6 +975,9 @@ export class PermissionManager {
     }
     if (commandTouchesOtherAppCredentials(trimmed)) {
       return { allowed: false, reason: "Permission denied: that file holds another program's sign-in (Google Workspace). Mercury's tools never read it.", needsApproval: false };
+    }
+    if (commandTouchesMercuryPrograms(trimmed)) {
+      return { allowed: false, reason: "Permission denied: that is the gws program Mercury installed. Mercury's tools can run gws but never read or change its files.", needsApproval: false };
     }
     const segments = splitShellSegments(trimmed);
     const ctx = this.ctx();

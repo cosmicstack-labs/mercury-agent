@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, linkSync, r
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PermissionManager, splitShellSegments, commandFamily } from './permissions.js';
+import { getMercuryHome } from '../utils/config.js';
 
 describe('splitShellSegments', () => {
   it('passes simple commands through as a single segment', () => {
@@ -797,5 +798,21 @@ describe("other programs' sign-in files", () => {
       expect(check.reason).toContain("another program's sign-in");
     }
     await expect(permissions.checkShellCommand('cat ~/.config/gws/credentials.json')).resolves.toMatchObject({ allowed: false, needsApproval: false });
+  });
+
+  it('include the gws Mercury installed, which can run but never be read or replaced', async () => {
+    const permissions = new PermissionManager();
+    const manifest = permissions.getManifest();
+    manifest.capabilities.shell.enabled = true;
+    manifest.capabilities.shell.blocked = [];
+    permissions.setAutoApproveAll(true);
+    permissions.setCurrentContext('cli', 'cli');
+    for (const mode of ['read', 'write'] as const) {
+      const check = await permissions.checkFsAccess(join(getMercuryHome(), 'gws-bin', 'gws.exe'), mode);
+      expect(check.allowed).toBe(false);
+      expect(check.reason).toContain('the gws program Mercury installed');
+    }
+    await expect(permissions.checkShellCommand('cp evil ~/.mercury/gws-bin/gws')).resolves.toMatchObject({ allowed: false, needsApproval: false });
+    await expect(permissions.checkShellCommand('gws drive files list')).resolves.toMatchObject({ allowed: true });
   });
 });
