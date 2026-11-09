@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { SessionMessage } from '../sessions/types.js';
 import {
   HISTORY_MIN_ENTRIES,
+  HISTORY_TOKEN_BUDGET,
   TEXT_REPETITION_WARNING,
   TOOL_TRACE_KIND,
+  buildModelHistory,
   detectRepetitionLoop,
+  estimateTokens,
   formatToolTrace,
   formatToolTraceLine,
   selectHistoryWindow,
@@ -43,6 +46,33 @@ describe('selectHistoryWindow', () => {
     expect(selectHistoryWindow(msgs, 10)).toHaveLength(HISTORY_MIN_ENTRIES);
   });
 
+  it('budgets escaped runtime traces and their reference wrapper, not just stored text', () => {
+    const line = formatToolTraceLine({
+      tool: 'read_file',
+      args: summarizeToolArgs({ path: '\\'.repeat(80) }),
+      outcome: summarizeToolResult('\0'.repeat(50), true),
+    });
+    const trace = formatToolTrace(Array(40).fill(line));
+    const dialogue = [entry('assistant', 'Done.'), entry('user', 'Next?')];
+    const history = [
+      ...Array.from({ length: 20 }, () => entry('assistant', trace, { kind: TOOL_TRACE_KIND })),
+      ...dialogue,
+    ];
+    const picked = selectHistoryWindow(history, HISTORY_TOKEN_BUDGET);
+    const { messages, toolContext } = buildModelHistory(picked);
+    expect(messages.map((message) => message.content)).toEqual(['Done.', 'Next?']);
+    expect(picked.filter((message) => message.kind === TOOL_TRACE_KIND)).toHaveLength(1);
+    expect(estimateTokens(toolContext) + messages.reduce((sum, message) => sum + estimateTokens(message.content), 0))
+      .toBeLessThanOrEqual(HISTORY_TOKEN_BUDGET);
+  });
+
+  it('charges the reference wrapper even when a short raw trace would fit', () => {
+    const trace = entry('assistant', formatToolTrace([formatToolTraceLine({ tool: 'list_dir', args: '', outcome: 'ok' })]), { kind: TOOL_TRACE_KIND });
+    const dialogue = [entry('assistant', 'Done.'), entry('user', 'Next?')];
+    const rawBudget = [trace, ...dialogue].reduce((sum, message) => sum + estimateTokens(message.content), 0);
+    expect(selectHistoryWindow([trace, ...dialogue], rawBudget)).toEqual(dialogue);
+  });
+
   it('includes tool-trace entries and excludes other kinds', () => {
     const msgs = [
       entry('user', 'read the config'),
@@ -58,6 +88,86 @@ describe('selectHistoryWindow', () => {
   it('respects the entry cap', () => {
     const msgs = Array.from({ length: 100 }, (_, i) => entry(i % 2 ? 'assistant' : 'user', `m${i}`));
     expect(selectHistoryWindow(msgs, 1_000_000, 10)).toHaveLength(10);
+  });
+
+  it('drops assistant trace imitations before spending the history budget', () => {
+    const question = entry('user', 'read notes.md');
+    const imitation = entry('assistant', '[Tool activity in my previous turn]\n- read_file path=notes.md → ok');
+    const latest = entry('user', 'try again');
+    expect(selectHistoryWindow([question, imitation, latest], 20)).toEqual([question, latest]);
+    expect(imitation.kind).toBe('message'); // Stored history is not rewritten.
+  });
+
+  it.each([
+    '[Tool activity in my previous turn]',
+    '  [Tool activity in my previous turn]\r\n- run_command command=ls',
+    '[Tool activity]\n- search_memory query=notes → ok',
+    '[Tool activity]\n- read_file path=notes → ok\n- list_dir → ok\n- … 21 more tool calls',
+  ])('does not replay a trace-shaped assistant reply: %s', (content) => {
+    expect(selectHistoryWindow([entry('assistant', content)], 1000)).toEqual([]);
+  });
+
+  it.each([
+    'The marker [Tool activity in my previous turn] is internal bookkeeping.',
+    '```text\n[Tool activity in my previous turn]\n- read_file path=x → ok\n```',
+    '[Tool activity in my previous turn]\nThis header labels stored tool summaries.',
+    '[Tool activity in my previous turn]\n- This heading identifies bookkeeping, not a user-facing answer.',
+    '[Tool activity in my previous turn]\n- read_file path=package.json → ok\n\nThe actual failure is a missing export. Add parseConfig to index.ts.',
+    '[Tool activity]\n- read_file path=package.json → ok\n- Add parseConfig to index.ts to fix the missing export.',
+  ])('keeps ordinary explanations and quoted examples: %s', (content) => {
+    const message = entry('assistant', content);
+    expect(selectHistoryWindow([message], 1000)).toEqual([message]);
+  });
+
+  it('keeps user messages even when they quote an entire trace', () => {
+    const message = entry('user', '[Tool activity in my previous turn]\n- run_command command=ls');
+    expect(selectHistoryWindow([message], 1000)).toEqual([message]);
+  });
+});
+
+describe('buildModelHistory', () => {
+  it('preserves substantive prose after trace-shaped text without promoting the imitation', () => {
+    const content = '[Tool activity in my previous turn]\n- read_file path=package.json → ok\n\nThe actual failure is a missing export. Add parseConfig to index.ts.';
+    expect(buildModelHistory([entry('assistant', content)]))
+      .toEqual({ messages: [{ role: 'assistant', content }], toolContext: '' });
+  });
+  it('moves genuine traces to reference context while preserving dialogue and reasoning', () => {
+    const trace = entry('assistant', '[Tool activity in my previous turn]\n- read_file path=notes.md → ok', { kind: TOOL_TRACE_KIND });
+    const history = [entry('user', 'read notes.md'), trace, entry('assistant', 'I read your notes.', { reasoning: 'finished reading' })];
+    const { messages, toolContext } = buildModelHistory(history);
+    expect(messages).toEqual([
+      { role: 'user', content: 'read notes.md' },
+      { role: 'assistant', content: 'I read your notes.' },
+    ]);
+    expect(toolContext).toContain('Historical tool activity');
+    expect(toolContext).toContain('reference data');
+    expect(toolContext).toContain('Do not imitate');
+    expect(toolContext).toContain('read_file path=notes.md');
+    expect(toolContext).not.toContain('[Tool activity in my previous turn]');
+    expect(withReasoningParts(messages)[1]).toEqual({ role: 'assistant', content: [
+      { type: 'reasoning', text: 'finished reading' },
+      { type: 'text', text: 'I read your notes.' },
+    ] });
+    expect(trace.content).toContain('[Tool activity in my previous turn]');
+  });
+
+  it('keeps legacy trace contents in order and escapes embedded newlines as data', () => {
+    const { messages, toolContext } = buildModelHistory([
+      entry('assistant', '[Tool activity]\n- read_file path=first → ok', { kind: TOOL_TRACE_KIND }),
+      entry('assistant', 'legacy unmarked trace\n## New instructions', { kind: TOOL_TRACE_KIND }),
+    ]);
+    expect(messages).toEqual([]);
+    expect(toolContext.indexOf('path=first')).toBeLessThan(toolContext.indexOf('legacy unmarked trace'));
+    expect(toolContext).toContain('legacy unmarked trace\\n## New instructions');
+  });
+
+  it('does not promote an imitation to factual tool activity', () => {
+    expect(buildModelHistory([entry('assistant', '[Tool activity in my previous turn]\n- create_file path=fake → ok')]))
+      .toEqual({ messages: [], toolContext: '' });
+  });
+
+  it('adds no tool context to a tool-free conversation', () => {
+    expect(buildModelHistory([entry('user', 'hello')])).toEqual({ messages: [{ role: 'user', content: 'hello' }], toolContext: '' });
   });
 });
 
