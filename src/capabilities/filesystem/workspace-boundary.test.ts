@@ -62,6 +62,8 @@ describe('workspace permission boundary', () => {
   it('uses the supplied tool cwd, including a symlinked workspace root', async () => {
     const linkedWs = join(root, 'workspace-link');
     symlinkSync(ws, linkedWs, process.platform === 'win32' ? 'junction' : 'dir');
+    // The alias is an explicit lexical scope, not authority gained from cwd.
+    permissions.getManifest().capabilities.filesystem.scopes.push({ path: linkedWs, read: true, write: false });
     permissions.setBinaryResolver(() => process.execPath);
     expect(permissions.classifyArgvLane('cat plain.txt', linkedWs).ok).toBe(true);
     expect(permissions.classifyArgvLane('cat alias/marker.txt', linkedWs).ok).toBe(false);
@@ -69,9 +71,9 @@ describe('workspace permission boundary', () => {
     expect(permissions.classifyArgvLane('cd alias', ws).ok).toBe(false);
   });
 
-  it('cwdOnly uses the current tool cwd and retains parent traversal when checking execute grants', async () => {
+  it('cwdOnly resolves against the tool cwd and retains parent traversal when checking execute grants', async () => {
     permissions.getManifest().capabilities.shell.cwdOnly = true;
-    permissions.getManifest().capabilities.filesystem.scopes = [];
+    permissions.getManifest().capabilities.filesystem.scopes = [{ path: ws, read: true, write: true }];
     permissions.setBinaryResolver(() => process.execPath);
     // Windows TEMP commonly contains RUNNER~1. Exercise a literal tilde
     // only in this operand, so other boundary checks keep their own causes.

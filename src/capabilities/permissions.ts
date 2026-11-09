@@ -10,6 +10,7 @@ import { redactSecrets } from '../utils/redact.js';
 import { BLOCKED_COMMANDS } from './shell/blocklist.js';
 import {
   evaluateArgvPolicy,
+  tokenizePosix,
   pinnedBinary,
   IN_PROCESS_BUILTINS,
   type BinaryResolver,
@@ -393,7 +394,8 @@ export function splitShellSegments(command: string): string[] {
 
 export class PermissionManager {
   private manifest: PermissionsManifest;
-  private readonly cwd: string;
+  /** Fixed authority boundary; a session cwd only resolves command operands. */
+  private readonly workspaceRoot: string;
   private askHandler?: (prompt: string) => Promise<string>;
   private turnAnswers: Array<{ action: string; answer: 'yes' | 'no' | 'always' }> = [];
   /**
@@ -442,7 +444,7 @@ export class PermissionManager {
   private botShellAllowList?: string[];
 
   constructor() {
-    this.cwd = process.cwd();
+    this.workspaceRoot = process.cwd();
     this.manifest = this.load();
   }
 
@@ -981,7 +983,7 @@ export class PermissionManager {
    *
    * - **argv lane** (no prompt): the command tokenises into argv with no
    *   shell syntax, `argv[0]` is allowlisted, its flags pass the per-command
-   *   policy, and every path argument stays inside the cwd or a readable
+   *   policy, and every path argument stays inside the workspace or a readable
    *   scope. The caller executes it with execFile from the pinned PATH.
    * - **approval lane**: everything else, including pipelines and chains.
    *   The user sees the exact string; once approved it may use a shell.
@@ -1002,7 +1004,7 @@ export class PermissionManager {
     }
     const segments = splitShellSegments(trimmed);
     const ctx = this.ctx();
-    const cwd = options.cwd ?? this.cwd;
+    const cwd = options.cwd ?? this.workspaceRoot;
     const parsed = evaluateArgvPolicy(trimmed);
     if (parsed.ok && parsed.argv.slice(1).some((arg) => this.argvPathCandidates(arg, cwd, parsed.argv[0])
       .some((path) => isMercuryCredentialPath(resolve(cwd, path))))) {
@@ -1052,11 +1054,10 @@ export class PermissionManager {
 
     if (shell.cwdOnly) {
       for (const segment of segments) {
-        const hasPathTraversal = this.hasPathBeyondCwd(segment, cwd);
-        if (hasPathTraversal) {
-          const scopeCheck = await this.checkFsAccess(hasPathTraversal, 'write');
-          if (!scopeCheck.allowed && !this.isExecuteScoped(hasPathTraversal)) {
-            return { allowed: false, reason: `No permission to access ${hasPathTraversal}. Use approve_scope tool with path="${hasPathTraversal}" and mode="write" to request access.`, needsApproval: false };
+        for (const path of this.pathsBeyondWorkspace(segment, cwd)) {
+          const scopeCheck = await this.checkFsAccess(path, 'write');
+          if (!scopeCheck.allowed && !this.isExecuteScoped(path)) {
+            return { allowed: false, reason: `No permission to access ${path}. Use approve_scope tool with path="${path}" and mode="write" to request access.`, needsApproval: false };
           }
         }
       }
@@ -1208,28 +1209,27 @@ export class PermissionManager {
    * tokenised arguments (after quote removal, so `cat "/etc/passwd"` is
    * seen as the absolute path it is).
    */
-  classifyArgvLane(command: string, cwd: string = this.cwd): { ok: true; argv: string[] } | { ok: false; reason: string } {
+  classifyArgvLane(command: string, cwd: string = this.workspaceRoot): { ok: true; argv: string[] } | { ok: false; reason: string } {
     const verdict = evaluateArgvPolicy(command);
     if (!verdict.ok) return verdict;
     const argv = verdict.argv;
     if (!IN_PROCESS_BUILTINS.has(argv[0]) && !this.binaryResolver(argv[0])) {
       return { ok: false, reason: `${argv[0]} is not installed in the pinned system PATH` };
     }
-    const lexicalCwd = resolve(cwd);
-    const canonicalCwd = this.canonicalizePath(lexicalCwd);
-    const withinCwd = (path: string) => path === canonicalCwd || path.startsWith(canonicalCwd.endsWith(sep) ? canonicalCwd : canonicalCwd + sep);
+    const workspace = resolve(this.workspaceRoot);
+    const canonicalWorkspace = this.canonicalizePath(workspace);
+    const withinWorkspace = (path: string, base: string) => path === base || path.startsWith(base.endsWith(sep) ? base : base + sep);
     const operands = argv[0] === 'cd' && argv.length === 1 ? [homedir()] : argv.slice(1);
     for (const arg of operands) {
       for (const candidate of this.argvPathCandidates(arg, cwd, argv[0])) {
         const resolved = resolve(cwd, candidate.replace(/^~/, homedir()));
         const canonical = this.canonicalizePath(resolved);
-        if (resolved !== lexicalCwd && !resolved.startsWith(lexicalCwd.endsWith(sep) ? lexicalCwd : lexicalCwd + sep)
-          && !this.isLexicallyReadable(resolved)) {
-          return { ok: false, reason: `path ${candidate} is outside the working directory and readable scopes` };
+        if (!withinWorkspace(resolved, workspace) && !this.isLexicallyReadable(resolved)) {
+          return { ok: false, reason: `path ${candidate} is outside the workspace and readable scopes` };
         }
         if (isMercuryCredentialPath(resolved)) return { ok: false, reason: 'path names a Mercury login credential file' };
-        if (!withinCwd(canonical) && !this.isWithinScope(canonical, 'read')) {
-          return { ok: false, reason: `path ${candidate} resolves outside the working directory and readable scopes` };
+        if (!withinWorkspace(canonical, canonicalWorkspace) && !this.isWithinScope(canonical, 'read')) {
+          return { ok: false, reason: `path ${candidate} resolves outside the workspace and readable scopes` };
         }
         try {
           const stat = lstatSync(canonical);
@@ -1411,12 +1411,21 @@ export class PermissionManager {
     return this.findTempScope(resolvedPath)?.execute === true;
   }
 
-  private hasPathBeyondCwd(command: string, cwd: string): string | null {
-    const base = resolve(cwd);
-    for (const candidate of this.extractPathTokens(command, base)) {
-      if (candidate !== base && !candidate.startsWith(base.endsWith(sep) ? base : base + sep)) return candidate;
+  private pathsBeyondWorkspace(command: string, cwd: string): string[] {
+    const base = resolve(this.workspaceRoot);
+    const parsed = tokenizePosix(command);
+    // Decode literal quotes/escapes and include existing relative operands,
+    // just as the argv lane does. Also retain native Windows backslashes and
+    // shell-syntax paths that the POSIX tokenizer cannot faithfully interpret.
+    const paths = this.extractPathTokens(command, cwd);
+    if (parsed.ok) {
+      paths.push(...parsed.argv.flatMap(arg => this.argvPathCandidates(arg, cwd, parsed.argv[0]))
+        .map(path => resolve(cwd, path.replace(/^~/, homedir()))));
     }
-    return null;
+    // Resolve against the session cwd, but never let moving that cwd widen
+    // authority. Check every outside operand, not just the first granted one.
+    return [...new Set(paths)].filter(candidate => candidate !== base
+      && !candidate.startsWith(base.endsWith(sep) ? base : base + sep));
   }
 
   private mergeDefaults(parsed: Partial<PermissionsManifest>): PermissionsManifest {
