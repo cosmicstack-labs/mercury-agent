@@ -42,7 +42,7 @@ describe('attach TUI opens with the launch pad', () => {
 
   it('a slash command typed while /stop is unwinding waits for idle instead of "busy"', () => {
     const agent = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'core', 'agent.ts'), 'utf8').replace(/\r\n/g, '\n');
-    expect(agent).toContain("this.processing && trimmed.startsWith('/') && this.currentAbortReason && !msg.metadata?.waitedForStop");
-    expect(agent).toContain('private waitUntilIdle(maxMs: number): Promise<void>');
+    expect(agent).toContain("laneTurn && trimmed.startsWith('/') && laneTurn.abortReason && !msg.metadata?.waitedForStop");
+    expect(agent).toContain('private waitUntilLaneIdle(laneKey: string, maxMs: number): Promise<void>');
   });
 });

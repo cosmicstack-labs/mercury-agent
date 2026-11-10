@@ -446,6 +446,32 @@ export class SubAgentSupervisor {
     return halted;
   }
 
+  /**
+   * Halt only the agents started from one chat (ADR-037: a /stop in one chat
+   * leaves the others' delegated work running). Delegated grandchildren carry
+   * the same source chat. Returns the ids that were signalled.
+   */
+  async haltForChannel(channelId: string): Promise<string[]> {
+    const fromChannel = (config: SubAgentConfig) => config.sourceChannelId === channelId;
+    const halted: string[] = [];
+    for (const [agentId, agent] of this.activeAgents.entries()) {
+      if (!fromChannel(agent.config)) continue;
+      agent.abort();
+      halted.push(agentId);
+    }
+    const remaining: SubAgentConfig[] = [];
+    for (const config of this.waitQueue) {
+      if (!fromChannel(config)) {
+        remaining.push(config);
+        continue;
+      }
+      this.taskBoard.update(config.id, { status: 'halted', completedAt: Date.now(), progress: 'Halted while queued' });
+      halted.push(config.id);
+    }
+    this.waitQueue = remaining;
+    return halted;
+  }
+
   async pause(agentId: string): Promise<boolean> {
     const agent = this.activeAgents.get(agentId);
     if (!agent) return false;

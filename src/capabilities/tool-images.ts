@@ -1,3 +1,5 @@
+import { ScopedValue } from '../utils/turn-scope.js';
+
 export interface ToolImage {
   data: string;
   mimeType: string;
@@ -16,14 +18,20 @@ export const MAX_TOOL_IMAGE_CHARS = 8_000_000;
 const MAX_PENDING = 32;
 
 const pendingImages = new Map<string, ToolImage[]>();
-let imagesAllowed = true;
+/** Whether the model of the calling turn can see images (per turn once claimed, ADR-037). */
+const imagesAllowed = new ScopedValue(true);
 
 export function setToolImagesAllowed(allowed: boolean): void {
-  imagesAllowed = allowed;
+  imagesAllowed.set(allowed);
 }
 
 export function toolImagesAllowed(): boolean {
-  return imagesAllowed;
+  return imagesAllowed.get();
+}
+
+/** Give the calling turn its own "model sees images" switch (no-op outside a turn). */
+export function claimToolImagesForTurn(): void {
+  imagesAllowed.claim();
 }
 
 export function usableImages(images: ToolImage[]): ToolImage[] {
@@ -45,7 +53,7 @@ export function attachedImagesNote(count: number): string {
 export function toolOutputWithImages(toolCallId: string, text: string): ToolImageOutput {
   const images = pendingImages.get(toolCallId);
   if (!images?.length) return { type: 'text', value: text };
-  if (!imagesAllowed) {
+  if (!imagesAllowed.get()) {
     return { type: 'text', value: `${text}\n(The current model can't view images, so the attached image was left out. Say so if it matters.)` };
   }
   return {

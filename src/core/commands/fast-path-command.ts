@@ -44,8 +44,13 @@ export async function handleFastPathCommand(agent: Agent, msg: ChannelMessage): 
     return;
   }
 
-  if (trimmed === '/halt' || trimmed === '/stop') {
-    await channel.send(await agent.stopAllWork(trimmed === '/stop' ? 'stopped' : 'halted'), msg.channelId);
+  // /stop stops this chat's work; /halt stops everything everywhere (ADR-037).
+  if (trimmed === '/stop') {
+    await channel.send(await agent.stopAllWork('stopped', { channelId: msg.channelId }), msg.channelId);
+    return;
+  }
+  if (trimmed === '/halt') {
+    await channel.send(await agent.stopAllWork('halted'), msg.channelId);
     return;
   }
 
@@ -61,16 +66,23 @@ export async function handleFastPathCommand(agent: Agent, msg: ChannelMessage): 
   }
 
   if (trimmed === '/progress' || trimmed === '/still') {
-    if (!agent.processing || !agent.currentMessage) {
-      await channel.send('No active foreground task.', msg.channelId);
+    const running = agent.runningTurns();
+    const mine = running.find((t) => t.channelId === msg.channelId);
+    if (!mine) {
+      const others = running.length;
+      await channel.send(others > 0
+        ? `Nothing is running in this chat. ${others} task${others === 1 ? '' : 's'} running in other chats.`
+        : 'No active foreground task.', msg.channelId);
       return;
     }
-    const elapsedSec = Math.round((Date.now() - agent.currentMessage.timestamp) / 1000);
-    const stepInfo = agent.completedStepCount > 0 ? ` · step ${agent.completedStepCount}/${MAX_STEPS}` : '';
-    const narrative = formatNarrative(agent.stepNarrative, agent.currentActivity, 10);
+    const elapsedSec = Math.round((Date.now() - mine.startedAt) / 1000);
+    const stepInfo = mine.completedSteps > 0 ? ` · step ${mine.completedSteps}/${MAX_STEPS}` : '';
+    const narrative = formatNarrative(mine.narrative, mine.activity, 10);
     const narrativeBlock = narrative ? `\n${narrative}` : '';
+    const others = running.length - 1;
+    const othersLine = others > 0 ? `\n(${others} more task${others === 1 ? '' : 's'} running in other chats.)` : '';
     await channel.send(
-      `⏳ Task in progress (${elapsedSec}s${stepInfo})${narrativeBlock}\nUse /bg current to move it to background.`,
+      `⏳ Task in progress (${elapsedSec}s${stepInfo})${narrativeBlock}\nUse /bg current to move it to background.${othersLine}`,
       msg.channelId,
     );
     return;
@@ -100,8 +112,14 @@ export async function handleFastPathCommand(agent: Agent, msg: ChannelMessage): 
     const agentList = activeAgents.map(a => `**${a.id}**: ${a.task.slice(0, 40)}`).join(', ');
     await channel.send(`I'm busy working on sub-agent tasks (${agentList}). Your message has been queued — I'll respond once I'm free. Use /agents to check status.`, msg.channelId);
   } else {
-    const elapsedSec = agent.currentMessage ? Math.round((Date.now() - agent.currentMessage.timestamp) / 1000) : 0;
-    await channel.send(`I'm busy processing${elapsedSec > 0 ? ` (${elapsedSec}s elapsed)` : ''}. Use /progress for live status or /bg current to move this task to the background.`, msg.channelId);
+    const mine = agent.runningTurns().find((t) => t.channelId === msg.channelId);
+    if (mine) {
+      const elapsedSec = Math.round((Date.now() - mine.startedAt) / 1000);
+      await channel.send(`I'm busy processing${elapsedSec > 0 ? ` (${elapsedSec}s elapsed)` : ''}. Use /progress for live status or /bg current to move this task to the background.`, msg.channelId);
+    } else {
+      // This chat is free, but every slot is taken by other chats.
+      await channel.send(`I'm working on ${agent.activeTurnCount} other chat${agent.activeTurnCount === 1 ? '' : 's'} right now — yours is next in line and starts as soon as a slot frees up.`, msg.channelId);
+    }
   }
 
   agent.queueMessage(msg);

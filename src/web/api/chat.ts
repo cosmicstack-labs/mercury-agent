@@ -80,7 +80,7 @@ export function setCurrentProviderCallback(fn: () => { name: string; model: stri
   currentProviderFn = fn;
 }
 
-let stopFn: (() => Promise<string>) | null = null;
+let stopFn: ((target?: { channelId?: string; sessionId?: string }) => Promise<string>) | null = null;
 let busyFn: ((sessionId: string) => boolean) | null = null;
 /** Whether a session has a turn running or queued (undo waits for it). */
 export function setSessionBusyLookup(fn: ((sessionId: string) => boolean) | null): void {
@@ -102,8 +102,12 @@ let researchControls: {
 export function setResearchControls(controls: typeof researchControls): void {
   researchControls = controls;
 }
-/** The same stop the terminal's Esc and `/stop` use: abort the running turn, cancel its work entry. */
-export function setStopCallback(fn: () => Promise<string>): void {
+/**
+ * The same stop the terminal's Esc and `/stop` use: abort the running turn,
+ * cancel its work entry. Given a thread or session, only that chat's work
+ * stops (other chats keep running, ADR-037); given neither, everything does.
+ */
+export function setStopCallback(fn: (target?: { channelId?: string; sessionId?: string }) => Promise<string>): void {
   stopFn = fn;
 }
 
@@ -373,11 +377,14 @@ chat.put('/api/chat/settings', async (c) => {
 
 // ─── Permission Resolution ───────────────────────────────────
 
-/** Stop button: interrupt whatever Mercury is doing right now. */
+/** Stop button: interrupt this chat's work (`threadId`/`sessionId`), or everything when neither is given. */
 chat.post('/api/chat/stop', async (c) => {
   if (!stopFn) return c.json({ error: 'Stop is not available on this runtime' }, 503);
   try {
-    const note = await stopFn();
+    const body = await c.req.json<{ threadId?: unknown; sessionId?: unknown }>().catch(() => ({} as { threadId?: unknown; sessionId?: unknown }));
+    const threadId = typeof body.threadId === 'string' && body.threadId ? body.threadId.slice(0, 200) : undefined;
+    const sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId.slice(0, 200) : undefined;
+    const note = await stopFn(threadId || sessionId ? { channelId: threadId, sessionId } : undefined);
     return c.json({ ok: true, note });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);

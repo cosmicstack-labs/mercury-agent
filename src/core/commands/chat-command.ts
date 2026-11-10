@@ -41,7 +41,7 @@ import { createProvider, ProviderRegistry as ProviderRegistryImpl } from '../../
 import { ProgrammingMode } from '../programming-mode.js';
 import { logger } from '../../utils/logger.js';
 import { CLIChannel } from '../../channels/cli.js';
-import { formatToolStep, formatNarrative, type NarrativeStep } from '../../utils/tool-label.js';
+import { formatToolStep, type NarrativeStep } from '../../utils/tool-label.js';
 import { getTelegramHelp, getDiscordHelp, getSlackHelp } from '../../utils/manual.js';
 import { WebChannel } from '../../channels/web.js';
 import { describePermissionMode, loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
@@ -214,18 +214,20 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
   }
 
   if (cmd === '/progress' || cmd === '/still') {
-    if (!agent.processing || !agent.currentMessage) {
+    // Here the chat itself was idle (this command is its turn), so report
+    // what the other chats are doing (ADR-037: they run at the same time).
+    const others = agent.runningTurns().filter((t) => t.channelId !== channelId);
+    if (others.length === 0) {
       await channel.send('No active foreground task.', channelId);
       return true;
     }
-    const elapsedSec = Math.round((Date.now() - agent.currentMessage.timestamp) / 1000);
-    const stepInfo = agent.completedStepCount > 0 ? ` · step ${agent.completedStepCount}/${MAX_STEPS}` : '';
-    const narrative = formatNarrative(agent.stepNarrative, agent.currentActivity, 10);
-    const narrativeBlock = narrative ? `\n${narrative}` : '';
-    await channel.send(
-      `⏳ Task in progress (${elapsedSec}s${stepInfo})${narrativeBlock}\nUse /bg current to move it to background.`,
-      channelId,
-    );
+    const lines = others.map((t) => {
+      const elapsedSec = Math.round((Date.now() - t.startedAt) / 1000);
+      const stepInfo = t.completedSteps > 0 ? ` · step ${t.completedSteps}/${MAX_STEPS}` : '';
+      const doing = (t.activity || t.content).replace(/\s+/g, ' ').trim().slice(0, 80);
+      return `• ${t.channelType} (${elapsedSec}s${stepInfo}): ${doing}`;
+    });
+    await channel.send(`Nothing is running in this chat. Running elsewhere:\n${lines.join('\n')}`, channelId);
     return true;
   }
 
@@ -1752,25 +1754,16 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     return true;
   }
 
+  // Here this chat was idle (the command is its own turn). Other chats may be
+  // running (ADR-037): /halt stops them all, /stop only what this chat started
+  // — a full stop (locks released, task board cleared) when nothing else runs.
   if (cmd === '/halt') {
-    if (!agent.supervisor) {
-      await channel.send('Sub-agents are not available.', channelId);
-      return true;
-    }
-    await agent.supervisor.haltAll();
-    await channel.send('All sub-agents halted and queue cleared.', channelId);
+    await channel.send(await agent.stopAllWork('halted'), channelId);
     return true;
   }
 
   if (cmd === '/stop') {
-    if (!agent.supervisor) {
-      await channel.send('Sub-agents are not available.', channelId);
-      return true;
-    }
-    await agent.supervisor.haltAll();
-    agent.supervisor.clearTaskBoard();
-    agent.lifecycle.transition('idle');
-    await channel.send('All sub-agents stopped, queue cleared, locks released, task board cleared. Short-term memory preserved.', channelId);
+    await channel.send(await agent.stopAllWork('stopped', { channelId }), channelId);
     return true;
   }
 

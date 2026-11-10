@@ -17,9 +17,22 @@ import {
   makeContext,
   withChanges,
   permissionContextStore,
+  newTurnOverlay,
+  TURN_OWNED_FIELDS,
   type PermissionContext,
   type ContextScope,
+  type TurnOverlay,
 } from './permission-context.js';
+
+/** `ctx` with an internal turn's allow-all grant applied (origin `turn` unless the owner already allowed all). */
+function applyTurnGrant(ctx: PermissionContext, grant: { scopes: ContextScope[] } | null): PermissionContext {
+  if (!grant) return ctx;
+  return withChanges(ctx, {
+    autoApprove: true,
+    autoApproveOrigin: ctx.autoApprove ? ctx.autoApproveOrigin : 'turn',
+    scopes: [...ctx.scopes, ...grant.scopes],
+  });
+}
 
 import type { McpGateRequest, McpGateResult, McpResourceGateRequest } from './mcp/types.js';
 import { MCP_LIST_RESOURCES_TOOL, MCP_READ_RESOURCE_TOOL } from './mcp/naming.js';
@@ -481,22 +494,39 @@ export class PermissionManager {
    */
   currentContext(): PermissionContext {
     const cell = permissionContextStore.getStore();
-    if (cell && cell.owner === this) return cell.ctx;
+    if (cell && cell.owner === this) return cell.turn ? this.turnContext(cell.turn) : cell.ctx;
     return this.rootContext();
   }
 
   private rootContext(): PermissionContext {
     if (this.rootCache) return this.rootCache;
-    let ctx = this.session;
-    if (this.turnGrant) {
-      ctx = withChanges(ctx, {
-        autoApprove: true,
-        autoApproveOrigin: ctx.autoApprove ? ctx.autoApproveOrigin : 'turn',
-        scopes: [...ctx.scopes, ...this.turnGrant.scopes],
-      });
-    }
+    const ctx = applyTurnGrant(this.session, this.turnGrant);
     this.rootCache = ctx;
     return ctx;
+  }
+
+  /** A concurrent turn's view: the live session with the turn's own identity and grant over it. */
+  private turnContext(turn: TurnOverlay): PermissionContext {
+    if (turn.cache && turn.cache.session === this.session) return turn.cache.ctx;
+    const ctx = applyTurnGrant(withChanges(this.session, turn.fields), turn.grant);
+    turn.cache = { session: this.session, ctx };
+    return ctx;
+  }
+
+  /** The calling code's turn overlay, when it runs in a main-agent turn of this manager. */
+  private currentTurn(): TurnOverlay | null {
+    const cell = permissionContextStore.getStore();
+    return cell && cell.owner === this && cell.turn ? cell.turn : null;
+  }
+
+  /**
+   * Run one main-agent turn (and everything it awaits or spawns) with its
+   * own identity, elevation, internal grant and plugin grants (ADR-037), so
+   * concurrent turns never see each other's. Sub-agents started inside get
+   * their own context as before (`withContext`).
+   */
+  withTurn<T>(fn: () => T): T {
+    return permissionContextStore.run({ owner: this, ctx: this.session, turn: newTurnOverlay() }, fn);
   }
 
   private ctx(): PermissionContext {
@@ -511,6 +541,25 @@ export class PermissionManager {
    */
   private updateContext(patch: (base: PermissionContext) => Partial<PermissionContext>): void {
     const cell = permissionContextStore.getStore();
+    if (cell && cell.owner === this && cell.turn) {
+      // A concurrent turn: identity/elevation stay with the turn; everything
+      // else (Allow All, scopes the owner approved) is the shared session's,
+      // exactly as it was with one turn at a time. The base never includes
+      // the turn grant, so a grant is never baked into the session.
+      const turn = cell.turn;
+      const changes = patch(withChanges(this.session, turn.fields));
+      const shared: Partial<PermissionContext> = {};
+      for (const [key, value] of Object.entries(changes) as Array<[keyof PermissionContext, unknown]>) {
+        if ((TURN_OWNED_FIELDS as readonly string[]).includes(key)) (turn.fields as Record<string, unknown>)[key] = value;
+        else (shared as Record<string, unknown>)[key] = value;
+      }
+      if (Object.keys(shared).length > 0) {
+        this.session = withChanges(this.session, shared);
+        this.rootCache = null;
+      }
+      turn.cache = null;
+      return;
+    }
     if (cell && cell.owner === this) {
       cell.ctx = withChanges(cell.ctx, patch(cell.ctx));
       return;
@@ -536,11 +585,24 @@ export class PermissionManager {
    * user's Allow All) untouched.
    */
   beginTurnGrant(grant: { scopes?: Array<{ path: string; read: boolean; write: boolean }> } = {}): void {
-    this.turnGrant = { scopes: (grant.scopes ?? []).map((s) => ({ ...s, path: resolve(s.path) })) };
+    const next = { scopes: (grant.scopes ?? []).map((s) => ({ ...s, path: resolve(s.path) })) };
+    const turn = this.currentTurn();
+    if (turn) {
+      turn.grant = next;
+      turn.cache = null;
+      return;
+    }
+    this.turnGrant = next;
     this.rootCache = null;
   }
 
   endTurnGrant(): void {
+    const turn = this.currentTurn();
+    if (turn) {
+      turn.grant = null;
+      turn.cache = null;
+      return;
+    }
     this.turnGrant = null;
     this.rootCache = null;
   }
@@ -622,13 +684,15 @@ export class PermissionManager {
   private turnPluginGrants = new Set<string>();
 
   setTurnPluginGrants(tools: string[]): void {
-    this.turnPluginGrants = new Set(tools);
+    const turn = this.currentTurn();
+    if (turn) turn.pluginGrants = new Set(tools);
+    else this.turnPluginGrants = new Set(tools);
   }
 
   async approvePluginTool(toolKey: string, prompt: string): Promise<boolean> {
     const ctx = this.ctx();
     if (this.failClosed) return true;
-    if (this.turnPluginGrants.has(toolKey)) return true;
+    if ((this.currentTurn()?.pluginGrants ?? this.turnPluginGrants).has(toolKey)) return true;
     if (ctx.channelType === 'internal') return ctx.autoApprove;
     if (this.isGlobalAutoApproveActive()) return true;
     if (this.approvedPluginToolsByContext.get(ctx.channelId)?.has(toolKey)) return true;

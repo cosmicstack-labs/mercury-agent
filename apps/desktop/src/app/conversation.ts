@@ -26,8 +26,8 @@ export interface ConversationState {
   /** The stop button was pressed and the runtime hasn't confirmed yet. */
   stopping: boolean;
   /**
-   * This chat's message is waiting in line: Mercury runs one turn at a time
-   * and another chat's is running. Cleared when this chat's turn starts.
+   * This chat's message is waiting in line: every slot the runtime runs
+   * chats in is taken. Cleared when this chat's turn starts.
    */
   waiting: { position: number; busyWith?: string; busySessionId?: string } | null;
   setWaiting(waiting: ConversationState["waiting"]): void;

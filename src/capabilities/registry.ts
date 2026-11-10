@@ -25,6 +25,7 @@ import { createSaveMemoryTool } from './system/save-memory.js';
 import { createSearchMemoryTool } from './system/search-memory.js';
 import { createSessionHistoryTools } from './system/session-history.js';
 import type { SessionRepository } from '../sessions/repository.js';
+import { ScopedValue } from '../utils/turn-scope.js';
 import { createForgetMemoryTool } from './system/forget-memory.js';
 import { createConfirmBeliefTool } from './system/confirm-belief.js';
 import { createCorrectBeliefTool } from './system/correct-belief.js';
@@ -107,7 +108,8 @@ export class CapabilityRegistry {
   private sendFileHandler?: (filePath: string, channel?: string) => Promise<void>;
   private sendMessageHandler?: (content: string) => Promise<void>;
   private chatCommandContext?: ChatCommandContext;
-  private currentCwd = process.cwd();
+  /** Per turn while a turn claims it (ADR-037); the registry-wide cwd otherwise. */
+  private readonly currentCwd = new ScopedValue(process.cwd());
   private researchModeGetter: (() => boolean) | null = null;
   private mcp?: McpManager;
   private browser?: IsolatedBrowserReader;
@@ -185,7 +187,10 @@ export class CapabilityRegistry {
     return { channelId: ctx.channelId, channelType: ctx.channelType };
   }
 
-  private toolsDisabled = false;
+  private readonly toolsDisabledValue = new ScopedValue(false);
+  private get toolsDisabled(): boolean {
+    return this.toolsDisabledValue.get();
+  }
 
   /**
    * No tools at all for the current turn (a chat channel at "general"
@@ -193,7 +198,7 @@ export class CapabilityRegistry {
    * the plan and narration-guard paths, gets none.
    */
   setToolsDisabled(disabled: boolean): void {
-    this.toolsDisabled = disabled;
+    this.toolsDisabledValue.set(disabled);
   }
 
   areToolsDisabled(): boolean {
@@ -201,13 +206,34 @@ export class CapabilityRegistry {
   }
 
   getCwd(): string {
-    return this.currentCwd;
+    return this.currentCwd.get();
+  }
+
+  /**
+   * Give the calling turn its own working directory and tools switch
+   * (ADR-037), starting from `cwd` (default: the registry-wide one). From
+   * then on `cd`, `setCwd` and `setToolsDisabled` in that turn — and in
+   * anything it awaits or spawns — change only that turn. No-op outside a
+   * turn scope.
+   */
+  claimTurnState(cwd?: string): void {
+    this.currentCwd.claim(cwd ?? this.currentCwd.getGlobal());
+    this.toolsDisabledValue.claim(false);
+  }
+
+  /** The registry-wide working directory (the terminal's), whatever turn is calling. */
+  getGlobalCwd(): string {
+    return this.currentCwd.getGlobal();
+  }
+
+  setGlobalCwd(dir: string): void {
+    this.currentCwd.setGlobal(dir);
   }
 
   /** Returns false (and keeps the current directory) when the cwd guard refuses. */
   setCwd(dir: string): boolean {
     if (this.cwdGuard && !this.cwdGuard(dir)) return false;
-    this.currentCwd = dir;
+    this.currentCwd.set(dir);
     return true;
   }
 

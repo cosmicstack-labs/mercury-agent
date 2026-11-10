@@ -16,9 +16,32 @@ export class ResearchMode {
   /** The chat it was switched on for; null = whichever message comes next. */
   private armedFor: string | null = null;
   private planFirst = false;
-  private run: ResearchRun | null = null;
+  /**
+   * Runs going now, one per chat (ADR-037: chats run at once, so two can be
+   * researching together). Insertion order = start order.
+   */
+  private runs = new Map<string, ResearchRun>();
   /** The last run in each chat, for Continue / Retry and screens that open later. */
   private lastRuns = new Map<string, ResearchRun>();
+  /** The chat the calling turn belongs to (set by the agent); null outside a turn. */
+  private scope: () => string | null = () => null;
+
+  /** Tell research which chat the calling code is working for (the agent's turn scope). */
+  setScope(resolver: () => string | null): void {
+    this.scope = resolver;
+  }
+
+  /**
+   * "The" run for the calling code: inside a turn, that chat's run (never
+   * another chat's); outside one (status screens), the newest run going.
+   */
+  private get run(): ResearchRun | null {
+    const sessionId = this.scope();
+    if (sessionId !== null) return this.runs.get(sessionId) ?? null;
+    let newest: ResearchRun | null = null;
+    for (const r of this.runs.values()) newest = r;
+    return newest;
+  }
 
   getState(): ResearchModeState {
     return this.run ? 'on' : this.state;
@@ -67,7 +90,8 @@ export class ResearchMode {
     this.state = 'off';
     this.armedFor = null;
     this.planFirst = false;
-    this.run = run;
+    this.runs.delete(sessionId);
+    this.runs.set(sessionId, run);
     this.lastRuns.set(sessionId, run);
     if (this.lastRuns.size > 50) this.lastRuns.delete(this.lastRuns.keys().next().value as string);
     logger.info({ runId: run.id, sessionId, topic: run.topic }, 'Research run started');
@@ -80,8 +104,12 @@ export class ResearchMode {
 
   /** The run for this chat: the one going, else its last one. */
   runFor(sessionId: string): ResearchRun | null {
-    if (this.run?.sessionId === sessionId) return this.run;
-    return this.lastRuns.get(sessionId) ?? null;
+    return this.runs.get(sessionId) ?? this.lastRuns.get(sessionId) ?? null;
+  }
+
+  /** The run going in this chat right now, if any. */
+  activeRunFor(sessionId: string): ResearchRun | null {
+    return this.runs.get(sessionId) ?? null;
   }
 
   /** What a screen opening this chat should show. */
@@ -90,12 +118,13 @@ export class ResearchMode {
     return { armed: this.armedForSession(sessionId), planFirst: this.planFirst, topic: this.topic, run: run ? run.snapshot() : null };
   }
 
-  /** The run's turn is over (however it ended). Research is off again. */
-  endRun(): void {
-    if (!this.run) return;
-    if (this.run.outcome === 'running') this.run.end('done');
-    logger.info({ runId: this.run.id, outcome: this.run.outcome }, 'Research run ended');
-    this.run = null;
+  /** The run's turn is over (however it ended). Research is off again for that chat. */
+  endRun(sessionId?: string): void {
+    const run = sessionId !== undefined ? this.runs.get(sessionId) ?? null : this.run;
+    if (!run) return;
+    if (run.outcome === 'running') run.end('done');
+    logger.info({ runId: run.id, outcome: run.outcome }, 'Research run ended');
+    this.runs.delete(run.sessionId);
     this.topic = null;
   }
 

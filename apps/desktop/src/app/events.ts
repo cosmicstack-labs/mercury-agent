@@ -440,7 +440,7 @@ export async function stopTurn(store: ConversationStore): Promise<void> {
   s.setStopping(true);
   if (s.live) s.setLive((l) => ({ ...l, steps: l.steps.map((st) => (st.status === "running" ? { ...st, status: "stopped" as const, endedAt: Date.now() } : st)) }));
   try {
-    await api.chat.stop();
+    await api.chat.stop(s.activeId);
   } catch (err) {
     store.getState().setStopping(false);
     throw err;

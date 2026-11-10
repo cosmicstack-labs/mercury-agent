@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Chats at the same time
+- **Mercury answers several chats at once.** A long research run or coding task in one chat no longer makes the terminal, Telegram, the desktop app or a scheduled task wait. Each chat still handles its own messages in order.
+- **Sized to your machine.** Up to 4 chats run at once, 3 under 8 GB of RAM, and 2 on Termux or under 4 GB. When memory runs short, new chats wait for a free slot, and if memory keeps growing the most recently started task stops while the rest carry on. Set `concurrency.maxTurns` in `mercury.yaml` (or `MERCURY_MAX_CONCURRENT_TURNS`) to choose the limit; `1` restores one chat at a time.
+- **`/stop` stops the chat you're in.** Esc in the terminal, the Stop button in Mercury Desktop and `/stop` in Telegram stop that chat's task and the sub-agents it started. `/halt` still stops everything.
+
 ### Providers
 - **Remote Ollama behind a username and password.** Set `username` and `password` on Ollama Local, OpenAI-compatible, LM Studio, LiteLLM or Atomic Chat in `mercury.yaml`. Mercury sends them as HTTP Basic auth for chat and for model lists, instead of a Bearer key.
 

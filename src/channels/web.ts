@@ -269,8 +269,9 @@ export class WebChannel extends BaseChannel {
    * never reached it, and it showed "Thinking" forever.
    */
   /**
-   * This chat's message is waiting: Mercury runs one turn at a time, and
-   * another one (`busySessionId`, doing `busyWith`) is ahead of it. Sent when it
+   * This chat's message is waiting: every slot Mercury runs chats in is
+   * taken (ADR-037), and another one (`busySessionId`, doing `busyWith`) is
+   * ahead of it. Sent when it
    * joins the line and whenever the line moves; the turn's own events follow
    * when it starts.
    */

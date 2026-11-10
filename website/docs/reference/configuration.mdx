@@ -32,6 +32,19 @@ The sign-in password is set during `mercury setup` (or `mercury web-reset-passwo
 
 Remote access (other devices, the IP allow-list, device limits) is managed with `/server` in the terminal or `mercury server`.
 
+## Chats at the same time
+
+Mercury answers several chats at once: your terminal, a Telegram chat, two desktop conversations and a scheduled task can all run together. Each chat still handles its own messages one after another, in order.
+
+How many run at once is set automatically from memory and platform: up to 4, 3 on machines under 8 GB of RAM, and 2 on Termux or under 4 GB. If memory gets tight, new chats wait for a free slot. If it keeps growing, Mercury stops the most recently started task and leaves the others running. To set the limit yourself, add this to `~/.mercury/mercury.yaml` and restart Mercury:
+
+```yaml
+concurrency:
+  maxTurns: 3   # 1 = one chat at a time; 0 = automatic (default); at most 16
+```
+
+Or set `MERCURY_MAX_CONCURRENT_TURNS`. `/stop` stops the chat you type it in, and `/halt` stops all of them.
+
 ## Optional tool discovery
 
 If you have many plugin or MCP tools, you can load their schemas only when the main agent needs them. Add this to `~/.mercury/mercury.yaml` and restart Mercury:

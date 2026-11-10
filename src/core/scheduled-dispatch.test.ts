@@ -6,6 +6,7 @@ import { Agent } from './agent.js';
 import { WorkLedger } from './work-ledger.js';
 import { Scheduler, type ScheduledTaskManifest } from './scheduler.js';
 import type { MercuryConfig } from '../utils/config.js';
+import { bareTurnFields } from './testing/fake-turns.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -24,16 +25,16 @@ function harness(fail = false) {
   const internal = agent as unknown as {
     currentWorkKey: string;
     handleScheduledTask(manifest: ScheduledTaskManifest, runId: string): Promise<'queued'>;
-    processQueue(): Promise<void>;
+    processQueue(): void;
   };
   const scheduler = new Scheduler({ heartbeat: { intervalMinutes: 30 } } as MercuryConfig,
     (manifest, runId) => internal.handleScheduledTask(manifest, runId));
   const effect = vi.fn();
   Object.assign(agent, {
-    scheduler, workLedger, messageQueue: [], queuedWorkKeys: new Set(), processing: false, running: false,
-    currentMessage: null, currentWorkKey: null,
+    ...bareTurnFields(),
+    scheduler, workLedger, running: false,
     channels: { get: () => undefined, getNotificationChannel: () => undefined },
-    lifecycle: { is: () => true },
+    globalLifecycle: { is: () => true },
     announceQueue: () => {},
     withSessionProgramming: (_msg: unknown, run: () => Promise<void>) => run(),
     handleMessage: async () => {
@@ -54,7 +55,8 @@ describe('scheduled main-agent dispatch', () => {
     expect(scheduler.getManifest('scheduled')?.lastRun?.status).toBe('running');
     expect(effect).not.toHaveBeenCalled();
     Object.assign(agent, { running: true });
-    await internal.processQueue();
+    internal.processQueue();
+    await agent.whenIdle();
     expect(effect).toHaveBeenCalledOnce();
     expect(scheduler.getManifest('scheduled')?.lastRun?.status).toBe(fail ? 'failed' : 'completed');
     scheduler.stopAll();

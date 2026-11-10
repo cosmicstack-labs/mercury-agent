@@ -59,13 +59,13 @@ Mercury: I've delegated both tasks to parallel agents. Agent a1 is building the 
 | `/bg: <task>` | Run a natural-language sub-agent task in background |
 | `/bg current` | Move current in-flight task to a background sub-agent |
 | `/bg list` | List shell + sub-agent background tasks |
-| `/halt` | Emergency: halt all sub-agents and clear the task queue |
-| `/stop` | Full stop: halt agents, clear queue, release file locks, clear task board |
+| `/halt` | Emergency: stop every chat's task and halt all sub-agents |
+| `/stop` | Stop this chat's task and the sub-agents it started. When nothing else is running, also release file locks and clear the task board |
 | `/reset` | Full reset: stop all + clear conversation context (requires confirmation) |
 
 :::tip[`/halt` vs `/stop` vs `/reset`]
 
-**`/halt`** stops all agents but preserves conversation context and file locks. **`/stop`** goes further — it also releases file locks and clears the task board. **`/reset`** does everything `/stop` does plus clears the conversation context (requires confirmation).
+Chats run at the same time, so **`/stop`** stops only the chat you type it in: its task and the sub-agents it started. When nothing else is running, it also releases file locks and clears the task board. **`/halt`** stops every chat's task and all agents, but keeps file locks. **`/reset`** clears the conversation context as well (requires confirmation).
 
 :::
 

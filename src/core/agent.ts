@@ -27,6 +27,10 @@ import { getMercuryHome } from '../utils/config.js';
 import { createProvider } from '../providers/registry.js';
 import type { BaseProvider } from '../providers/base.js';
 import { Lifecycle } from './lifecycle.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { runInTurnScope } from '../utils/turn-scope.js';
+import { claimToolImagesForTurn } from '../capabilities/tool-images.js';
+import { TurnGovernor, machineFacts, resolveTurnLimit, type GovernedTurn } from './turn-governor.js';
 import { Scheduler } from './scheduler.js';
 import { ProgrammingMode, scopedProgrammingState, type ProgrammingSnapshot } from './programming-mode.js';
 import { ResearchMode } from './research-mode.js';
@@ -92,8 +96,8 @@ import { WorkLedger, type WorkEntry } from './work-ledger.js';
 import { MAX_PROVIDER_ATTEMPT_MS, MAX_AUTOMATIC_CONTINUATIONS, needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
 import { requiresFinalSend } from './response-delivery.js';
 import { updateCliProviderStatus } from './provider-status.js';
-import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
-import { compactConversation, memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
+import { compactConversation } from './memory-governor.js';
+import { writeCrashFlag } from './crash-flag.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
@@ -573,25 +577,181 @@ export function looksLikeCodingTask(text: string): boolean {
 }
 
 
-export class Agent {
+export type AbortReason = 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted';
+
+/** One running turn (ADR-037): everything that used to be a single field on the agent. */
+interface TurnState {
+  readonly id: string;
+  readonly laneKey: string;
+  readonly message: ChannelMessage;
+  readonly startedAt: number;
+  abort: AbortController | null;
+  abortReason: AbortReason | null;
+  activity: string;
+  completedStepCount: number;
+  stepNarrative: import('../utils/tool-label.js').NarrativeStep[];
+  workKey: string | null;
+  lastProgressAt: number;
+  lastTypingAt: number;
+  injectedBeliefIds: string[];
   readonly lifecycle: Lifecycle;
+  /** A desktop Code session's own programming mode; null = the global one. */
+  programming: ProgrammingMode | null;
+  /** Set once the turn has fully ended (late timers check it). */
+  done: boolean;
+}
+
+/**
+ * The lane a message runs in: one turn at a time per lane, lanes run
+ * concurrently (ADR-037). A canonical session id when the message names
+ * one; else the channel's conversation. The terminal is one lane.
+ */
+export function laneKeyFor(msg: ChannelMessage): string {
+  if (msg.channelType === 'cli') return 'cli';
+  const sessionId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
+  if (sessionId) return `session:${sessionId}`;
+  if (msg.channelType === 'internal') {
+    const task = typeof msg.metadata?.scheduledTaskId === 'string' ? msg.metadata.scheduledTaskId : msg.channelId;
+    return `internal:${task}`;
+  }
+  const conversation = typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
+  return `${msg.channelType}:${conversation}`;
+}
+
+export class Agent {
+  private readonly globalLifecycle: Lifecycle;
   readonly scheduler: Scheduler;
   readonly capabilities: CapabilityRegistry;
   private running = false;
+  /** Messages waiting for their chat's lane (and a free slot), in order (ADR-037). */
   private messageQueue: Array<{ message: ChannelMessage; workKey?: string }> = [];
   private queuedWorkKeys = new Set<string>();
-  processing = false;
+  /**
+   * Concurrent sessions (ADR-037). One running turn per lane (a chat /
+   * session); different lanes run at once, as many as the governor admits.
+   * Each turn's state lives in its own TurnState, carried through
+   * everything the turn awaits by `turnStore`; the fields below
+   * (currentMessage, currentAbort, …) read and write the CALLING turn's.
+   */
+  private readonly activeTurns = new Map<string, TurnState>();
+  private readonly turnStore = new AsyncLocalStorage<TurnState>();
+  readonly governor: TurnGovernor;
+  private turnSeq = 0;
+  private lastAdmitRefusal: string | null = null;
+  /** Each chat's working directory between its turns (the terminal's is the registry-wide one). */
+  private readonly laneCwd = new Map<string, string>();
   telegramStreaming: boolean;
-  currentMessage: ChannelMessage | null = null;
-  currentAbort: AbortController | null = null;
-  currentAbortReason: 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted' | null = null;
-  private lastProgressAt = 0;
-  currentActivity = '';
-  completedStepCount = 0;
-  stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
+
+  /** The calling turn, if the calling code runs inside one. */
+  private turn(): TurnState | undefined {
+    return this.turnStore.getStore();
+  }
+
+  /** Is any turn running? (Use isLaneBusy / turnForChannel for one chat.) */
+  get processing(): boolean {
+    return this.activeTurns.size > 0;
+  }
+
+  /** How many turns are running right now. */
+  get activeTurnCount(): number {
+    return this.activeTurns.size;
+  }
+
+  /** The calling turn's message (null outside a turn). */
+  get currentMessage(): ChannelMessage | null {
+    return this.turn()?.message ?? null;
+  }
+
+  get currentAbort(): AbortController | null {
+    return this.turn()?.abort ?? null;
+  }
+  set currentAbort(value: AbortController | null) {
+    const t = this.turn();
+    if (t) t.abort = value;
+  }
+
+  get currentAbortReason(): AbortReason | null {
+    return this.turn()?.abortReason ?? null;
+  }
+  set currentAbortReason(value: AbortReason | null) {
+    const t = this.turn();
+    if (t) t.abortReason = value;
+  }
+
+  private get lastProgressAt(): number {
+    return this.turn()?.lastProgressAt ?? 0;
+  }
+  private set lastProgressAt(value: number) {
+    const t = this.turn();
+    if (t) t.lastProgressAt = value;
+  }
+
+  get currentActivity(): string {
+    return this.turn()?.activity ?? '';
+  }
+  set currentActivity(value: string) {
+    const t = this.turn();
+    if (t) t.activity = value;
+  }
+
+  get completedStepCount(): number {
+    return this.turn()?.completedStepCount ?? 0;
+  }
+  set completedStepCount(value: number) {
+    const t = this.turn();
+    if (t) t.completedStepCount = value;
+  }
+
+  get stepNarrative(): import('../utils/tool-label.js').NarrativeStep[] {
+    return this.turn()?.stepNarrative ?? [];
+  }
+  set stepNarrative(value: import('../utils/tool-label.js').NarrativeStep[]) {
+    const t = this.turn();
+    if (t) t.stepNarrative = value;
+  }
+
+  private get currentWorkKey(): string | null {
+    return this.turn()?.workKey ?? null;
+  }
+  private set currentWorkKey(value: string | null) {
+    const t = this.turn();
+    if (t) t.workKey = value;
+  }
+
+  private get lastTypingAt(): number {
+    return this.turn()?.lastTypingAt ?? 0;
+  }
+  private set lastTypingAt(value: number) {
+    const t = this.turn();
+    if (t) t.lastTypingAt = value;
+  }
+
+  /** Beliefs injected into the calling turn's prompt (set by retrieveMemoryContext, ADR-026). */
+  get lastInjectedBeliefIds(): string[] {
+    return this.turn()?.injectedBeliefIds ?? [];
+  }
+  set lastInjectedBeliefIds(value: string[]) {
+    const t = this.turn();
+    if (t) t.injectedBeliefIds = value;
+  }
+
+  /**
+   * The calling turn's lifecycle (thinking → responding → idle); outside a
+   * turn, the runtime's own (birth, sleep, idle).
+   */
+  get lifecycle(): Lifecycle {
+    return this.turn()?.lifecycle ?? this.globalLifecycle;
+  }
+
+  /**
+   * The calling turn's programming mode: a desktop Code session's own one
+   * inside its turns, else the terminal's (global) one.
+   */
+  get programmingMode(): ProgrammingMode {
+    return this.turn()?.programming ?? this.globalProgrammingMode;
+  }
   supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   botManager?: import('../bots/bot-manager.js').BotManager;
-  private lastTypingAt = 0;
   /** Bot awaiting a persona from the next message (post-create setup flow). */
   /**
    * A terminal beside a live daemon (ADR-024): the daemon owns persisted
@@ -615,7 +775,8 @@ export class Agent {
   readonly lastNotedBeliefId = new Map<string, string>();
   /** When the last "☿ Noted" went out per channel: at most one every few minutes, so an upgrade's backlog never floods a chat. */
   private readonly lastNotedAt = new Map<string, number>();
-  readonly programmingMode: ProgrammingMode;
+  /** The terminal's programming mode (and every turn's that isn't a desktop Code session). */
+  readonly globalProgrammingMode: ProgrammingMode;
   readonly researchMode: ResearchMode;
   readonly saverMode: SaverMode;
   spotifyClient?: SpotifyClient;
@@ -630,16 +791,13 @@ export class Agent {
   private statusVerbsDisabled = false;
   sessionSyncEnabled = false;
   private readonly workLedger: WorkLedger;
-  private currentWorkKey: string | null = null;
   private outboxRetryTimer: ReturnType<typeof setInterval> | null = null;
   private replayingOutbox = false;
-  /** Beliefs injected into the current turn's prompt (set by retrieveMemoryContext, ADR-026). */
-  lastInjectedBeliefIds: string[] = [];
   /** "About {owner}" / "How to work with {owner}", recomputed only when the beliefs change (keeps the prompt prefix cacheable). */
   private readonly ownerSections = createOwnerSectionsMemo();
   private reflectionInFlight: Promise<void> | null = null;
-  /** Beliefs the previous turn acted on; credited as "acted on without objection" once the next owner message shows no correction. */
-  private pendingActedOn: { ids: string[]; sessionId?: string } | null = null;
+  /** Per session: beliefs its previous turn acted on; credited as "acted on without objection" once the owner's next message there shows no correction. */
+  private readonly pendingActedOn = new Map<string, string[]>();
 
   constructor(
     public config: MercuryConfig,
@@ -656,14 +814,21 @@ export class Agent {
     public sessions: SessionRepository,
     private generateTitle?: (input: { userMessage: string; assistantMessage: string; providerName: string }) => Promise<string>,
   ) {
-    this.lifecycle = new Lifecycle();
+    this.globalLifecycle = new Lifecycle();
     this.scheduler = scheduler;
     this.capabilities = capabilities;
     this.capabilities.setSessionRepository(sessions);
     this.installProgressPulse();
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
-    this.programmingMode = new ProgrammingMode();
+    this.globalProgrammingMode = new ProgrammingMode();
     this.researchMode = new ResearchMode();
+    // Research runs are per chat: inside a turn, "the" run is that chat's.
+    this.researchMode.setScope(() => this.turn()?.message.channelId ?? null);
+    this.governor = new TurnGovernor({
+      limit: resolveTurnLimit(config.concurrency?.maxTurns, machineFacts()),
+      onExit: (heapUsed) => this.exitForMemory(heapUsed),
+    });
+    logger.info({ maxTurns: this.governor.limit() }, 'Concurrent turns: limit set');
     this.saverMode = new SaverMode(config);
     this.wireResearchModeToCapabilities();
     this.backgroundTasks = new BackgroundTaskManager();
@@ -962,18 +1127,22 @@ export class Agent {
       }
     }
 
-    // /stop is asynchronous: the abort lands, the turn unwinds, THEN
-    // processing clears. A command typed in that window used to be answered
+    // /stop is asynchronous: the abort lands, the turn unwinds, THEN the
+    // chat's lane frees. A command typed in that window used to be answered
     // "Agent is busy" — wait for the stop to finish and route it normally.
-    if (this.processing && trimmed.startsWith('/') && this.currentAbortReason && !msg.metadata?.waitedForStop) {
-      void this.waitUntilIdle(5000).then(() => {
+    const lane = laneKeyFor(msg);
+    const laneTurn = this.activeTurns.get(lane);
+    if (laneTurn && trimmed.startsWith('/') && laneTurn.abortReason && !msg.metadata?.waitedForStop) {
+      void this.waitUntilLaneIdle(lane, 5000).then(() => {
         msg.metadata = { ...msg.metadata, waitedForStop: true };
         this.enqueueMessage(msg);
       });
       return;
     }
 
-    if (this.processing && trimmed.startsWith('/')) {
+    // A command for a chat that is busy (or while every slot is taken) is
+    // answered on the fast path instead of waiting behind long work.
+    if (trimmed.startsWith('/') && (laneTurn || !this.governor.canAdmit(this.activeTurns.size).ok)) {
       this.handleFastPathCommand(msg).catch((err) => {
         logger.error({ err, content: trimmed.slice(0, 50) }, 'Fast-path command failed');
       });
@@ -984,7 +1153,7 @@ export class Agent {
     if (!trimmed.startsWith('/')) {
       msg.metadata = {
         ...msg.metadata,
-        workCwd: typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : this.capabilities.getCwd(),
+        workCwd: typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : this.cwdForLane(lane),
       };
       const accepted = this.workLedger.accept(msg);
       workKey = accepted.entry.key;
@@ -1161,36 +1330,127 @@ export class Agent {
   }
 
   /**
-   * Tell every waiting desktop/web chat where it stands: its place in line,
-   * and the turn running now (which chat, and what it's doing). Without this
-   * a waiting chat showed "Thinking" for a turn that hadn't started.
+   * What a waiting message waits for (ADR-037): its own chat's running turn
+   * when there is one, else (every slot taken) the oldest running turn.
    */
-  private announceQueue(running: ChannelMessage | null = this.processing ? this.currentMessage : null): void {
-    if (!running) return;
+  private blockingTurnFor(msg: ChannelMessage): TurnState | undefined {
+    const own = this.activeTurns.get(laneKeyFor(msg));
+    if (own) return own;
+    let oldest: TurnState | undefined;
+    for (const t of this.activeTurns.values()) if (!oldest || t.startedAt < oldest.startedAt) oldest = t;
+    return oldest;
+  }
+
+  private describeTurn(t: TurnState): string {
+    return (t.activity || t.message.content).replace(/^\W+/u, '').replace(/\s+/g, ' ').trim().slice(0, 90) || 'another task';
+  }
+
+  /**
+   * A waiting message's place in line: the messages ahead of it that start
+   * before it — earlier ones in its own chat, and earlier ones from chats
+   * that are free (they take the next free slot first). Messages of other
+   * busy chats wait for their own chat, not for a slot, so they don't count.
+   */
+  private positionOf(index: number): number {
+    const lane = laneKeyFor(this.messageQueue[index].message);
+    let ahead = 0;
+    for (let i = 0; i < index; i++) {
+      const other = laneKeyFor(this.messageQueue[i].message);
+      if (other === lane || !this.activeTurns.has(other)) ahead++;
+    }
+    return ahead + 1;
+  }
+
+  /**
+   * Tell every waiting desktop/web chat where it stands: its place in its
+   * chat's line, and the turn it waits for (which chat, and what it's
+   * doing). Without this a waiting chat showed "Thinking" for a turn that
+   * hadn't started.
+   */
+  private announceQueue(): void {
+    if (this.activeTurns.size === 0) return;
     const web = this.channels.get('web') as unknown as { sendQueued?: (t: string, d: { position: number; busyWith?: string; busySessionId?: string }) => void } | undefined;
     if (!web?.sendQueued) return;
-    const busyWith = (this.currentActivity && this.currentMessage === running ? this.currentActivity : running.content)
-      .replace(/^\W+/u, '').replace(/\s+/g, ' ').trim().slice(0, 90) || 'another task';
-    const busySessionId = running.channelType === 'web' ? running.channelId : undefined;
     this.messageQueue.forEach((item, i) => {
       const m = item.message;
-      if (m.channelType !== 'web' || m.channelId === busySessionId) return;
-      web.sendQueued!(m.channelId, { position: i + 1, busyWith, busySessionId });
+      if (m.channelType !== 'web') return;
+      const blocking = this.blockingTurnFor(m);
+      if (!blocking) return;
+      // Its own chat is running: that chat already shows the running turn.
+      if (blocking.laneKey === laneKeyFor(m)) return;
+      const busySessionId = blocking.message.channelType === 'web' ? blocking.message.channelId : undefined;
+      web.sendQueued!(m.channelId, { position: this.positionOf(i), busyWith: this.describeTurn(blocking), busySessionId });
     });
   }
 
   /** Where one chat's work stands, for a chat opened while it waits. */
   queueStateFor(channelId: string): { state: 'running' | 'queued' | 'none'; position?: number; busyWith?: string; busySessionId?: string } {
-    if (this.processing && this.currentMessage?.channelId === channelId) return { state: 'running' };
+    if (this.turnForChannel(channelId)) return { state: 'running' };
     const at = this.messageQueue.findIndex((i) => i.message.channelId === channelId);
     if (at === -1) return { state: 'none' };
-    const running = this.processing ? this.currentMessage : null;
+    const blocking = this.blockingTurnFor(this.messageQueue[at].message);
     return {
       state: 'queued',
-      position: at + 1,
-      busyWith: running ? (this.currentActivity || running.content).replace(/\s+/g, ' ').trim().slice(0, 90) : undefined,
-      busySessionId: running?.channelType === 'web' ? running.channelId : undefined,
+      position: this.positionOf(at),
+      busyWith: blocking ? this.describeTurn(blocking) : undefined,
+      busySessionId: blocking?.message.channelType === 'web' ? blocking.message.channelId : undefined,
     };
+  }
+
+  /** The running turn for this chat (by channel id), if any. */
+  turnForChannel(channelId: string): TurnState | undefined {
+    for (const t of this.activeTurns.values()) if (t.message.channelId === channelId) return t;
+    return undefined;
+  }
+
+  /** The running turn for a canonical session (a cloud request's channel id is per request; its session is not). */
+  turnForSession(sessionId: string): TurnState | undefined {
+    for (const t of this.activeTurns.values()) {
+      const of = t.message.sessionId ?? (typeof t.message.metadata?.sessionId === 'string' ? t.message.metadata.sessionId : undefined);
+      if (of === sessionId) return t;
+    }
+    return undefined;
+  }
+
+  /** Is this message's chat running a turn right now? */
+  isLaneBusy(msg: ChannelMessage): boolean {
+    return this.activeTurns.has(laneKeyFor(msg));
+  }
+
+  /** The running turn of this message's chat, if any (fast-path commands act on it). */
+  turnFor(msg: ChannelMessage): TurnState | undefined {
+    return this.activeTurns.get(laneKeyFor(msg));
+  }
+
+  /** Every running turn, oldest first: what each chat is doing (for /progress, status screens). */
+  runningTurns(): Array<{ laneKey: string; channelType: string; channelId: string; content: string; activity: string; startedAt: number; completedSteps: number; narrative: import('../utils/tool-label.js').NarrativeStep[] }> {
+    return [...this.activeTurns.values()]
+      .sort((a, b) => a.startedAt - b.startedAt)
+      .map((t) => ({
+        laneKey: t.laneKey,
+        channelType: t.message.channelType,
+        channelId: t.message.channelId,
+        content: t.message.content,
+        activity: t.activity,
+        startedAt: t.startedAt,
+        completedSteps: t.completedStepCount,
+        narrative: t.stepNarrative,
+      }));
+  }
+
+  /**
+   * Abort one running turn. Its work entry is cancelled for a user stop (a
+   * restart never resumes it); a background hand-off keeps it. Returns
+   * false when it was already stopping.
+   */
+  abortTurn(t: TurnState, reason: AbortReason, ledgerNote?: string): boolean {
+    if (!t.abort || t.abort.signal.aborted) return false;
+    t.abortReason = reason;
+    t.abort.abort();
+    if (ledgerNote && t.workKey) {
+      try { this.workLedger.markCancelled(t.workKey, ledgerNote); } catch { /* entry may not exist */ }
+    }
+    return true;
   }
 
   /** "Do mine first": this chat's waiting messages move to the front of the line (in their order). */
@@ -1210,20 +1470,22 @@ export class Agent {
 
   isBusyWith(sessionId: string): boolean {
     const of = (m: ChannelMessage | null | undefined) => m?.sessionId ?? (typeof m?.metadata?.sessionId === 'string' ? m.metadata.sessionId : undefined);
-    if (this.processing && of(this.currentMessage) === sessionId) return true;
+    for (const t of this.activeTurns.values()) if (of(t.message) === sessionId) return true;
     return this.messageQueue.some((i) => of(i.message) === sessionId);
   }
 
   /**
    * Where work for one channel stands: running now, waiting in the queue,
-   * or neither; and what Mercury is busy with when it's something else.
+   * or neither; and, when it waits, what it waits for.
    */
   workStateFor(channelId: string): { state: 'running' | 'queued' | 'none'; busyWith?: string } {
-    const current = this.currentMessage?.channelId;
-    if (this.processing && current === channelId) return { state: 'running' };
-    const busyWith = this.processing && current ? (this.currentActivity || 'another task').replace(/^\W+/u, '').trim() || 'another task' : undefined;
-    if (this.messageQueue.some((i) => i.message.channelId === channelId)) return { state: 'queued', busyWith };
-    return { state: 'none', busyWith };
+    if (this.turnForChannel(channelId)) return { state: 'running' };
+    const waiting = this.messageQueue.find((i) => i.message.channelId === channelId);
+    if (waiting) {
+      const blocking = this.blockingTurnFor(waiting.message);
+      return { state: 'queued', busyWith: blocking ? this.describeTurn(blocking) : undefined };
+    }
+    return { state: 'none' };
   }
 
   private async handleDuplicateWork(entry: WorkEntry): Promise<void> {
@@ -1354,13 +1616,13 @@ export class Agent {
    * what was read. False when there's no research running in that chat.
    */
   finishResearch(sessionId: string): { ok: boolean; reason?: string } {
-    const run = this.researchMode.currentRun();
-    if (!run || run.sessionId !== sessionId || run.outcome !== 'running') return { ok: false, reason: 'No research is running in this chat.' };
+    const run = this.researchMode.activeRunFor(sessionId);
+    if (!run || run.outcome !== 'running') return { ok: false, reason: 'No research is running in this chat.' };
     if (run.readCount() === 0) return { ok: false, reason: 'Nothing has been read yet, so there is nothing to write from. Stop it instead, or let it read a few sources.' };
-    if (!this.currentAbort || this.currentAbort.signal.aborted) return { ok: false, reason: 'The research is already finishing.' };
+    const turn = this.turnForChannel(sessionId);
+    if (!turn?.abort || turn.abort.signal.aborted) return { ok: false, reason: 'The research is already finishing.' };
     run.finishRequested = true;
-    this.currentAbortReason = 'stopped';
-    this.currentAbort.abort();
+    this.abortTurn(turn, 'stopped');
     return { ok: true };
   }
 
@@ -1426,34 +1688,105 @@ export class Agent {
    * command and the Cloud `task.stop` control so a remote stop behaves
    * exactly like typing /stop locally. Returns the confirmation note.
    */
-  async stopAllWork(reason: 'stopped' | 'halted'): Promise<string> {
-    if (this.currentAbort && !this.currentAbort.signal.aborted) {
-      this.currentAbortReason = reason;
-      this.currentAbort.abort();
-    }
+  /**
+   * Stop work. With a `channelId` (a `/stop` typed in a chat, the app's
+   * Stop button in one conversation, Esc in the terminal) only that chat's
+   * running turn and the sub-agents it started stop — other chats keep
+   * going (ADR-037). Without one (`/halt`, or a caller that names no chat)
+   * every running turn and every sub-agent stops.
+   */
+  async stopAllWork(reason: 'stopped' | 'halted', target?: { channelId?: string; sessionId?: string }): Promise<string> {
     // The user deliberately killed this work — cancel its ledger entry so
     // a restart never tries to resume it. (Only real crashes auto-resume.)
-    if (this.currentWorkKey) {
-      const label = reason === 'stopped' ? 'Stopped by the user (/stop).' : 'Halted by the user (/halt).';
-      try { this.workLedger.markCancelled(this.currentWorkKey, label); } catch { /* entry may not exist */ }
+    const label = reason === 'stopped' ? 'Stopped by the user (/stop).' : 'Halted by the user (/halt).';
+    // A stop typed in an idle chat runs as that chat's own turn: never abort the command itself.
+    const caller = this.turn();
+    if (target && (target.channelId || target.sessionId)) {
+      let turn = (target.channelId ? this.turnForChannel(target.channelId) : undefined)
+        ?? (target.sessionId ? this.turnForSession(target.sessionId) : undefined);
+      if (turn && caller && turn.id === caller.id) turn = undefined;
+      if (turn) this.abortTurn(turn, reason, label);
+      const channelId = turn?.message.channelId ?? target.channelId;
+      const halted = this.supervisor && channelId ? await this.supervisor.haltForChannel(channelId) : [];
+      const others = [...this.activeTurns.values()]
+        .filter((t) => t !== turn && t.id !== caller?.id && !t.abort?.signal.aborted).length;
+      // Nothing else running anywhere: the full stop it always was (locks
+      // released, task board cleared), exactly as with one chat.
+      let cleared = false;
+      if (reason === 'stopped' && others === 0 && this.supervisor
+        && this.supervisor.getActiveAgents().every((a) => halted.includes(a.id) || (a.status !== 'running' && a.status !== 'pending'))) {
+        this.supervisor.clearTaskBoard();
+        cleared = true;
+      }
+      const tail = cleared ? ' Locks released, task board cleared.' : '';
+      const elsewhere = others > 0 ? ` ${others} task${others === 1 ? '' : 's'} in other chats keep${others === 1 ? 's' : ''} running — /halt stops everything.` : '';
+      if (!turn && halted.length === 0) {
+        return cleared ? `Nothing was running.${tail}` : `Nothing is running in this chat.${elsewhere}`;
+      }
+      const parts = [turn ? 'Stopped this chat\'s task' : null, halted.length ? `halted ${halted.length} sub-agent${halted.length === 1 ? '' : 's'} it started` : null].filter(Boolean);
+      return `${parts.join(', ')}.${tail}${elsewhere}`;
     }
+    let stoppedTurns = 0;
+    for (const turn of this.activeTurns.values()) {
+      if (caller && turn.id === caller.id) continue;
+      if (this.abortTurn(turn, reason, label)) stoppedTurns++;
+    }
+    const turnsNote = stoppedTurns > 1 ? `${stoppedTurns} running tasks` : stoppedTurns === 1 ? 'The running task' : null;
     if (this.supervisor) {
       await this.supervisor.haltAll();
       if (reason === 'stopped') {
         this.supervisor.clearTaskBoard();
       }
-      return reason === 'halted' ? 'All sub-agents halted.' : 'All agents stopped, locks released, task board cleared.';
+      const agentsNote = reason === 'halted' ? 'all sub-agents halted.' : 'all agents stopped, locks released, task board cleared.';
+      return turnsNote ? `${turnsNote} ${reason}; ${agentsNote}` : agentsNote.charAt(0).toUpperCase() + agentsNote.slice(1);
     }
+    if (turnsNote) return `${turnsNote} ${reason}.${reason === 'stopped' ? ' Locks released, task board cleared.' : ''}`;
     return reason === 'halted' ? 'Foreground task halted.' : 'Foreground task stopped, locks released, task board cleared.';
   }
 
-  /** Resolves when no turn is running (or after the deadline). */
-  private waitUntilIdle(maxMs: number): Promise<void> {
+  /** Resolves when this lane has no running turn (or after the deadline). */
+  private waitUntilLaneIdle(laneKey: string, maxMs: number): Promise<void> {
     const deadline = Date.now() + maxMs;
     return new Promise((resolve) => {
-      const tick = () => { if (!this.processing || Date.now() >= deadline) resolve(); else setTimeout(tick, 50); };
+      const tick = () => { if (!this.activeTurns.has(laneKey) || Date.now() >= deadline) resolve(); else setTimeout(tick, 50); };
       tick();
     });
+  }
+
+  private readonly sessionLocks = new Map<string, Promise<void>>();
+
+  /**
+   * Take one stored conversation for the calling turn; resolves to its
+   * release. Waiters queue in order; a released lock with no waiter is
+   * forgotten, so the map only holds conversations in use.
+   */
+  private async lockSession(sessionId: string): Promise<() => void> {
+    const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => { release = resolve; });
+    const chained = previous.then(() => mine);
+    this.sessionLocks.set(sessionId, chained);
+    await previous;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      release();
+      if (this.sessionLocks.get(sessionId) === chained) this.sessionLocks.delete(sessionId);
+    };
+  }
+
+  /** No turn running and none waiting. */
+  isIdle(): boolean {
+    return this.activeTurns.size === 0 && this.messageQueue.length === 0;
+  }
+
+  private idleWaiters: Array<() => void> = [];
+
+  /** Resolves once no turn runs and none waits (at once when that's already so). */
+  whenIdle(): Promise<void> {
+    if (this.isIdle()) return Promise.resolve();
+    return new Promise((resolve) => { this.idleWaiters.push(resolve); });
   }
 
   private async handleFastPathCommand(msg: ChannelMessage): Promise<void> {
@@ -1916,8 +2249,20 @@ export class Agent {
    * Cheap no-op for non-CLI channels.
    */
   private pushLiveActivity(phase: string, detail?: string): void {
+    this.cliFeed()?.setLiveActivity(phase, detail);
+  }
+
+  /**
+   * The terminal's live feed, when the calling turn may draw on it: the
+   * terminal's own turn always; another chat's only while the terminal has
+   * no turn of its own (ADR-037 — two turns must not interleave one feed).
+   */
+  private cliFeed(): CLIChannel | undefined {
     const ch = this.channels.get('cli');
-    if (ch instanceof CLIChannel) ch.setLiveActivity(phase, detail);
+    if (!(ch instanceof CLIChannel)) return undefined;
+    const t = this.turn();
+    if (t && t.laneKey !== 'cli' && this.activeTurns.has('cli')) return undefined;
+    return ch;
   }
 
   /**
@@ -1940,8 +2285,8 @@ export class Agent {
         try { current.toolStarted(this.currentMessage.channelId, toolName); } catch { /* best effort */ }
       }
     }
-    const ch = this.channels.get('cli');
-    if (!(ch instanceof CLIChannel)) return;
+    const ch = this.cliFeed();
+    if (!ch) return;
     if (status === 'running') {
       void ch.sendToolEvent(toolName, argsOrResult as Record<string, any>, callId).catch(() => {});
     } else {
@@ -1973,7 +2318,9 @@ export class Agent {
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const tick = () => {
-      if (!this.processing || !this.currentMessage || this.currentMessage.id !== msg.id) return;
+      // Timers carry the turn's scope: a tick after the turn ended does nothing.
+      const own = this.turn();
+      if (!own || own.done || !this.currentMessage || this.currentMessage.id !== msg.id) return;
       const channel = this.channels.getChannelForMessage(msg);
 
       const elapsedMs = Date.now() - this.currentMessage.timestamp;
@@ -2102,24 +2449,27 @@ export class Agent {
    * Session-scoped coding. A message that names a programming mode (Mercury
    * Desktop's Code surface) runs with THAT session's mode, plan and folder;
    * everything else (terminal, chat, other sessions) keeps the global mode.
-   * Turns are serial (processQueue), so a swap-run-restore is race-free.
+   * The turn gets its own ProgrammingMode instance and its own working
+   * directory (ADR-037), so it can run beside other turns; the global mode
+   * is never touched.
    */
   private readonly sessionProgramming = new Map<string, ProgrammingSnapshot>();
 
   private async withSessionProgramming(msg: ChannelMessage, run: () => Promise<void>): Promise<void> {
     const requested = scopedProgrammingState(msg.metadata?.programming);
     const sessionKey = typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : msg.sessionId;
-    if (!requested || !sessionKey) return run();
-    const globalMode = this.programmingMode.snapshot();
-    const globalCwd = this.capabilities.getCwd();
+    const turn = this.turn();
+    if (!requested || !sessionKey || !turn) return run();
     const cwd = typeof msg.metadata?.programmingCwd === 'string' ? msg.metadata.programmingCwd : null;
     const saved = this.sessionProgramming.get(sessionKey);
-    this.programmingMode.restore({
+    const mode = new ProgrammingMode();
+    mode.restore({
       state: requested,
       projectContext: cwd ?? saved?.projectContext ?? null,
       // A plan made in this session stays with this session.
       lastPlan: saved?.lastPlan ?? null,
     });
+    turn.programming = mode;
     if (cwd) {
       this.capabilities.setCwd(cwd);
       this.capabilities.permissions.addTempScope(cwd, true, true);
@@ -2127,68 +2477,202 @@ export class Agent {
     try {
       await run();
     } finally {
-      this.sessionProgramming.set(sessionKey, this.programmingMode.snapshot());
+      this.sessionProgramming.delete(sessionKey);
+      this.sessionProgramming.set(sessionKey, mode.snapshot());
       if (this.sessionProgramming.size > 200) {
         const oldest = this.sessionProgramming.keys().next().value;
         if (oldest !== undefined) this.sessionProgramming.delete(oldest);
       }
-      this.programmingMode.restore(globalMode);
-      if (cwd) this.capabilities.setCwd(globalCwd);
+      turn.programming = null;
     }
   }
 
-  private async processQueue(): Promise<void> {
-    if (this.processing) return;
-    if (this.messageQueue.length === 0) return;
+  /** Where a chat's next turn starts: its own last directory, else the terminal's. */
+  private cwdForLane(laneKey: string): string {
+    if (laneKey === 'cli') return this.capabilities.getGlobalCwd();
+    const own = this.laneCwd.get(laneKey);
+    return own && existsSync(own) ? own : this.capabilities.getGlobalCwd();
+  }
+
+  private rememberLaneCwd(laneKey: string, dir: string): void {
+    if (laneKey === 'cli') {
+      // The terminal's `cd` carries over to its next turn, as before.
+      this.capabilities.setGlobalCwd(dir);
+      return;
+    }
+    this.laneCwd.delete(laneKey);
+    this.laneCwd.set(laneKey, dir);
+    if (this.laneCwd.size > 500) {
+      const oldest = this.laneCwd.keys().next().value;
+      if (oldest !== undefined) this.laneCwd.delete(oldest);
+    }
+  }
+
+  /**
+   * Start every waiting message whose chat is free, while the governor
+   * admits more (ADR-037). Never awaits a turn: each runs on its own and
+   * pumps again when it ends. Order: first come, first served across chats
+   * (voice-call questions and "do mine first" reorder the line as before);
+   * within a chat, strictly one after another.
+   */
+  private processQueue(): void {
     if (!this.running) return;
-    if (!this.lifecycle.is('idle')) return;
+    if (!this.globalLifecycle.is('idle')) return;
+    for (;;) {
+      const index = this.messageQueue.findIndex((i) => !this.activeTurns.has(laneKeyFor(i.message)));
+      if (index === -1) break;
+      const decision = this.governor.canAdmit(this.activeTurns.size);
+      if (!decision.ok) {
+        if (this.lastAdmitRefusal !== decision.reason) {
+          logger.info({ reason: decision.reason, running: this.activeTurns.size, waiting: this.messageQueue.length, limit: this.governor.limit() }, 'Turn governor: holding new turns');
+        }
+        this.lastAdmitRefusal = decision.reason;
+        break;
+      }
+      this.lastAdmitRefusal = null;
+      const [item] = this.messageQueue.splice(index, 1);
+      if (item.workKey) this.queuedWorkKeys.delete(item.workKey);
+      this.startTurn(item);
+    }
+    // The line moved: everyone still waiting learns their place and what they wait for.
+    this.announceQueue();
+  }
 
-    this.processing = true;
+  private startTurn(item: { message: ChannelMessage; workKey?: string }): void {
+    const msg = item.message;
+    const laneKey = laneKeyFor(msg);
+    const turn: TurnState = {
+      id: `t${++this.turnSeq}`,
+      laneKey,
+      message: msg,
+      startedAt: Date.now(),
+      abort: null,
+      abortReason: null,
+      activity: '',
+      completedStepCount: 0,
+      stepNarrative: [],
+      workKey: item.workKey ?? null,
+      lastProgressAt: Date.now(),
+      lastTypingAt: 0,
+      injectedBeliefIds: [],
+      lifecycle: new Lifecycle('idle'),
+      programming: null,
+      done: false,
+    };
+    this.activeTurns.set(laneKey, turn);
+    logger.info({ turn: turn.id, lane: laneKey, running: this.activeTurns.size, limit: this.governor.limit() }, 'Turn started');
+    const startCwd = typeof msg.metadata?.workCwd === 'string' && existsSync(msg.metadata.workCwd) ? msg.metadata.workCwd : this.cwdForLane(laneKey);
 
+    void this.turnStore.run(turn, () => runInTurnScope(() => this.capabilities.permissions.withTurn(async () => {
+      // This turn's working directory, tools switch and image switch are its own.
+      this.capabilities.claimTurnState(startCwd);
+      claimToolImagesForTurn();
+      try {
+        await this.runQueuedItem(item);
+      } finally {
+        this.rememberLaneCwd(laneKey, this.capabilities.getCwd());
+      }
+    }))).catch((err) => {
+      logger.error({ err, turn: turn.id }, 'Turn failed outside its handler');
+    }).finally(() => {
+      turn.done = true;
+      if (this.activeTurns.get(laneKey) === turn) this.activeTurns.delete(laneKey);
+      logger.info({ turn: turn.id, lane: laneKey, ms: Date.now() - turn.startedAt, running: this.activeTurns.size }, 'Turn ended');
+      if (this.activeTurns.size === 0) this.governor.noteIdle();
+      this.processQueue();
+      if (this.isIdle() && this.idleWaiters.length > 0) {
+        for (const resolve of this.idleWaiters.splice(0)) resolve();
+      }
+    });
+  }
+
+  /** One queued message, start to finish: the work ledger and scheduled-run bookkeeping around handleMessage. */
+  private async runQueuedItem(item: { message: ChannelMessage; workKey?: string }): Promise<void> {
+    const msg = item.message;
     try {
-      while (this.messageQueue.length > 0) {
-        const item = this.messageQueue.shift()!;
-        const msg = item.message;
-        if (item.workKey) this.queuedWorkKeys.delete(item.workKey);
-        // The line moved: everyone still waiting learns their new place and what runs now.
-        this.announceQueue(msg);
-        this.currentWorkKey = item.workKey ?? null;
+      if (item.workKey) this.workLedger.markRunning(item.workKey);
+      await this.withSessionProgramming(msg, () => this.handleMessage(msg));
+      if (item.workKey && this.workLedger.get(item.workKey)?.status === 'running') {
+        this.workLedger.markFailed(item.workKey, 'Work ended without producing a durable final response');
+      }
+    } catch (err) {
+      if (item.workKey) {
+        const entry = this.workLedger.get(item.workKey);
+        if (entry?.status === 'completed') this.workLedger.markDeliveryError(item.workKey, err);
+        else this.workLedger.markFailed(item.workKey, err);
+      }
+      logger.error({ err, msg: msg.content.slice(0, 50) }, 'Failed to handle message');
+    } finally {
+      const taskId = msg.metadata?.scheduledTaskId;
+      const runId = msg.metadata?.scheduledRunId;
+      if (typeof taskId === 'string' && typeof runId === 'string') {
+        const entry = item.workKey ? this.workLedger.get(item.workKey) : undefined;
         try {
-          if (item.workKey) this.workLedger.markRunning(item.workKey);
-          await this.withSessionProgramming(msg, () => this.handleMessage(msg));
-          if (item.workKey && this.workLedger.get(item.workKey)?.status === 'running') {
-            this.workLedger.markFailed(item.workKey, 'Work ended without producing a durable final response');
-          }
+          this.scheduler.finishRun(taskId, runId, entry?.status === 'completed' ? 'completed' : 'failed',
+            entry?.status === 'completed' ? undefined : entry?.error ?? 'Scheduled work ended without confirmed completion');
         } catch (err) {
-          if (item.workKey) {
-            const entry = this.workLedger.get(item.workKey);
-            if (entry?.status === 'completed') this.workLedger.markDeliveryError(item.workKey, err);
-            else this.workLedger.markFailed(item.workKey, err);
-          }
-          logger.error({ err, msg: msg.content.slice(0, 50) }, 'Failed to handle message');
-        } finally {
-          const taskId = msg.metadata?.scheduledTaskId;
-          const runId = msg.metadata?.scheduledRunId;
-          if (typeof taskId === 'string' && typeof runId === 'string') {
-            const entry = item.workKey ? this.workLedger.get(item.workKey) : undefined;
-            try {
-              this.scheduler.finishRun(taskId, runId, entry?.status === 'completed' ? 'completed' : 'failed',
-                entry?.status === 'completed' ? undefined : entry?.error ?? 'Scheduled work ended without confirmed completion');
-            } catch (err) {
-              // Leave the durable running record uncertain, but always release queue state.
-              logger.error({ err, taskId, runId }, 'Could not persist scheduled run outcome');
-            }
-          }
-          this.currentWorkKey = null;
-          if (!this.lifecycle.is('idle') && this.lifecycle.canTransitionTo('idle')) {
-            this.lifecycle.transition('idle');
-          }
+          // Leave the durable running record uncertain, but always release queue state.
+          logger.error({ err, taskId, runId }, 'Could not persist scheduled run outcome');
         }
       }
-    } finally {
-      this.processing = false;
-      if (this.messageQueue.length > 0) void this.processQueue();
     }
+  }
+
+  /** The running turns as the governor sees them. */
+  private governedTurns(): GovernedTurn[] {
+    return [...this.activeTurns.values()].map((t) => ({
+      id: t.id,
+      startedAt: t.startedAt,
+      label: `${t.laneKey}: ${this.describeTurn(t)}`,
+      isStopping: () => t.done || !t.abort || t.abort.signal.aborted,
+      shed: (error: Error) => {
+        if (!t.abort || t.abort.signal.aborted) return;
+        t.abortReason = 'memory-pressure';
+        t.abort.abort(error);
+        this.captureHeapSnapshot();
+      },
+    }));
+  }
+
+  private heapSnapshotTaken = false;
+
+  /** Forensics, once per process: the first pressure stop writes a heap snapshot. Never throws. */
+  private captureHeapSnapshot(): void {
+    if (this.heapSnapshotTaken) return;
+    this.heapSnapshotTaken = true;
+    void (async () => {
+      try {
+        const { writeHeapSnapshot } = await import('node:v8');
+        const file = path.join(getMercuryHome(), `heap-task-${Date.now()}.heapsnapshot`);
+        writeHeapSnapshot(file);
+        logger.error({ file }, 'Heap snapshot captured for memory forensics');
+      } catch { /* forensics must never break the governor */ }
+    })();
+  }
+
+  /**
+   * The heap kept growing past the exit line even after turns were stopped:
+   * the allocator runs outside any abortable path and a V8 crash is next.
+   * Leave now, while the work ledger and sessions are still writable, so
+   * every interrupted chat is recovered on the next start.
+   */
+  private exitForMemory(heapUsed: number): void {
+    const turns = [...this.activeTurns.values()];
+    const mb = Math.round(heapUsed / 1048576);
+    try {
+      const first = turns[0];
+      writeCrashFlag({
+        reason: `Memory safety exit at ${mb}MB with ${turns.length} task(s) running: ${turns.map((t) => this.describeTurn(t).slice(0, 60)).join(' | ').slice(0, 300)}`,
+        timestamp: Date.now(),
+        activeTask: first ? this.describeTurn(first) : undefined,
+        channelId: first?.message.channelId,
+        channelType: first?.message.channelType,
+      });
+    } catch { /* best effort */ }
+    try {
+      process.stderr.write(`\n⚠ Mercury stopped: memory grew to ${mb}MB.\n  Your work is saved and will be recoverable on the next start. Details: ~/.mercury/crash-report.log\n`);
+    } catch { /* stderr gone */ }
+    process.exit(0);
   }
 
   /**
@@ -2558,6 +3042,7 @@ export class Agent {
     }
     await this.channels.startAll();
     this.running = true;
+    this.governor.start(() => this.governedTurns());
 
     if (!this.terminalOnly) {
       const recovered = this.workLedger.recoverInterrupted();
@@ -2574,6 +3059,7 @@ export class Agent {
 
   async sleep(): Promise<void> {
     this.running = false;
+    this.governor.stop();
     if (this.outboxRetryTimer) {
       clearInterval(this.outboxRetryTimer);
       this.outboxRetryTimer = null;
@@ -2853,7 +3339,6 @@ export class Agent {
     // Short id printed on every terminal message and resolvable with /trace.
     const traceId = (msg.id || '').replace(/[^a-z0-9]/gi, '').slice(-8) || Date.now().toString(36);
     let loopAbortController = new AbortController();
-    this.currentMessage = msg;
     this.currentAbort = loopAbortController;
     this.currentAbortReason = null;
     const durableCwd = typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : undefined;
@@ -2886,77 +3371,20 @@ export class Agent {
     if (researchRun) this.emitResearch(msg, researchRun);
     if (!isSlashCommand) raiseTurnIndicator();
     const stopHeartbeat = isSlashCommand ? () => {} : this.startForegroundHeartbeat(msg);
-    const heapBaseline = process.memoryUsage().heapUsed;
-    const heapAbortThreshold = taskHeapAbortThreshold(getHeapStatistics().heap_size_limit, heapBaseline);
-    const heapExitThreshold = taskHeapExitThreshold(getHeapStatistics().heap_size_limit, heapBaseline);
-    const governorThresholds = memoryGovernorThresholds({
-      heapSizeLimit: getHeapStatistics().heap_size_limit,
-      baselineHeapUsed: heapBaseline,
-    });
+    // Memory: the turn governor watches the heap for the whole process (one
+    // timer, not one per turn) and stops the newest turn under pressure
+    // (ADR-037). At step boundaries this turn checks in deterministically —
+    // the timer can't fire while the event loop is flooded.
+    const turnId = this.turn()?.id;
     const memoryGovernor = (phase: string): 'ok' | 'abort' | 'exit' => {
-      const verdict = memoryGovernorVerdict(process.memoryUsage().heapUsed, governorThresholds);
-      if (verdict === 'abort') {
-        logger.warn({ phase, heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) }, 'Step governor: relief threshold exceeded — trimming conversation');
-      }
-      return verdict === 'ok' || verdict === 'relief' ? 'ok' : verdict;
+      const turns = this.governedTurns();
+      const verdict = this.governor.verdict(turns.length);
+      if (verdict === 'exit') return 'exit';
+      if (verdict === 'ok') return 'ok';
+      logger.warn({ phase, heapMB: Math.round(process.memoryUsage().heapUsed / 1048576), running: turns.length }, 'Step governor: over the memory line — trimming conversation');
+      return 'abort';
     };
-    const memoryGuard = setInterval(() => {
-      const usage = process.memoryUsage();
-      // Stage 2 — emergency: abort was attempted but the allocator kept
-      // running outside the abortable path. Exit deliberately while the work
-      // ledger and session store are still writable, so recovery survives.
-      if (isTaskHeapUnsafe(usage.heapUsed, heapExitThreshold)) {
-        logger.error({
-          heapUsed: usage.heapUsed,
-          threshold: heapExitThreshold,
-          activity: this.currentActivity,
-        }, 'Memory continued growing after abort — exiting to preserve work state');
-        try {
-          const { writeCrashFlag } = require('./crash-flag.js');
-          writeCrashFlag({
-            reason: `Memory safety exit at ${Math.round(usage.heapUsed / 1048576)}MB (abort threshold ${Math.round(heapAbortThreshold / 1048576)}MB). Task: ${this.currentActivity?.slice(0, 150) || 'unknown'}`,
-            timestamp: Date.now(),
-            activeTask: this.currentActivity || undefined,
-            channelId: msg.channelId,
-            channelType: msg.channelType,
-          });
-        } catch { /* best effort */ }
-        try {
-          process.stderr.write(
-            `\n⚠ Mercury stopped the current task: memory grew to ${Math.round(usage.heapUsed / 1048576)}MB.\n  Your work is saved and will be recoverable on the next start. Details: ~/.mercury/crash-report.log\n`,
-          );
-        } catch { /* stderr gone */ }
-        process.exit(0);
-      }
-      // Stage 1 — attempt graceful stop of the current generation.
-      if (!isTaskHeapUnsafe(usage.heapUsed, heapAbortThreshold) || this.currentAbortReason === 'memory-pressure') return;
-      this.currentAbortReason = 'memory-pressure';
-      const error = new Error(
-        `Task stopped at ${Math.round(usage.heapUsed / 1048576)}MB heap usage before Mercury reached the V8 crash limit`,
-      );
-      logger.error({
-        heapUsed: usage.heapUsed,
-        heapTotal: usage.heapTotal,
-        rss: usage.rss,
-        threshold: heapAbortThreshold,
-        activity: this.currentActivity,
-      }, 'Task memory safety limit reached');
-      loopAbortController.abort(error);
-      // Forensics: capture a heap snapshot in the background. If growth
-      // continues past the exit threshold, this .heapsnapshot identifies the
-      // exact retainer. Best-effort — never throw from the guard.
-      void (async () => {
-        try {
-          const { writeHeapSnapshot } = await import('node:v8');
-          const { getMercuryHome } = await import('../utils/config.js');
-          const { join } = await import('node:path');
-          const file = join(getMercuryHome(), `heap-task-${Date.now()}.heapsnapshot`);
-          await writeHeapSnapshot(file as any);
-          logger.error({ file }, 'Heap snapshot captured for memory forensics');
-        } catch { /* forensics must never break the guard */ }
-      })();
-    }, 1000);
-    memoryGuard.unref?.();
+    const shouldYieldToMemory = (): boolean => turnId !== undefined && this.governor.shouldShed(turnId, this.governedTurns());
     // Stall watchdog: the memory guard covers heap growth; this covers time.
     // A task that emits nothing (no chunks, no tool events, no steps) for
     // minutes is almost certainly dead — surface it, then abort the attempt
@@ -2979,6 +3407,7 @@ export class Agent {
     });
     stallWatchdog.start();
     let canonicalSessionId: string | undefined;
+    let releaseSession: (() => void) | null = null;
 
     if (this.supervisor && msg.channelType !== 'internal') {
       const activeAgents = this.supervisor.getActiveAgents();
@@ -3101,6 +3530,10 @@ export class Agent {
         : typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
       const canonicalSession = this.sessions.getOrCreateBound(msg.channelType, externalConversationId, suppliedSessionId);
       canonicalSessionId = canonicalSession.id;
+      // Two lanes can reach one stored conversation (the terminal resuming a
+      // chat the desktop has open): their turns take it one at a time, so
+      // its history never interleaves (ADR-037).
+      releaseSession = await this.lockSession(canonicalSession.id);
 
       // A normal chat that would write loose files into the home folder (the
       // daemon's folder) writes into its own folder in ~/mercury-artifacts.
@@ -3451,8 +3884,7 @@ export class Agent {
                 // the step ended (tool calls pending = work in progress).
                 lastRoundSteps++;
                 lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
-                const cliCh = this.channels.get('cli');
-                if (cliCh instanceof CLIChannel) cliCh.bumpLiveActivitySteps();
+                this.cliFeed()?.bumpLiveActivitySteps();
                 // Every tool step goes into the per-turn trace (session history
                 // and /trace), not only the guard/continuation rounds.
                 noteToolSteps(toolCalls, toolResults);
@@ -3479,6 +3911,9 @@ export class Agent {
                     } catch { /* compaction is best-effort */ }
                     return;
                   }
+                  // Already compacted: give way only if this is the turn the
+                  // governor picks (the newest); an older one keeps working.
+                  if (!shouldYieldToMemory()) return;
                   this.currentAbortReason = 'memory-pressure';
                   loopAbortController.abort(new Error(`Task stopped at ${Math.round(process.memoryUsage().heapUsed / 1048576)}MB heap usage (step governor)`));
                   return;
@@ -3750,8 +4185,7 @@ export class Agent {
               this.completedStepCount++;
               lastRoundSteps++;
               lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
-              const cliChResume = this.channels.get('cli');
-              if (cliChResume instanceof CLIChannel) cliChResume.bumpLiveActivitySteps();
+              this.cliFeed()?.bumpLiveActivitySteps();
               if (toolCalls && toolResults && toolCalls.length > 0) {
                 hasCompletedTool = true;
                 noteToolSteps(toolCalls, toolResults);
@@ -3788,7 +4222,7 @@ export class Agent {
           const providerDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           this.markProgress(`Calling ${provider.name}...`);
           this.pushLiveActivity(`Calling ${provider.name}`, provider.getModel());
-          updateCliProviderStatus(this.channels.get('cli'), provider.name, provider.getModel());
+          if (this.cliFeed()) updateCliProviderStatus(this.channels.get('cli'), provider.name, provider.getModel());
           const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
             ? { deepseek: { thinking: { type: 'enabled' as const } } }
             : undefined;
@@ -4378,8 +4812,7 @@ export class Agent {
               // Completion-contract tracking for the guard round.
               lastRoundSteps++;
               lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
-              const cliChGen = this.channels.get('cli');
-              if (cliChGen instanceof CLIChannel) cliChGen.bumpLiveActivitySteps();
+              this.cliFeed()?.bumpLiveActivitySteps();
               if (toolCalls && toolResults && toolCalls.length > 0) {
                 hasCompletedTool = true;
                 noteToolSteps(toolCalls, toolResults);
@@ -4901,6 +5334,7 @@ export class Agent {
       } catch { /* best effort */ }
       this.lifecycle.transition('idle');
     } finally {
+      releaseSession?.();
       if (chatFolder) {
         if (cwdBeforeChatFolder && this.capabilities.getCwd() === chatFolder) this.capabilities.setCwd(cwdBeforeChatFolder);
         this.chatFolders().close(chatFolder);
@@ -4914,24 +5348,19 @@ export class Agent {
           if (closed) planChannel.sendPlan(closed, msg.channelId);
         }
         this.emitResearch(msg, researchRun);
-        this.researchMode.endRun();
+        this.researchMode.endRun(msg.channelId);
       }
-      clearInterval(memoryGuard);
       stallWatchdog.stop();
       stopHeartbeat();
       this.finalizeChannelTask(msg);
       this.capabilities.setToolsDisabled(false);
       this.capabilities.permissions.setTurnPluginGrants([]);
-      this.currentMessage = null;
       this.currentAbort = null;
       this.currentAbortReason = null;
       this.currentActivity = '';
       this.completedStepCount = 0;
       this.stepNarrative = [];
-      {
-        const ch = this.channels.get('cli');
-        if (ch instanceof CLIChannel) ch.clearLiveActivity();
-      }
+      this.cliFeed()?.clearLiveActivity();
       if (isInternal) {
         this.capabilities.permissions.endTurnGrant();
       }
@@ -5244,11 +5673,19 @@ export class Agent {
     // Validation loop (§3.1): the beliefs the previous turn acted on earn
     // weak support once the owner's next message in the same session shows
     // no correction. Then remember what this turn acted on.
-    const pending = this.pendingActedOn;
-    if (pending && pending.ids.length > 0 && pending.sessionId && pending.sessionId === ctx.sessionId && !signals.correction.detected) {
-      try { beliefs.actedOnOk(pending.ids, pending.sessionId); } catch (err) { logger.debug({ err }, 'actedOnOk failed'); }
+    // Per session (ADR-037): another chat's turn in between no longer resets it.
+    if (ctx.sessionId) {
+      const pending = this.pendingActedOn.get(ctx.sessionId);
+      if (pending && pending.length > 0 && !signals.correction.detected) {
+        try { beliefs.actedOnOk(pending, ctx.sessionId); } catch (err) { logger.debug({ err }, 'actedOnOk failed'); }
+      }
+      this.pendingActedOn.delete(ctx.sessionId);
+      this.pendingActedOn.set(ctx.sessionId, [...(this.lastInjectedBeliefIds ?? [])]);
+      if (this.pendingActedOn.size > 200) {
+        const oldest = this.pendingActedOn.keys().next().value;
+        if (oldest !== undefined) this.pendingActedOn.delete(oldest);
+      }
     }
-    this.pendingActedOn = ctx.sessionId ? { ids: [...(this.lastInjectedBeliefIds ?? [])], sessionId: ctx.sessionId } : null;
 
     try {
       const ops = await extractBeliefOperations({
@@ -5322,13 +5759,8 @@ export class Agent {
       try { this.workLedger.markCancelled(item.workKey, reason); } catch { /* entry may not exist */ }
     }
     let stopped = dropped.length > 0;
-    if (this.currentMessage?.channelId.startsWith(channelPrefix) && this.currentAbort && !this.currentAbort.signal.aborted) {
-      this.currentAbortReason = 'stopped';
-      this.currentAbort.abort();
-      if (this.currentWorkKey) {
-        try { this.workLedger.markCancelled(this.currentWorkKey, reason); } catch { /* entry may not exist */ }
-      }
-      stopped = true;
+    for (const turn of this.activeTurns.values()) {
+      if (turn.message.channelId.startsWith(channelPrefix) && this.abortTurn(turn, 'stopped', reason)) stopped = true;
     }
     if (stopped) logger.info({ channelPrefix }, 'Work stopped for one channel');
     return stopped;

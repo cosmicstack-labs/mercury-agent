@@ -158,6 +158,33 @@ export function isSubsetContext(child: PermissionContext, parent: PermissionCont
 export interface ContextCell {
   readonly owner: object;
   ctx: PermissionContext;
+  /**
+   * Set for a main-agent turn running alongside others (ADR-037). The turn
+   * has no frozen context of its own: it reads the shared session context
+   * with its own identity laid over it, so the owner's choices (Allow All,
+   * approved scopes) apply to every chat at once, while who is asking,
+   * from where, with which skill elevation or internal grant stays with
+   * the turn. `ctx` is unused for such a cell.
+   */
+  turn?: TurnOverlay;
+}
+
+/** Context fields that belong to one turn, never to the shared session. */
+export const TURN_OWNED_FIELDS = ['channelType', 'channelId', 'sessionId', 'senderRole', 'rememberApprovals', 'elevated'] as const;
+export type TurnOwnedField = typeof TURN_OWNED_FIELDS[number];
+
+export interface TurnOverlay {
+  fields: { -readonly [K in TurnOwnedField]?: PermissionContext[K] };
+  /** The internal turn's allow-all grant (beginTurnGrant), if any. */
+  grant: { scopes: ContextScope[] } | null;
+  /** Plugin tools pre-approved for this turn (a scheduled task's allowTools). */
+  pluginGrants: Set<string>;
+  /** Last computed context, valid while the session context is the same object. */
+  cache: { session: PermissionContext; ctx: PermissionContext } | null;
+}
+
+export function newTurnOverlay(): TurnOverlay {
+  return { fields: {}, grant: null, pluginGrants: new Set(), cache: null };
 }
 
 export const permissionContextStore = new AsyncLocalStorage<ContextCell>();

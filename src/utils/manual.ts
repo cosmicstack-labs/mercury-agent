@@ -154,7 +154,7 @@ export const CHAT_COMMAND_HELP: ReadonlyArray<readonly [string, string]> = [
   ['/ws commit <message>', 'Commit staged changes (Mercury co-authored)'],
   ['/ws undo <file>', 'Revert file changes with git checkout -- <file>'],
   ['/halt', 'Emergency: stop all agents + clear queue'],
-  ['/stop', 'Stop all agents + clear queue + release locks + clear task board'],
+  ['/stop', "Stop this chat's task + the agents it started (a full stop when nothing else runs)"],
   ['/reset', 'Full reset: stop all + clear context (requires confirmation)'],
   ['/spotify', 'Show Spotify connection status'],
   ['/spotify auth', 'Connect Spotify (browser or manual code flow)'],
@@ -398,8 +398,8 @@ export function getTelegramHelp(): string {
   lines.push('/models — List providers or switch AI model (saved across restarts)');
   lines.push('/cloud models — List Mercury Cloud models and switch');
   lines.push('/stream — Toggle text streaming on/off');
-  lines.push('/stop — Stop the current task and its agents now');
-  lines.push('/halt — Emergency: stop all agents and clear the queue');
+  lines.push("/stop — Stop this chat's task and its agents now (other chats keep going)");
+  lines.push("/halt — Emergency: stop every chat's task and all agents");
   lines.push('');
 
   lines.push('**Tasks**');
@@ -458,8 +458,8 @@ export function getTelegramHelp(): string {
   lines.push('/agents stop <id|all> — Stop a sub-agent');
   lines.push('/agents pause <id> — Pause a sub-agent');
   lines.push('/agents resume <id> — Resume a sub-agent');
-  lines.push('/halt — Emergency: stop all agents + clear queue');
-  lines.push('/stop — Stop all + release locks + clear task board');
+  lines.push("/halt — Emergency: stop every chat's task + all agents");
+  lines.push("/stop — Stop this chat's task + its agents (full stop + release locks when nothing else runs)");
   lines.push('/reset — Full reset (stop all + clear context)');
   lines.push('');
 

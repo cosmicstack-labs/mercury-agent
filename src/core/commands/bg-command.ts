@@ -12,18 +12,19 @@ export async function handleBgCommand(agent: Agent, trimmed: string, msg: Channe
   const args = parts.slice(1).join(' ');
 
   if (sub === 'current') {
-    if (!agent.processing || !agent.currentMessage) {
-      await channel.send('No active task to background.', msg.channelId);
+    // This chat's running task (ADR-037: other chats' tasks are theirs).
+    const turn = agent.turnForChannel(msg.channelId);
+    // When the chat was idle, `/bg current` runs as the chat's own turn:
+    // that turn is the command itself, never a task to move.
+    if (!turn || turn.message.content.trim().startsWith('/')) {
+      await channel.send('No active task to background in this chat.', msg.channelId);
       return;
     }
-    const taskDescription = agent.currentMessage.content.trim();
-    const sourceChannelId = agent.currentMessage.channelId;
-    const sourceChannelType = agent.currentMessage.channelType as any;
+    const taskDescription = turn.message.content.trim();
+    const sourceChannelId = turn.message.channelId;
+    const sourceChannelType = turn.message.channelType as any;
 
-    if (agent.currentAbort) {
-      agent.currentAbortReason = 'backgrounded';
-      agent.currentAbort.abort();
-    }
+    agent.abortTurn(turn, 'backgrounded');
 
     if (agent.supervisor) {
       const agentId = await agent.supervisor.spawn({
@@ -31,7 +32,8 @@ export async function handleBgCommand(agent: Agent, trimmed: string, msg: Channe
         sourceChannelId,
         sourceChannelType,
       });
-      const bgId = agent.backgroundTasks.spawnAgent(taskDescription, agent.capabilities.getCwd(), agentId);
+      const workCwd = turn.message.metadata?.workCwd;
+      const bgId = agent.backgroundTasks.spawnAgent(taskDescription, typeof workCwd === 'string' ? workCwd : agent.capabilities.getCwd(), agentId);
       await channel.send(`📋 Active task moved to background as ${bgId}. I'll notify you when it completes.`, msg.channelId);
     } else {
       await channel.send('Cannot background: sub-agents not available. The active task has been aborted.', msg.channelId);

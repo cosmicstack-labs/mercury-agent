@@ -311,6 +311,13 @@ export interface MercuryConfig {
   mcp?: McpConfig;
   /** Opt-in: discover plugin and MCP schemas on demand in the main agent's tool loop. */
   toolDiscovery?: { enabled?: boolean };
+  /**
+   * Chat turns running at once (ADR-037). One turn per chat at a time; this
+   * caps how many chats are worked on together. 0 = automatic (from heap
+   * size, RAM and platform; 2 on Termux). The turn governor admits fewer
+   * while memory is tight.
+   */
+  concurrency?: { maxTurns?: number };
   /** Where the files Mercury makes go (default ~/mercury-artifacts): Research/ and one folder per chat. */
   artifacts?: {
     outputDir?: string;
@@ -631,6 +638,7 @@ export function getDefaultConfig(): MercuryConfig {
       product: '',
     },
     toolDiscovery: { enabled: getEnvBool('MERCURY_TOOL_DISCOVERY', false) },
+    concurrency: { maxTurns: getEnvNum('MERCURY_MAX_CONCURRENT_TURNS', 0) },
     web: {
       enabled: getEnvBool('MERCURY_WEB_ENABLED', false),
       port: getEnvNum('MERCURY_PORT', 6174),

@@ -147,8 +147,8 @@ Persistent persona-scoped agents that run outside your conversation — each wit
 
 | Command | Description |
 |---------|-------------|
-| `/halt` | Emergency: stop all agents and clear the task queue |
-| `/stop` | Stop all agents, clear queue, release file locks, clear task board |
+| `/halt` | Emergency: stop every chat's task and all agents |
+| `/stop` | Stop this chat's task and the agents it started. When nothing else is running, also release file locks and clear the task board |
 | `/reset` | Full reset: stop all + clear conversation context (requires confirmation) |
 
 :::tip[Fast-path commands]

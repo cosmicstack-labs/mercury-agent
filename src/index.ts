@@ -2899,8 +2899,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         })) ?? [],
       });
       bootCli.startStatusPoller(2000);
-      // Esc during a turn: the same stop routine `/stop` runs.
-      bootCli.setInterruptHandler(() => agent.stopAllWork('stopped'));
+      // Esc during a turn: the same stop routine `/stop` runs — for the
+      // terminal's own task; with none, whatever the terminal is showing.
+      bootCli.setInterruptHandler(() => agent.stopAllWork('stopped', agent.turnForChannel('cli') ? { channelId: 'cli' } : undefined));
       bootCli.mountTUI((inputText: string) => {
         bootCli.sendUserMessage(inputText);
       }, spotifyClient, () => {
@@ -3351,9 +3352,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             cloudClient!.sendStream({ conversationId, requestId, event: 'error', data: { message: 'Stop requires the session the task belongs to.' } });
             return;
           }
-          // Same semantics as the local /stop fast-path command: abort the
-          // foreground task, cancel its work-ledger entry, halt sub-agents.
-          const note = await agent.stopAllWork('stopped');
+          // Same semantics as the local /stop fast-path command: abort this
+          // session's task, cancel its work-ledger entry, halt its sub-agents.
+          const note = await agent.stopAllWork('stopped', { sessionId: suppliedSessionId });
           cloudClient!.sendStream({
             conversationId,
             sessionId: suppliedSessionId,
@@ -3561,7 +3562,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   // Settings-free skill builder: the default model writes a skill from the owner's description.
   setSkillBuilder({ provider: () => providers.getDefault(), tools: () => Object.keys(capabilities.getTools()).sort() });
   setCloudReload(() => agent.reloadProviders());
-  setWebStop(() => agent.stopAllWork('stopped'));
+  setWebStop((target) => agent.stopAllWork('stopped', target));
   setWebSessionBusy((sessionId) => agent.isBusyWith(sessionId));
   setWebQueueControls({ state: (id) => agent.queueStateFor(id), prioritize: (id) => agent.prioritize(id) });
   setWebResearchControls({
