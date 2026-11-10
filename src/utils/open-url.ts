@@ -21,7 +21,12 @@ export function getUrlOpeners(
     ];
   }
   if (platform === 'darwin') return [{ command: 'open', args: [url] }];
-  if (platform === 'win32') return [{ command: 'cmd.exe', args: ['/d', '/s', '/c', 'start', '', url] }];
+  if (platform === 'win32') {
+    return [
+      { command: 'rundll32', args: ['url.dll,FileProtocolHandler', url] },
+      { command: 'cmd.exe', args: ['/d', '/s', '/c', 'start', '', url] },
+    ];
+  }
   return [{ command: 'xdg-open', args: [url] }];
 }
 
