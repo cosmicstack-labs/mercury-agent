@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Token usage
+- **Token usage is now counted correctly** (#296, thanks @parz1val-t). Mercury used to record only the last model call of each turn, under-reporting usage by about 6–12×. Every call is now counted, including the steps of a turn that ended early (a failed provider, a pause), so `dailyBudget` fills up and Token Saver kicks in much sooner than before. If you hit the budget earlier than expected, raise `tokens.dailyBudget`, or set `tokens.cachedWeight` (0–1, e.g. `0.1`) to count prompt-cache hits at a discount. `/budget` now shows today's cached, uncached and output split. Usage from past days is not recalculated.
+- **Each provider is billed for its own steps** when a turn moves from one provider to another.
+
 ### Faster, cheaper requests
 - **Repeat turns hit the prompt cache.** The parts of Mercury's instructions that change between turns (what it knows about you, bot status, the clock, the folder) now come after the cached part. A new message reuses most of the previous request on Anthropic, OpenAI, DeepSeek, Gemini and others, instead of about 900 tokens.
 - **Long screen tasks cost far less.** Only the two newest screenshots are sent on each step. On Anthropic, each step reads the conversation so far from cache instead of paying for it again.
