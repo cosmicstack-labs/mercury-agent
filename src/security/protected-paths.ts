@@ -70,10 +70,12 @@ export function isMercuryCredentialPath(path: string): boolean {
 }
 
 /** A shell command that names one of those files. */
+function mentionsMercuryHome(command: string): boolean {
+  return command.includes('.mercury') || command.includes(getMercuryHome()) || /\$MERCURY_HOME|\$\{MERCURY_HOME\}/.test(command);
+}
+
 export function commandTouchesMercuryCredentials(command: string): boolean {
-  const home = getMercuryHome();
-  const mentionsHome = command.includes('.mercury') || command.includes(home) || /\$MERCURY_HOME|\$\{MERCURY_HOME\}/.test(command);
-  return mentionsHome && AGENT_DENIED.some((name) => command.includes(name));
+  return mentionsMercuryHome(command) && AGENT_DENIED.some((name) => command.includes(name));
 }
 
 const MERCURY_PROGRAMS = ['gws-bin'];
@@ -85,7 +87,7 @@ export function isMercuryProgramPath(path: string): boolean {
 }
 
 export function commandTouchesMercuryPrograms(command: string): boolean {
-  return MERCURY_PROGRAMS.some((name) => command.includes(name));
+  return mentionsMercuryHome(command) && MERCURY_PROGRAMS.some((name) => command.includes(name));
 }
 
 export function isOtherAppCredentialPath(path: string): boolean {

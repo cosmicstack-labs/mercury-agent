@@ -245,7 +245,9 @@ describe('files', () => {
     expect(isMercuryProgramPath(join(home, 'skills', 'gws-gmail', 'SKILL.md'))).toBe(false);
     expect(commandTouchesMercuryPrograms('copy evil.exe %USERPROFILE%\\.mercury\\gws-bin\\gws.exe')).toBe(true);
     expect(commandTouchesMercuryPrograms('cp evil ~/.mercury/gws-bin/gws')).toBe(true);
+    expect(commandTouchesMercuryPrograms(`copy evil.exe ${join(home, 'gws-bin', 'gws.exe')}`)).toBe(true);
     expect(commandTouchesMercuryPrograms('gws drive files list')).toBe(false);
+    expect(commandTouchesMercuryPrograms('grep -rn gws-bin src')).toBe(false);
   });
 });
 
