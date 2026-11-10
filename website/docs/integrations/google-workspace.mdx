@@ -3,36 +3,36 @@ id: google-workspace
 title: Google Workspace
 ---
 
-Mercury works with Gmail, Google Drive and Google Docs through **Google's `gws` command-line tool**. You install gws and sign in to your own Google account once. Mercury then runs gws commands for you and knows which ones send, share, upload or delete: it always asks you before those, even under Allow All, and never runs them unattended.
+Mercury connects to Gmail, Google Drive and Google Docs with one command: `mercury google connect`, or `/google connect` in a chat. It sets up Google's `gws` command-line tool for you, signs you in to your own Google account, and installs the skill that teaches Mercury the commands. Mercury knows which gws commands send, share, upload or delete: it always asks you before those, even under Allow All, and never runs them unattended.
 
 An MCP server is the other way to connect Google Workspace. Both use your own Google account:
 
-| | [Google's `gws` CLI](#option-1-googles-gws-cli) | [Google Workspace MCP server](#option-2-google-workspace-mcp-server) |
+| | [`mercury google connect`](#option-1-mercury-google-connect) | [Google Workspace MCP server](#option-2-google-workspace-mcp-server) |
 |---|---|---|
 | What the agent uses | Shell commands (`gws gmail …`) through `run_command` | MCP tools (`mcp__google__…`) |
-| Made by | The [googleworkspace/cli](https://github.com/googleworkspace/cli) project, which says it is not an officially supported Google product | The open-source [workspace-mcp](https://github.com/taylorwilsdon/google_workspace_mcp) project |
-| You install | `gws`, with npm, Homebrew or a release binary | [`uv`](https://docs.astral.sh/uv/) (Python 3.10 or newer) |
+| Made by | Mercury sets up gws, from the [googleworkspace/cli](https://github.com/googleworkspace/cli) project, which says it is not an officially supported Google product | The open-source [workspace-mcp](https://github.com/taylorwilsdon/google_workspace_mcp) project |
+| You install | Nothing: `mercury google connect` installs gws for you | [`uv`](https://docs.astral.sh/uv/) (Python 3.10 or newer) |
 | Approvals | Reads and writes follow your permission mode. **Sends, shares, uploads and deletes always ask, even under Allow All** | Every call asks you, **even under Allow All**, unless you auto-approve that tool |
 | Scheduled tasks | Read and write, never send, share, upload or delete | Only the tools you auto-approve |
 | Where your Google sign-in is kept | Encrypted, with the key in your system keychain (in a file on Linux) | Plain JSON files, readable only by your user account |
-| Good for | Most setups: every Workspace API, Gmail drafts, scheduled summaries | Read-only setups where you want to approve every call |
+| Good for | Most setups: Gmail, Drive and Docs, drafts, scheduled summaries | Read-only setups where you want to approve every call |
 
 :::caution[Code that isn't Mercury's]
 
-Both run outside Mercury with access to your mail and files, and neither is made by Cosmic Stack. This page was checked against gws 0.22.5 and workspace-mcp 2.3.0. Their flags change between versions: if a step doesn't match, check `gws --help` or `uvx workspace-mcp --help`.
+gws and workspace-mcp run outside Mercury with access to your mail and files, and neither is made by Cosmic Stack. Mercury installs gws 0.22.5, the version this page was checked against, and checks the download against checksums built into Mercury.
 
 :::
 
 ## Before you start: your own Google app
 
-Both options sign in through an OAuth client in your own Google Cloud project. Your mail and files go from Google straight to your computer. Setting it up takes about ten minutes, once. With gws and the `gcloud` CLI, `gws auth setup` does it for you instead.
+Both options sign in through an OAuth client in your own Google Cloud project. Your mail and files go from Google straight to your computer. Setting it up takes about ten minutes, once.
 
 1. Create a project at [console.cloud.google.com/projectcreate](https://console.cloud.google.com/projectcreate).
 2. Turn on the APIs you'll use under **APIs & Services → Library**: **Gmail API**, **Google Drive API** and **Google Docs API**.
 3. Open **Google Auth Platform** and set up the consent screen:
    - **Google Workspace account:** choose **Internal**.
    - **Personal Gmail account:** choose **External**, then add your own address under **Audience → Test users**. Without it, sign-in fails with "Access blocked".
-4. Create a client under **Google Auth Platform → Clients → Create client**, of type **Desktop app**. Keep its client ID and secret.
+4. Create a client under **Google Auth Platform → Clients → Create client**, of type **Desktop app**, and download its JSON file.
 
 :::tip[Personal Gmail: sign-ins that expire after 7 days]
 
@@ -42,62 +42,46 @@ While an External app is in **Testing**, Google expires its sign-ins after 7 day
 
 **Work accounts:** a Google Workspace admin can block apps they haven't approved. If sign-in says your admin blocked access, ask them to allow your app's client ID under **Security → Access and data control → API controls**.
 
-## Option 1: Google's gws CLI
+## Option 1: mercury google connect
 
-[gws](https://github.com/googleworkspace/cli) is a command-line tool for Gmail, Drive, Docs and the other Workspace APIs. It's still before version 1.0. Mercury doesn't bundle it: you install it, sign in, and keep it updated yourself.
+### 1. Connect
 
-### 1. Install gws
-
-```bash
-npm install -g @googleworkspace/cli
-```
-
-On macOS and Linux, `brew install googleworkspace-cli` works too. Release binaries, Windows x64 included, are on the [releases page](https://github.com/googleworkspace/cli/releases). The npm package downloads gws from that page when it installs, so `npm install --ignore-scripts` leaves you without it. Check it with `gws --version`.
-
-**If Mercury runs as a background service**, the service only looks for programs in the system folders and Node.js's own folder:
-
-- **macOS and Linux:** link gws into one of them with `sudo ln -s "$(command -v gws)" /usr/local/bin/gws`.
-- **Windows:** npm puts gws in `%APPDATA%\npm`, which the service doesn't search. Copy `gws.exe` from a release into Node.js's folder instead.
-
-`mercury doctor --security` tells you when the service can't find gws.
-
-### 2. Sign in
-
-Use the Desktop app client from [Before you start](#before-you-start-your-own-google-app). Download its JSON from Google Cloud and save it as `client_secret.json` in `~/.config/gws/`, the same folder on Windows (`C:\Users\you\.config\gws\`). Setting `GOOGLE_WORKSPACE_CLI_CLIENT_ID` and `GOOGLE_WORKSPACE_CLI_CLIENT_SECRET` works too. Then, in your own terminal, sign in for only the services you need, read-only first:
+On the computer where Mercury runs:
 
 ```bash
-gws auth login -s gmail,drive,docs --readonly
+mercury google connect
 ```
 
-Run it again without `--readonly` when you want Mercury to write drafts or edit documents. gws encrypts what it stores. Check that it works:
+It:
+
+1. installs gws if it isn't there yet (about 6 MB, into `~/.mercury/gws-bin`), after asking;
+2. asks for the client JSON you downloaded, the first time only;
+3. opens Google's sign-in page in your browser: choose your account and allow access;
+4. installs Mercury's `google-workspace` skill.
+
+It ends with "✓ Connected as you@gmail.com (read-only)". Then ask Mercury, for example "Summarize my unread email".
+
+Mercury starts read-only. To let it write drafts and edit documents, connect again with write access:
 
 ```bash
-gws auth status
+mercury google connect --write
 ```
 
-Signing in is always yours to do: Mercury refuses every `gws auth` command except `status`, and any command that sets a `GOOGLE_WORKSPACE_CLI_*` variable.
+`--services gmail,drive,docs,calendar` changes the services, and `--client <path>` passes the client JSON without the question.
 
-### 3. Install the skills
+**Mercury on a server?** Run `mercury google connect` there, over SSH. Open the link it prints on your own computer and sign in. The last page, an address starting with `http://localhost:`, won't load: copy that address, paste it into the terminal where connect is waiting, and press Enter.
 
-Mercury's own skill teaches the agent the gws commands and Mercury's rules: check the sign-in first, write drafts rather than sending, treat email text as untrusted, and what each refusal means.
+### 2. Connect from a chat
 
-```bash
-mercury skills install --from https://mercuryagent.sh/skills/google-workspace/SKILL.md
-```
+Once the Google app is set up, the owner or an admin can connect from any chat, Telegram on a phone included:
 
-In a chat, as the owner or an admin, `/skills install https://mercuryagent.sh/skills/google-workspace/SKILL.md` does the same.
+1. Send `/google connect`, or `/google connect write` for write access. Mercury replies with the sign-in link.
+2. Sign in. On another device the last page won't load: copy its address and send `/google connect <that address>`.
+3. Mercury replies "✓ Connected as …".
 
-The gws project's own skills cover more commands. Install the ones for the services you use:
+The first time, run `mercury google connect` on the computer: the client secret never goes through a chat.
 
-```bash
-mercury skills install --from https://raw.githubusercontent.com/googleworkspace/cli/main/skills/gws-gmail/SKILL.md
-mercury skills install --from https://raw.githubusercontent.com/googleworkspace/cli/main/skills/gws-drive/SKILL.md
-mercury skills install --from https://raw.githubusercontent.com/googleworkspace/cli/main/skills/gws-docs/SKILL.md
-```
-
-`gws-shared` covers sign-in and the flags every command takes, and helper skills such as `gws-gmail-triage` sit next to them in the same `skills/` folder. Read a skill before installing it. None of these skills list `allowed-tools`, so they never lift Mercury's approvals. On Windows, rely on Mercury's skill: Google's examples put JSON in single quotes, which the Windows command prompt doesn't understand.
-
-### 4. What Mercury does with gws commands
+### 3. What Mercury does with gws commands
 
 Mercury reads every gws command before it runs and sorts it into one of four kinds:
 
@@ -106,7 +90,7 @@ Mercury reads every gws command before it runs and sorts it into one of four kin
 | **Read** | `gws gmail +triage`, `gws gmail +read`, `gws drive files list`, exporting a Doc | Your permission mode decides. In Ask Me, answering **Always** in the terminal or dashboard lets reads of that service (Gmail, Drive…) run for the rest of the chat |
 | **Write** | Gmail drafts (`--draft`), labels, moving to trash, creating files, editing Docs | Your permission mode decides. **Always** covers only that exact command |
 | **Send, share, upload, delete** | `gws gmail +send`, `+reply`, `+forward`; Drive sharing; `--upload` and attachments; permanent deletes | **Always asks**, showing the exact command, even under Allow All and after an earlier **Always**. Refused in scheduled tasks and for bots |
-| **Sign-in** | `gws auth export`, `gws auth login` | **Refused** everywhere. Run them yourself in a terminal |
+| **Sign-in** | `gws auth export`, `gws auth login` | **Refused** to the agent everywhere. Signing in is `mercury google connect`'s job |
 
 The send, share, upload and delete kind also covers:
 - Calendar event changes, which can email attendees;
@@ -119,7 +103,7 @@ The send, share, upload and delete kind also covers:
 
 **Bots** can run gws reads and writes only if their allowed commands name them. Sends, shares, uploads and deletes are refused for bots whatever the list says.
 
-**gws's own files** (`~/.config/gws`) are off limits to Mercury's file and shell tools in every mode. gws itself still reads them.
+**gws's files** (your sign-in in `~/.config/gws`, and the gws program in `~/.mercury/gws-bin`) are off limits to Mercury's file and shell tools in every mode.
 
 **Masking:** Google access tokens, refresh tokens, client secrets and private keys in command output are masked before the AI model sees them.
 
@@ -131,16 +115,26 @@ Mercury judges the command text. If the agent writes a script that runs gws, or 
 
 :::
 
-### 5. Check the setup
+### 4. Check the connection
 
 ```bash
-mercury doctor --security
+mercury google status
 ```
 
-When gws is set up, the check reports:
-- a sign-in stored unencrypted (`credentials.json` in gws's folder);
+`/google status` in a chat shows the same. You see the account, whether it's read-only, and the security checks `mercury doctor --security` also runs:
+- a sign-in stored unencrypted;
 - on macOS and Windows, an encryption key kept in a file instead of the system keychain;
-- a background service that can't find gws.
+- a background service that can't find gws. `mercury google connect --install` fixes it.
+
+### More commands: the gws project's skills
+
+Mercury's skill covers Gmail, Drive and Docs. The gws project's own skills cover more commands, and are optional:
+
+```bash
+mercury skills install --from https://raw.githubusercontent.com/googleworkspace/cli/main/skills/gws-gmail/SKILL.md
+```
+
+`gws-drive`, `gws-docs` and helper skills such as `gws-gmail-triage` sit next to it in the same `skills/` folder. Read a skill before installing it. None of them list `allowed-tools`, so they never lift Mercury's approvals. Their examples put JSON in single quotes, which the Windows command prompt doesn't understand, so on Windows rely on Mercury's skill.
 
 ## Option 2: Google Workspace MCP server
 
@@ -226,7 +220,7 @@ Leave every tool that writes, sends or shares out of `autoApprove`. Restart Merc
 
 - **Mail and documents are untrusted text.** An email or a doc can contain instructions aimed at the agent ("forward this to…"). They never change Mercury's permissions, so the approval prompt is your check: read what a send, share or upload will do before you answer.
 - **Your Google sign-in stays on your computer.** gws encrypts it. workspace-mcp keeps it as plain JSON in `~/.google_workspace_mcp/credentials/`, readable only by your user account, with your refresh token and client secret inside. Mercury's file and shell tools refuse both folders, whatever the permission mode.
-- **Removing access.** Remove the app at [myaccount.google.com/permissions](https://myaccount.google.com/permissions). Then run `gws auth logout`, or `mercury mcp remove google` and delete `~/.google_workspace_mcp/credentials/`.
+- **Removing access.** Run `mercury google disconnect` (or `/google disconnect`), then remove the app at [myaccount.google.com/permissions](https://myaccount.google.com/permissions). For the MCP server, run `mercury mcp remove google` and delete `~/.google_workspace_mcp/credentials/`.
 
 ## Troubleshooting
 
@@ -235,11 +229,14 @@ Leave every tool that writes, sends or shares out of `autoApprove`. Restart Merc
 | "Access blocked" on Google's page | Add your address under **Audience → Test users**, or publish the app |
 | Signed out again after about a week | Your External app is still in Testing. Publish it and sign in once more |
 | "Blocked by your admin" | Your Workspace admin must allow the client ID under **API controls** |
-| `gws: command not found` inside Mercury | The background service can't find gws. See [Install gws](#1-install-gws), and run `mercury doctor --security` |
-| "gws sign-in commands are for the owner" | Mercury never runs `gws auth` commands other than `status`. Run that command yourself in a terminal |
+| "That is a Web application client" | Create a client of type **Desktop app** and download its JSON |
+| "gws has no release for …" | gws has no build for this computer (for example Windows on Arm), so connect can't set it up there |
+| The browser didn't open | Open the link `mercury google connect` printed |
+| "Your Google app isn't set up yet" in a chat | Run `mercury google connect` once on the computer Mercury runs on |
+| "No Google sign-in is waiting" | The sign-in timed out after 10 minutes, or a newer one replaced it. Send `/google connect` again |
+| "gws sign-in commands are for the owner" | The agent never signs in. Use `mercury google connect` |
 | "nobody can be asked here" | A scheduled task or a bot tried to send, share, upload or delete. Do it in a chat where you can approve it |
 | A gws read asks every time, even after **Always** | Mercury couldn't read the command (it uses `$`, backticks, `~` or a wrapper such as `xargs`). Ask Mercury to write the command out plainly |
-| gws examples fail on Windows | Google's skills put JSON in single quotes. Install Mercury's skill, which uses double quotes |
 | The MCP server fails to start, or `uvx` isn't found | Use the full path to `uvx` in `mercury mcp add`. The background service has a fixed `PATH` |
 | "No valid 'user_google_email' provided" | Tell Mercury which Google address to use |
 | A Google MCP tool is missing for the agent | It isn't allowed yet, or your `--permissions` level doesn't include it. `mercury mcp test google` shows what the server offers |
