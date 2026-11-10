@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Faster, cheaper requests
+- **Repeat turns hit the prompt cache.** The parts of Mercury's instructions that change between turns (what it knows about you, bot status, the clock, the folder) now come after the cached part. A new message reuses most of the previous request on Anthropic, OpenAI, DeepSeek, Gemini and others, instead of about 900 tokens.
+- **Long screen tasks cost far less.** Only the two newest screenshots are sent on each step. On Anthropic, each step reads the conversation so far from cache instead of paying for it again.
+- **No more "Starting" for minutes.** If a provider accepts a request and then sends nothing for 150 seconds, Mercury moves to the next provider. Set `MERCURY_FIRST_RESPONSE_TIMEOUT_MS` to change the wait.
+- **No more invented skill picks.** Mercury no longer stops to ask which skill you meant, or tells the model you chose a skill (often `web-search`) when you didn't. Matching skills are suggested and the model decides; `#skill-name` still picks one directly.
+- **Smaller requests.** The draw.io tools are only sent when you're working on a diagram.
+
 ### Chats at the same time
 - **Mercury answers several chats at once.** A long research run or coding task in one chat no longer makes the terminal, Telegram, the desktop app or a scheduled task wait. Each chat still handles its own messages in order.
 - **Sized to your machine.** Up to 4 chats run at once, 3 under 8 GB of RAM, and 2 on Termux or under 4 GB. When memory runs short, new chats wait for a free slot, and if memory keeps growing the most recently started task stops while the rest carry on. Set `concurrency.maxTurns` in `mercury.yaml` (or `MERCURY_MAX_CONCURRENT_TURNS`) to choose the limit; `1` restores one chat at a time.

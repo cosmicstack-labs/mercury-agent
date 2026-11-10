@@ -110,4 +110,21 @@ describe('eval · chat mode never forces guard rounds', () => {
     // What the session remembers is the summary too, not a placeholder.
     expect(turn.sessionEntries.filter((m) => m.kind === 'message').map((m) => m.content).join('\n')).not.toContain('(no text response)');
   });
+
+  it('the cached system prefix is byte-identical from one turn to the next (ADR-039)', async () => {
+    const result = await runScenario({
+      name: 'chat-stable-prefix',
+      turns: [
+        { message: 'Hi', steps: [textStep('Hello!')] },
+        { message: 'what time is it in Tokyo roughly?', steps: [textStep('Around evening.')] },
+      ],
+    });
+    expect(result.failures).toEqual([]);
+    const firstSystem = (turn: (typeof result.turns)[number]) => JSON.stringify(turn.providerCalls[0].prompt[0]);
+    expect(result.turns[0].providerCalls[0].prompt[0].role).toBe('system');
+    expect(firstSystem(result.turns[1])).toBe(firstSystem(result.turns[0]));
+    // The per-turn facts (clock, working directory) are in the block after it.
+    expect(firstSystem(result.turns[0])).not.toContain('Environment:');
+    expect(JSON.stringify(result.turns[0].providerCalls[0].prompt[1])).toContain('Environment:');
+  });
 });

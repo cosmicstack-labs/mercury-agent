@@ -45,6 +45,10 @@ concurrency:
 
 Or set `MERCURY_MAX_CONCURRENT_TURNS`. `/stop` stops the chat you type it in, and `/halt` stops all of them.
 
+## Slow providers
+
+If a provider accepts a request but sends nothing back for 150 seconds, Mercury moves on to the next provider you have set up. To change the wait, set `MERCURY_FIRST_RESPONSE_TIMEOUT_MS` (in milliseconds; `0` turns it off). Raise it if you use a model that thinks for minutes before writing anything.
+
 ## Optional tool discovery
 
 If you have many plugin or MCP tools, you can load their schemas only when the main agent needs them. Add this to `~/.mercury/mercury.yaml` and restart Mercury:

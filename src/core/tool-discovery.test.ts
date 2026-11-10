@@ -21,8 +21,9 @@ describe('optional tool discovery', () => {
     expect(off.tools).toEqual(tools);
     expect(off.tools.demo__search).toBe(tools.demo__search);
     expect(off.activeTools).toEqual(['read_file']);
-    expect(off.prepareStep).toBeUndefined();
-    expect(new ToolDiscovery(() => ({ read_file: tools.read_file }), true).request().prepareStep).toBeUndefined();
+    // The step hook only applies the payload policy then: nothing to change, nothing overridden.
+    expect(off.prepareStep!({ stepNumber: 0 })).toEqual({});
+    expect(new ToolDiscovery(() => ({ read_file: tools.read_file }), true).request().prepareStep!({ stepNumber: 1 })).toEqual({});
   });
 
   it('searches names and descriptions, loads exact schemas next step, and retains built-ins', async () => {

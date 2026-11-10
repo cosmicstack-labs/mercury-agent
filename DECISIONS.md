@@ -406,3 +406,30 @@
   - **Final sub-agent halts.** Halted ids are remembered: no step-budget auto-resume, no start from the wait queue.
   - Research "write the report now" stays a non-cancelling abort: that turn goes on to write the report.
 - **Consequence**: Stop means stopped. "Continue" or sending the request again is the only way back. A command that needs the terminal's `/dev/tty` (an interactive password prompt) no longer gets it, since commands run in their own session. They never could answer through Mercury anyway.
+
+## ADR-039: Lean, cache-stable requests; skills are suggested, never a gate
+
+- **Context**: Captured requests (Claude and DeepSeek, 2026-11-09) showed:
+  - One Claude voice task used 4.36M input tokens in under four minutes ($8.77).
+  - A new turn reused only about 900 tokens of cached prefix.
+  - Every voice question was told "[Routing] User clarified: use the `web-search` skill", which nobody had said.
+  - Users waited minutes at "Starting" before the first model call.
+
+  The causes:
+  1. **Screenshots as text.** On chat-completions providers, screenshots in tool results were sent as base64 text. This is fixed separately by sending images only where the API carries them (`a8f0a481`).
+  2. **Cache-breaking prompt.** Values that change between turns sat right after the identity in the "stable" system prompt: the owner brief, bot states, clock, working directory and memory count.
+  3. **No conversation caching.** For Anthropic, nothing past the system prompt was cached, so each step paid again for the whole conversation, old screenshots included.
+  4. **A blocking skill picker.** It ran before the first model call, routed on Mercury's own voice wrapper ("…web_search for anything current…"), auto-answered itself on voice and after 2 minutes on the desktop, and ran skill batches as sub-agents up front.
+  5. **Substring matching.** Intent matching matched inside words ("hi" in "this").
+  6. **No first-response timeout.** A provider that accepted the request and sent nothing held the turn for minutes.
+  7. **Unrelated tool schemas** (draw.io) on every request.
+- **Decision**:
+  - **System prompt in two parts.** `stable` holds identity, skills, rules, mode and GitHub, and carries the cache marker. `dynamic` holds the owner brief, bot roster, research run, environment and memory count, and goes first in the per-turn system block. The stable part is byte-identical across turns, so every provider's prefix cache holds.
+  - **A payload policy on every step** (`prepareStep`, which never changes the stored conversation):
+    - Only the newest 2 screenshots are kept; older ones become a note.
+    - No tool result goes over 200K characters (head and tail kept).
+    - On Anthropic, the newest two messages carry cache breakpoints. With the system prompt's marker that's 3 of the 4 allowed, and each step reads the previous step from cache.
+  - **Skills are suggested, never forced.** `#skill-name` remains the user's explicit pick. Otherwise the router may list up to 3 matching skills in the per-turn context, and the model decides. There's no picker, no "User clarified", and no sub-agent batches before the model. Routing reads the owner's words (`metadata.routingText`, or the message minus a leading `[…]` channel note), and intents match on whole words. The hard-coded "MUST invoke web-search / tweet-notifier" lines and the duplicated tweet section are gone; the built-in `web_search` tool is named for current information.
+  - **First-response window.** With no chunk of any kind within 150 s (`MERCURY_FIRST_RESPONSE_TIMEOUT_MS`, 0 = off), the attempt is treated as stalled and the next provider in the chain takes over.
+  - **draw.io tools** join Spotify as a niche group, sent only when the turn is about diagrams.
+- **Consequence**: A new turn's request is mostly cache reads on every provider, a multi-step Anthropic turn is billed close to linearly instead of quadratically, and nothing waits on a picker before the model runs. On a model that ignores suggestions, a skill that the old forced routing would have run now has to be picked by the model. Hidden-reasoning models that think for over 150 s before their first token fall back to the next provider unless the window is raised.

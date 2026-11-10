@@ -1,5 +1,6 @@
 /** Optional per-turn schema discovery for owner-installed plugin and MCP tools. */
-import { tool, zodSchema, type Tool } from 'ai';
+import { tool, zodSchema, type ModelMessage, type Tool } from 'ai';
+import { isAnthropicModel, shapeStepMessages } from './payload-policy.js';
 import { z } from 'zod';
 
 export const DISCOVER_TOOLS = 'discover_tools';
@@ -104,15 +105,20 @@ export class ToolDiscovery {
     return {
       tools,
       ...(activeTools ? { activeTools } : {}),
-      prepareStep: discover || options.forceFirstTool
-        ? ({ stepNumber }: { stepNumber: number }) => ({
+      // Every step: discovery's tool set (when on), the forced first tool
+      // (when asked), and the payload policy (ADR-039) — old screenshots out,
+      // oversize results capped, Anthropic conversation cache markers.
+      prepareStep: ({ stepNumber, messages, model }: { stepNumber: number; messages?: ModelMessage[]; model?: unknown }) => {
+        const shaped = messages ? shapeStepMessages(messages, { anthropicCache: isAnthropicModel(model) }) : messages;
+        return {
           ...(discover ? { activeTools: active() } : {}),
           ...(options.forceFirstTool && stepNumber === 0 ? {
             toolChoice: 'required' as const,
             ...(options.firstStepTools ? { activeTools: options.firstStepTools.filter((name) => active().includes(name)) } : {}),
           } : {}),
-        })
-        : undefined,
+          ...(shaped !== messages ? { messages: shaped } : {}),
+        };
+      },
     };
   }
 }

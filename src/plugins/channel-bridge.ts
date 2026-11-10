@@ -409,7 +409,7 @@ export class PluginChannel extends BaseChannel {
         senderRole: 'admin',
         content: this.desktop ? `${DESKTOP_VOICE_NOTE}\n${question}` : `[Voice call: the owner asked this out loud. Use your tools to get the real answer: web_search for news and anything current, fetch_url, memory, skills. Then answer in one to three short spoken sentences, with no markdown, lists, links or code. Go ahead and do what they ask, including saving files or running things: if an action needs approval, Mercury asks the owner on the call and in the chat, and continues once they say yes. Don't ask them to confirm by message yourself. Links, lists, prices, addresses and other details worth keeping: never read them out. If they asked for them, send them with whatsapp__send_to_chat and say you've sent them to the chat. If you found something useful they didn't ask to receive, end your answer by offering to send it ("Want me to send the links to your chat?") and only send once they say yes. Whenever your answer involves links or details, add them after a final line "For the chat:" (that part isn't spoken, and lets you send them later without searching again).]${sentNote}\n${question}`,
         timestamp: Date.now(),
-        metadata: { pluginId: this.manifest.id, voiceCall: true, callId, attachments: files.slice(-4), channelAccess: this.accessFor('admin'), channelGuidance: this.guidance('admin', false, true) },
+        metadata: { pluginId: this.manifest.id, voiceCall: true, callId, routingText: question, attachments: files.slice(-4), channelAccess: this.accessFor('admin'), channelGuidance: this.guidance('admin', false, true) },
       });
     });
   }

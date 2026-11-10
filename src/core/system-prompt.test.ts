@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { budgetContext, buildSystemPrompt, environmentSection, ownerSection, type SystemPromptInputs } from './system-prompt.js';
+import { budgetContext, buildSystemPrompt, buildSystemPromptParts, environmentSection, ownerSection, type SystemPromptInputs } from './system-prompt.js';
 
 const base: SystemPromptInputs = {
   identityPrompt: 'You are Mercury.',
@@ -21,8 +21,38 @@ describe('system prompt assembly', () => {
   it('starts with the identity and keeps the stable section order', () => {
     const p = buildSystemPrompt(base);
     expect(p.startsWith('You are Mercury.')).toBe(true);
-    const order = ['Environment:', 'Tool Usage Guidelines', 'Second Brain is DISABLED'].map((s) => p.indexOf(s));
+    const order = ['Tool Usage Guidelines', 'Second Brain is DISABLED', 'Environment:'].map((s) => p.indexOf(s));
     expect(order.every((v, i) => v > -1 && (i === 0 || v > order[i - 1]))).toBe(true);
+  });
+
+  it('keeps everything that changes between turns out of the cached part (ADR-039)', () => {
+    const turn = (over: Partial<SystemPromptInputs>) => buildSystemPromptParts({
+      ...base,
+      skillContext: 'SKILLS: x',
+      botSection: '\n\nBOTS: helper [running]',
+      memorySummary: { total: 12, learningPaused: false },
+      ownerSections: { about: '- Founder', howToWork: '- Short replies' },
+      ownerName: 'Salman',
+      ...over,
+    });
+    const first = turn({});
+    // A later turn: new beliefs, a bot finished, another hour, another chat folder, more memories, a research run.
+    const later = turn({
+      ownerSections: { about: '- Founder\n- Uses Docker', howToWork: '- Short replies' },
+      botSection: '\n\nBOTS: helper [idle]',
+      now: new Date('2026-10-09T21:05:00Z'),
+      cwd: '/other/chat',
+      memorySummary: { total: 13, learningPaused: false },
+      researchSuffix: '\n\nRESEARCH: topic',
+    });
+    expect(later.stable).toBe(first.stable);
+    expect(first.stable).toContain('Second Brain (SQLite-backed long-term memory) is ENABLED.');
+    for (const changing of ['## About Salman', 'BOTS', 'Environment:', 'persistent memories']) {
+      expect(first.stable).not.toContain(changing);
+      expect(first.dynamic).toContain(changing);
+    }
+    expect(later.dynamic).toContain('RESEARCH: topic');
+    expect(later.dynamic).toContain('You have 13 persistent memories');
   });
 
   it('renders the clock at hour resolution so the prefix stays cacheable', () => {
@@ -90,20 +120,17 @@ describe('system prompt assembly', () => {
 
   it('includes skills, bots and mode suffixes verbatim', () => {
     const p = buildSystemPrompt({ ...base, skillContext: 'SKILLS: tweet-notifier', botSection: '\n\nBOTS', programmingSuffix: '\n\nCODE', researchSuffix: '\n\nRESEARCH' });
-    for (const s of ['SKILLS: tweet-notifier', 'BOTS', 'CODE', 'RESEARCH', 'Tweet Notification System Available']) expect(p).toContain(s);
+    for (const s of ['SKILLS: tweet-notifier', 'BOTS', 'CODE', 'RESEARCH']) expect(p).toContain(s);
   });
 
-  it('places the owner brief right after the identity and before skills; omits it when empty', () => {
+  it('puts the owner brief at the top of the per-turn part (it is re-learned between turns); omits it when empty', () => {
     const sections = { about: 'Facts:\n- Founder of Cosmic Stack', howToWork: '- Keep replies short; lead with the result.' };
+    const parts = buildSystemPromptParts({ ...base, skillContext: 'SKILLS: x', ownerSections: sections, ownerName: 'Salman' });
+    expect(parts.stable.startsWith('You are Mercury.')).toBe(true);
+    expect(parts.stable).toContain('SKILLS: x');
+    expect(parts.dynamic.startsWith('## About Salman')).toBe(true);
+    expect(parts.dynamic.indexOf('## How to work with Salman')).toBeGreaterThan(0);
     const p = buildSystemPrompt({ ...base, skillContext: 'SKILLS: x', ownerSections: sections, ownerName: 'Salman' });
-    const identity = p.indexOf('You are Mercury.');
-    const about = p.indexOf('## About Salman');
-    const how = p.indexOf('## How to work with Salman');
-    const skills = p.indexOf('SKILLS: x');
-    expect(identity).toBe(0);
-    expect(about).toBeGreaterThan(identity);
-    expect(how).toBeGreaterThan(about);
-    expect(skills).toBeGreaterThan(how);
     expect(p).toContain('- Founder of Cosmic Stack');
     expect(p).toContain('- Keep replies short; lead with the result.');
     // Nothing held yet: no heading at all, so the model has nothing to embroider.

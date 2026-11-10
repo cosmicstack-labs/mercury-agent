@@ -102,7 +102,7 @@ import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPro
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, buildModelHistory, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult, detectRepetitionLoop } from './context-window.js';
-import { buildSystemPrompt as assembleSystemPrompt, budgetContext } from './system-prompt.js';
+import { buildSystemPrompt as assembleSystemPrompt, buildSystemPromptParts, budgetContext, type SystemPromptInputs } from './system-prompt.js';
 import { buildStatusVerbPrompt, parseStatusVerbs, shouldRefreshStatusVerbs } from './status-verbs.js';
 import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
@@ -482,6 +482,8 @@ const HEARTBEAT_MAX_MS = 60000;
 const TYPING_REFRESH_MS = 4000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
 const MAX_STALL_MS = 4 * 60 * 1000;
+/** No chunk at all from a provider within this window → next provider (ADR-039). */
+const FIRST_RESPONSE_TIMEOUT_MS = 150_000;
 const MAX_SELF_CHECKS = 3; // max AI self-checks per request before hard-aborting
 
 /**
@@ -632,6 +634,20 @@ export function laneKeyFor(msg: ChannelMessage): string {
   }
   const conversation = typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
   return `${msg.channelType}:${conversation}`;
+}
+
+/**
+ * The owner's own words, for skill routing: what a channel says they said
+ * (`metadata.routingText`), else the message without a leading `[...]`
+ * channel note (voice wrappers carry Mercury's own instructions, which named
+ * web_search and made every voice question "match" the web-search skill).
+ */
+export function routingTextOf(msg: ChannelMessage): string {
+  const given = msg.metadata?.routingText;
+  if (typeof given === 'string') return given.trim();
+  const text = msg.content.trim();
+  const note = /^\[[^\]]*\][^\n]*\n/.exec(text);
+  return (note ? text.slice(note[0].length) : text).trim();
 }
 
 export class Agent {
@@ -2377,6 +2393,31 @@ export class Agent {
     })();
   }
 
+  /**
+   * Abort this provider attempt as stalled when no chunk of any kind (text,
+   * reasoning, tool call) arrives within the first-response window.
+   * `MERCURY_FIRST_RESPONSE_TIMEOUT_MS` overrides it (0 turns it off).
+   */
+  private armFirstResponseTimer(providerName: string, controller: AbortController): { received(): void; clear(): void } {
+    const raw = Number(process.env.MERCURY_FIRST_RESPONSE_TIMEOUT_MS);
+    const windowMs = Number.isFinite(raw) && raw >= 0 ? raw : FIRST_RESPONSE_TIMEOUT_MS;
+    let settled = false;
+    const timer = windowMs > 0 ? setTimeout(() => {
+      if (settled || controller.signal.aborted) return;
+      settled = true;
+      logger.warn({ provider: providerName, waitedMs: windowMs }, 'No response from the provider within the first-response window — trying the next one');
+      this.pushLiveActivity(`No response from ${providerName} — trying again`, `${Math.round(windowMs / 1000)}s without a reply`);
+      this.currentAbortReason = 'stalled';
+      controller.abort(new Error(`${providerName} sent nothing for ${Math.round(windowMs / 1000)}s`));
+    }, windowMs) : null;
+    timer?.unref?.();
+    const clear = () => {
+      settled = true;
+      if (timer) clearTimeout(timer);
+    };
+    return { received: clear, clear };
+  }
+
   private withProviderDeadline<T>(operation: PromiseLike<T>, controller: AbortController, deadlineAt: number): Promise<T> {
     return withAbortDeadline(operation, controller, deadlineAt - Date.now(), () => {
       this.currentAbortReason = 'time-limit';
@@ -3210,116 +3251,62 @@ export class Agent {
    * ambiguous match the user disambiguates. May rewrite or append to
    * `messages`; never ends the turn on its own.
    */
-  private async routeSkillIntent(msg: ChannelMessage, trimmed: string, messages: Array<{ role: string; content: unknown }>): Promise<void> {
-    if (this.skillBatcher && this.skillLoader && msg.channelType !== 'internal') {
-      try {
-        const intentRouter = this.skillLoader.intentRouter;
+  /**
+   * Skill routing (ADR-039). Two things only, and nothing blocks the turn:
+   *  - `#skill-name …` is the user's explicit pick: the model is told to use it.
+   *  - otherwise the router may *suggest* skills in the per-turn context; the
+   *    model decides. It used to stop the turn on a skill picker before the
+   *    first model call (2 minutes on the desktop, then the first option), to
+   *    answer that picker itself on voice channels, and to tell the model
+   *    "User clarified: use X" although nobody had — and to run whole skill
+   *    batches as sub-agents before the model was even asked.
+   * Routing reads the owner's own words (`metadata.routingText`, or the
+   * message without a leading channel note), never Mercury's own wrapper text.
+   * Returns the hint for the per-turn context, or '' for none.
+   */
+  private async routeSkillIntent(msg: ChannelMessage, trimmed: string, messages: Array<{ role: string; content: unknown }>): Promise<string> {
+    if (!this.skillLoader || msg.channelType === 'internal') return '';
+    try {
+      const intentRouter = this.skillLoader.intentRouter;
+      if (!intentRouter || !intentRouter.isInitialized()) return '';
 
-        // (1) Explicit `#skill-name <rest>` shortcut from the # picker.
-        const hashMatch = trimmed.match(/^#([a-z0-9_:.-]+)\b\s*(.*)$/i);
-        if (intentRouter && intentRouter.isInitialized() && hashMatch) {
-          const skillName = hashMatch[1];
-          const rest = hashMatch[2].trim();
-          const knownSkills = this.skillLoader.getDiscovered?.() || [];
-          const known = knownSkills.some((s: any) => s.name === skillName);
-          if (known) {
-            messages[messages.length - 1] = {
-              role: 'user',
-              content: rest || trimmed,
-            };
-            messages.push({
-              role: 'user',
-              content: `[Routing] The user explicitly selected the \`${skillName}\` skill via #-prefix. Invoke it via \`use_skill\` with name="${skillName}" before doing anything else, then act on the result.`,
-            });
-            // Skip the rest of routing — explicit pick wins.
-          } else {
-            // Unknown #tag: just strip it and let routing proceed on the rest.
-            const stripped = rest || trimmed.replace(/^#\S+\s*/, '');
-            if (stripped) {
-              messages[messages.length - 1] = { role: 'user', content: stripped };
-            }
-          }
+      // (1) Explicit `#skill-name <rest>` shortcut from the # picker.
+      const hashMatch = trimmed.match(/^#([a-z0-9_:.-]+)\b\s*(.*)$/i);
+      if (hashMatch) {
+        const skillName = hashMatch[1];
+        const rest = hashMatch[2].trim();
+        const knownSkills = this.skillLoader.getDiscovered?.() || [];
+        if (knownSkills.some((s: any) => s.name === skillName)) {
+          messages[messages.length - 1] = { role: 'user', content: rest || trimmed };
+          messages.push({
+            role: 'user',
+            content: `[Routing] The user explicitly selected the \`${skillName}\` skill via #-prefix. Invoke it via \`use_skill\` with name="${skillName}" before doing anything else, then act on the result.`,
+          });
+        } else {
+          // Unknown #tag: just strip it.
+          const stripped = rest || trimmed.replace(/^#\S+\s*/, '');
+          if (stripped) messages[messages.length - 1] = { role: 'user', content: stripped };
         }
-
-        if (intentRouter && intentRouter.isInitialized() && !hashMatch) {
-          const analysis = intentRouter.analyzeMatch(trimmed, { clearThreshold: 0.85, gap: 0.15 });
-
-          // (2a) Ambiguous → ask the user to pick before executing anything.
-          if (analysis.ambiguous && analysis.closeContenders.length >= 2) {
-            const contenders = analysis.closeContenders.slice(0, 5);
-            const choices = [
-              ...contenders.map(c => {
-                const desc = intentRouter.getSkillDescription?.(c.name) || '';
-                return desc ? `${c.name} — ${desc}` : c.name;
-              }),
-              'None of these — answer normally',
-            ];
-            const channel = this.channels.getChannelForMessage(msg);
-            let picked: string | null = null;
-            try {
-              picked = await this.presentChoice(
-                `I matched several skills for that request and I'm not sure which you meant. Pick one:`,
-                choices,
-                msg.channelId,
-                msg.channelType,
-              );
-            } catch {
-              picked = null;
-            }
-            if (picked && !picked.startsWith('None of these')) {
-              const chosenName = picked.split(' — ')[0].trim();
-              messages.push({
-                role: 'user',
-                content: `[Routing] User clarified: use the \`${chosenName}\` skill. Invoke it via \`use_skill\` with name="${chosenName}" before doing anything else.`,
-              });
-              if (channel) {
-                await channel.send(`Routing to **${chosenName}**.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-              }
-            }
-            // If the user picked "None of these" we just fall through silently.
-          } else {
-            // (2b) Clear-enough match → use the existing batch path, but
-            //      only when the *top batch alone* has 2+ skills (genuine
-            //      multi-step request like "download and notify"). Cross-
-            //      category fan-out is what caused the 10-skill explosion.
-            const batches = intentRouter.matchToBatches(trimmed, 0.6);
-            const totalMatchedSkills = batches.reduce((sum, b) => sum + b.skills.length, 0);
-
-            if (batches.length > 0 && totalMatchedSkills >= 1) {
-              const topBatch = batches[0];
-              const matchedSkillNames = topBatch.skills.map(s => s.name);
-              this.markProgress(`Matched intents: ${matchedSkillNames.join(', ')}...`);
-
-              if (topBatch.skills.length >= 2 && analysis.clearWinner) {
-                const plan = this.skillBatcher.planExecution([topBatch]);
-                if (plan.batches.length > 0) {
-                  const channel = this.channels.getChannelForMessage(msg);
-                  if (channel) {
-                    await channel.send(`🧠 Routing to ${topBatch.skills.length} skills in **${topBatch.categoryLabel}**: ${matchedSkillNames.join(', ')}.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                  }
-
-                  const batchResults = await this.skillBatcher.execute(plan, trimmed, msg.channelId, msg.channelType);
-                  const summary = this.skillBatcher.summarizeResults(batchResults);
-
-                  if (summary) {
-                    messages.push({
-                      role: 'user',
-                      content: `[Skill Batch Execution Results]\n${summary}\n\nSynthesize a coherent response based on these results. Mention what was done, any failures, and key findings.`,
-                    });
-                    messages.push({
-                      role: 'assistant',
-                      content: 'Acknowledged. I will synthesize the batch execution results into a coherent response.',
-                    });
-                  }
-                }
-              }
-              // Single clear-winner skill: let the LLM call use_skill itself.
-            }
-          }
-        }
-      } catch (err) {
-        logger.warn({ err }, 'Intent routing / batch execution failed — continuing without it');
+        return '';
       }
+
+      // (2) A suggestion, never a gate.
+      const text = routingTextOf(msg);
+      if (!text) return '';
+      const analysis = intentRouter.analyzeMatch(text, { clearThreshold: 0.85, gap: 0.15 });
+      const candidates = analysis.clearWinner && analysis.top
+        ? [analysis.top]
+        : analysis.ambiguous ? analysis.closeContenders.slice(0, 3) : [];
+      if (candidates.length === 0) return '';
+      this.markProgress(`Possible skills: ${candidates.map((c) => c.name).join(', ')}`);
+      const lines = candidates.map((c) => {
+        const desc = intentRouter.getSkillDescription?.(c.name) || '';
+        return `- ${c.name}${desc ? ` — ${desc.slice(0, 160)}` : ''}`;
+      });
+      return `Skills that may fit this message (use one with use_skill only if it actually fits; otherwise answer directly):\n${lines.join('\n')}`;
+    } catch (err) {
+      logger.warn({ err }, 'Intent routing failed — continuing without it');
+      return '';
     }
   }
 
@@ -3640,7 +3627,11 @@ export class Agent {
       this.capabilities.setChannelContext(msg.channelId, msg.channelType, canonicalSession.id);
       this.capabilities.permissions.setCurrentSenderRole(msg.senderRole);
 
-      let systemPrompt = this.buildSystemPrompt();
+      // Stable part = the cached system prefix; the parts that change between
+      // turns (owner brief, bots, clock, cwd, memory count) go in the per-turn
+      // block after it, so a new turn still hits the provider's cache (ADR-039).
+      const promptParts = this.buildSystemPromptParts();
+      let systemPrompt = promptParts.stable;
       if (chatFolder) systemPrompt += `\n- Files you make go in the working directory (this chat's folder in the owner's Mercury artifacts folder), unless the owner names another place. Use relative paths or that folder; never write loose files into the home folder.`;
       if (msg.metadata?.workContinuation === true) {
         const attempt = typeof msg.metadata.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 1;
@@ -3714,9 +3705,10 @@ export class Agent {
 
       if (!canonicalSessionId) messages.push({ role: 'user', content: msg.content });
 
-      const volatileSystem = contextBlocks.length > 0
-        ? `## Context for this turn\n\n${contextBlocks.join('\n\n')}`
-        : '';
+      let volatileSystem = [
+        promptParts.dynamic,
+        contextBlocks.length > 0 ? `## Context for this turn\n\n${contextBlocks.join('\n\n')}` : '',
+      ].filter(Boolean).join('\n\n');
       // Mode-aware tool exposure: niche tool groups (Spotify) are left out of
       // the request unless the turn is about them. Schemas are re-sent on
       // every step, so this saves tokens on every step of every turn.
@@ -3740,7 +3732,8 @@ export class Agent {
       //      - No usable match → fall through to the normal LLM loop.
       // A command that reached the model is a real turn after all.
       raiseTurnIndicator();
-      await this.routeSkillIntent(msg, trimmed, messages);
+      const routingHint = await this.routeSkillIntent(msg, trimmed, messages);
+      if (routingHint) volatileSystem = volatileSystem ? `${volatileSystem}\n\n${routingHint}` : routingHint;
 
       this.lifecycle.transition('responding');
 
@@ -4303,6 +4296,7 @@ export class Agent {
         // Per-attempt latency accounting: the only way to answer "why is
         // coding slow" with data instead of guesses.
         const attemptStartedAt = Date.now();
+        let firstResponse: { received(): void; clear(): void } | null = null;
         try {
           const providerDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           this.markProgress(`Calling ${provider.name}...`);
@@ -4338,6 +4332,12 @@ export class Agent {
           if (canStream && channel) {
             let streamError: unknown;
             let streamAborted = false;
+            // A provider that accepts the request and then sends nothing (rate
+            // limited upstream, overloaded, a dead connection) used to hold the
+            // turn at "Starting" until the stall watchdog — minutes. Nothing
+            // within the first-response window → this attempt is stalled and
+            // the next provider in the chain takes over (ADR-039).
+            firstResponse = this.armFirstResponseTimer(provider.name, loopAbortController);
             const streamResult = streamText({
               model: provider.getModelInstance(),
               // Mercury builds this system message itself (trusted, not user input);
@@ -4360,6 +4360,7 @@ export class Agent {
               onAbort: () => {
                 streamAborted = true;
               },
+              onChunk: () => firstResponse?.received(),
               // Real-time feedback: these fire at TOOL EXECUTION time, not
               // step completion — the TUI live block shows what is actually
               // running during long tool calls instead of nothing.
@@ -4403,6 +4404,7 @@ export class Agent {
               providerDeadlineAt,
             );
             cliResponseStreamed = channel instanceof CLIChannel;
+            firstResponse.clear();
 
             // Surface the REAL provider error BEFORE awaiting the result
             // promises: a stream that errored (401, invalid key) records zero
@@ -4577,6 +4579,7 @@ export class Agent {
           }
           break;
         } catch (err: any) {
+          firstResponse?.clear();
           if (this.currentAbortReason === 'memory-pressure') {
             lastError = loopAbortController.signal.reason instanceof Error
               ? loopAbortController.signal.reason
@@ -5498,11 +5501,20 @@ export class Agent {
     ];
   }
 
-  /** Stable system prompt; assembly lives in core/system-prompt.ts. */
+  /** The whole system prompt; assembly lives in core/system-prompt.ts. */
   private buildSystemPrompt(): string {
+    return assembleSystemPrompt(this.systemPromptInputs());
+  }
+
+  /** Stable (cached) and per-turn parts of the system prompt (ADR-039). */
+  private buildSystemPromptParts(): { stable: string; dynamic: string } {
+    return buildSystemPromptParts(this.systemPromptInputs());
+  }
+
+  private systemPromptInputs(): SystemPromptInputs {
     const summary = this.userMemory ? this.userMemory.getSummary() : null;
     const ownerName = this.config.identity.owner || 'the owner';
-    return assembleSystemPrompt({
+    return {
       identityPrompt: this.identity.getSystemPrompt(this.config.identity),
       ownerSections: this.userMemory ? this.ownerSections(this.userMemory.beliefs, ownerName) : null,
       ownerName,
@@ -5518,7 +5530,7 @@ export class Agent {
       memorySummary: summary ? { total: summary.total, learningPaused: summary.learningPaused } : null,
       toolNames: this.capabilities.getToolNames(),
       github: this.config.github,
-    });
+    };
   }
 
   async processInternalPrompt(prompt: string, channelId?: string, channelType?: string, opts: { allowTools?: string[]; scheduledTaskId?: string; scheduledRunId?: string } = {}): Promise<void> {

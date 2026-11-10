@@ -18,6 +18,13 @@ const KEYWORD_STOPLIST = new Set([
   'http', 'https', 'www', 'com', 'org', 'net',
 ]);
 
+/** `phrase` occurs in `text` as whole words. */
+function containsPhrase(text: string, phrase: string): boolean {
+  if (!phrase) return false;
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`).test(text);
+}
+
 export class IntentRouter {
   private intentIndex: Map<string, Array<{ skillName: string; intent: string }>> = new Map();
   private tagIndex: Map<string, string[]> = new Map();    // tag -> skill names
@@ -112,9 +119,13 @@ export class IntentRouter {
 
     const matches: Map<string, MatchedSkill> = new Map();
 
-    // 1. Exact intent match (highest confidence)
+    // 1. Exact intent match (highest confidence). Whole words only: "hi"
+    // used to match inside "this" or "history", and a one-word message
+    // inside any longer intent. The reverse direction (the message is part
+    // of an intent) needs at least two words.
+    const inputWordCount = input.split(/\s+/).filter(Boolean).length;
     for (const [intent, skills] of this.intentIndex.entries()) {
-      if (input.includes(intent) || intent.includes(input)) {
+      if (containsPhrase(input, intent) || (inputWordCount >= 2 && containsPhrase(intent, input))) {
         for (const s of skills) {
           this.addOrUpdateMatch(matches, s.skillName, 0.95, intent);
         }

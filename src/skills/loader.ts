@@ -219,34 +219,28 @@ export class SkillLoader {
       text += skills.map(s => `- ${s.name}: ${s.description}`).join('\n');
     }
 
-    // Auto-routing hint for web search
+    // Skills are optional procedures, never a gate in front of the answer
+    // (ADR-039). These lines used to say "you MUST invoke the web-search
+    // skill immediately" and "MUST invoke tweet-notifier", which pulled every
+    // model toward a skill even for local questions ("which Docker
+    // containers are running?").
     const hasWebSearchSkill = skills.some(s => s.name === 'web-search');
     if (hasWebSearchSkill) {
-      text += '\n\n**Important — Web Search:** When the user asks about current events, news, real-time information, '
-        + 'or anything that requires up-to-date knowledge beyond your training data, you MUST invoke the `web-search` skill '
-        + 'via `use_skill` immediately — do NOT attempt to answer from memory or ask clarifying questions first. '
-        + 'Fetch real information, then respond.';
+      text += '\n\n**Current information:** for news, prices or anything newer than your training data, look it up '
+        + '(the web_search tool, or the `web-search` skill when you want its full procedure) instead of answering from memory. '
+        + 'Questions about this computer, its files or programs are not web questions.';
     }
 
-    // Auto-routing hint for tweet-notifier
     const hasTweetNotifier = skills.some(s => s.name === 'tweet-notifier');
     if (hasTweetNotifier) {
-      text += '\n\n**Tweet Notification System:** When the user says things like '
-        + '"schedule a tweet", "approve this tweet", "notify supporters about the tweet", '
-        + '"post this tweet at 3pm", "show pending tweets", "reject tweet", or mentions '
-        + 'tweet scheduling/approval/posting workflows, you MUST invoke the `tweet-notifier` skill '
-        + 'via `use_skill` before proceeding. The skill contains complete notification templates, '
-        + 'workflow steps, and the memory schema for tracking tweet states (draft, scheduled, '
-        + 'pending_approval, approved, posted, cancelled).';
+      text += '\n\n**Tweets:** for scheduling, approving or posting tweets, the `tweet-notifier` skill has the templates, '
+        + 'workflow and memory schema; load it with `use_skill` before starting that work.';
     }
 
-    // Intent routing hint — tell the agent about the new system
-    text += '\n\n**Skill Intent Routing** — When a user request clearly matches a skill, '
-      + 'invoke it via `use_skill` immediately. If the request is ambiguous (could match '
-      + 'multiple skills equally well), prefer asking the user with the `ask_user` tool '
-      + 'over guessing or fanning out across many skills. '
-      + 'Users can also explicitly pick a skill by prefixing their message with '
-      + '`#skill-name` — when you see that prefix the choice is already made for you.';
+    text += '\n\n**Using skills** — When a request clearly matches a skill, invoke it via `use_skill`. '
+      + 'A skill is optional help, not a requirement: if none fits, just do the task. '
+      + 'If the request could match several skills equally, pick the best fit or ask with `ask_user`. '
+      + 'A message that starts with `#skill-name` means the user already picked that skill.';
 
     return text;
   }
