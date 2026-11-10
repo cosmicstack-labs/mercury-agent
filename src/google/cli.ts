@@ -54,7 +54,7 @@ interface LineReader {
   close(): void;
 }
 
-async function installGoogleSkill(): Promise<'installed' | 'present'> {
+export async function installGoogleSkill(): Promise<'installed' | 'present'> {
   const root = process.env.MERCURY_SKILLS_INSTALL_ROOT || join(getMercuryHome(), 'skills');
   const loader = new SkillLoader(root, { seedDefaults: false });
   if (loader.discover().some((skill) => skill.name === 'google-workspace')) return 'present';
