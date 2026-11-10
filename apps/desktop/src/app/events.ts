@@ -9,7 +9,7 @@ import { useEffect } from "react";
 import { openStream } from "~/api/stream";
 import * as api from "~/api/mercury";
 import { ApiError, http } from "~/api/client";
-import type { BotActivityEvent, BotInboxEntry, BotStatus, ChatMessage, CodeMode, PendingPrompt, ResearchPlanPrompt, ResearchSnapshot } from "~/api/types";
+import type { BotActivityEvent, BotInboxEntry, BotStatus, ChatMessage, CodeMode, PendingPrompt, ReplyUsage, ResearchPlanPrompt, ResearchSnapshot } from "~/api/types";
 import { useBots, useChat, useRuntimeState, type AgentState } from "./store";
 import { conversations, useCodeSessions, type ConversationStore, type Surface } from "./conversation";
 import type { ArtifactRef } from "~/api/artifacts";
@@ -155,6 +155,16 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       conv.setWaiting({ position: Number(data.position) || 1, busyWith: typeof data.busyWith === "string" ? data.busyWith : undefined, busySessionId: typeof data.busySessionId === "string" ? data.busySessionId : undefined });
       conv.setAgent("thinking");
       break;
+    case "queue_dropped": {
+      // A stop took this chat's waiting message(s) out of line (ADR-038): they won't run.
+      const wasWaiting = !!conv.waiting;
+      conv.setWaiting(null);
+      if (conv.stopping) { finishStopped(store); break; }
+      if (wasWaiting && !conv.streaming && !conv.live) conv.setAgent("idle");
+      const n = Number(data.dropped) || 1;
+      conv.setNotice({ message: `Stopped before it started: ${n === 1 ? "your waiting message wasn't sent" : `${n} waiting messages weren't sent`}.`, level: "info", at: Date.now() });
+      break;
+    }
     case "thinking":
       conv.setWaiting(null);
       conv.setAgent("thinking");
@@ -235,7 +245,8 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       conv.clearLive();
       const artifacts = pendingArtifacts.get(store);
       pendingArtifacts.delete(store);
-      conv.addMessage({ id: crypto.randomUUID(), role: "assistant", content: text, timestamp: new Date().toISOString(), ...(trace ? { trace } : {}), ...(artifacts?.length ? { artifacts } : {}) });
+      const usage = replyUsage(data.usage);
+      conv.addMessage({ id: crypto.randomUUID(), role: "assistant", content: text, timestamp: new Date().toISOString(), ...(trace ? { trace } : {}), ...(artifacts?.length ? { artifacts } : {}), ...(usage ? { usage } : {}) });
       conv.setStep(null);
       store.getState().setAgent(store.getState().prompts.length ? "needs-you" : "idle");
       void refreshThreads();
@@ -269,6 +280,25 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
     default:
       break;
   }
+}
+
+/** What a reply cost, from the runtime's final event (runtimes from #296 on). */
+export function replyUsage(raw: unknown): ReplyUsage | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const u = raw as Record<string, unknown>;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
+  const inputTokens = n(u.inputTokens);
+  const outputTokens = n(u.outputTokens);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  return {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens: n(u.cachedInputTokens) ?? 0,
+    ...(typeof u.provider === "string" ? { provider: u.provider } : {}),
+    ...(typeof u.model === "string" ? { model: u.model } : {}),
+    ...(n(u.steps) !== undefined ? { steps: n(u.steps) } : {}),
+    ...(n(u.elapsedMs) !== undefined ? { elapsedMs: n(u.elapsedMs) } : {}),
+  };
 }
 
 function toPrompt(kind: PendingPrompt["kind"], data: Record<string, unknown>, text: string): PendingPrompt {

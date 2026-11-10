@@ -17,6 +17,7 @@ import { useUi } from "../store";
 import { useVoice } from "../voice";
 import { playSound } from "./sounds";
 import { useNotify, worthTelling } from "./store";
+import { refreshPulse } from "../pulse";
 
 export interface ActivityEvent {
   kind: "started" | "needs_you" | "resolved" | "done" | "stopped" | "failed" | "research";
@@ -179,6 +180,8 @@ function label(e: ActivityEvent): string {
 }
 
 export function handleActivity(e: ActivityEvent): void {
+  // Which chats are working changed: refresh the sidebar's markers now, not at the next poll.
+  if (e.kind === "started" || e.kind === "done" || e.kind === "stopped" || e.kind === "failed") void refreshPulse.turns();
   const n = useNotify.getState();
   // On a call, Mercury is already talking to you.
   if (useVoice.getState().active) return;

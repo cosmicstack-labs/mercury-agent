@@ -619,6 +619,11 @@ interface TurnState {
   done: boolean;
 }
 
+/** The canonical session a message names, if any. */
+function sessionOf(msg: ChannelMessage): string | undefined {
+  return msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
+}
+
 /**
  * The lane a message runs in: one turn at a time per lane, lanes run
  * concurrently (ADR-037). A canonical session id when the message names
@@ -1449,19 +1454,42 @@ export class Agent {
   }
 
   /** Every running turn, oldest first: what each chat is doing (for /progress, status screens). */
-  runningTurns(): Array<{ laneKey: string; channelType: string; channelId: string; content: string; activity: string; startedAt: number; completedSteps: number; narrative: import('../utils/tool-label.js').NarrativeStep[] }> {
+  runningTurns(): Array<{ laneKey: string; channelType: string; channelId: string; sessionId?: string; content: string; activity: string; startedAt: number; completedSteps: number; narrative: import('../utils/tool-label.js').NarrativeStep[] }> {
     return [...this.activeTurns.values()]
       .sort((a, b) => a.startedAt - b.startedAt)
       .map((t) => ({
         laneKey: t.laneKey,
         channelType: t.message.channelType,
         channelId: t.message.channelId,
+        ...(sessionOf(t.message) ? { sessionId: sessionOf(t.message) } : {}),
         content: t.message.content,
         activity: t.activity,
         startedAt: t.startedAt,
         completedSteps: t.completedStepCount,
         narrative: t.stepNarrative,
       }));
+  }
+
+  /**
+   * Chats with messages waiting (for their own chat or a free slot), each
+   * once, with how many messages wait and the place of its first one.
+   */
+  waitingChats(): Array<{ channelType: string; channelId: string; sessionId?: string; waiting: number; position: number }> {
+    const out = new Map<string, { channelType: string; channelId: string; sessionId?: string; waiting: number; position: number }>();
+    this.messageQueue.forEach((item, i) => {
+      const lane = laneKeyFor(item.message);
+      const known = out.get(lane);
+      if (known) { known.waiting++; return; }
+      const sessionId = sessionOf(item.message);
+      out.set(lane, { channelType: item.message.channelType, channelId: item.message.channelId, ...(sessionId ? { sessionId } : {}), waiting: 1, position: this.positionOf(i) });
+    });
+    return [...out.values()];
+  }
+
+  /** Change how many chats run at once, live (ADR-037); waiting chats start if there is room now. */
+  setConcurrentTurnLimit(limit: number): void {
+    this.governor.setLimit(limit);
+    this.processQueue();
   }
 
   /**
@@ -1807,6 +1835,17 @@ export class Agent {
       if (!item.workKey) continue;
       this.queuedWorkKeys.delete(item.workKey);
       try { this.workLedger.markCancelled(item.workKey, reason); } catch { /* entry may not exist */ }
+    }
+    // A screen showing "Waiting…" for one of them must hear it won't run.
+    // Best effort: telling a screen must never get in the way of the stop.
+    let web: { sendQueueDropped?: (target: string, data: { dropped: number; reason: string }) => void } | undefined;
+    try { web = this.channels?.get?.('web') as unknown as typeof web; } catch { web = undefined; }
+    if (web?.sendQueueDropped) {
+      const perChat = new Map<string, number>();
+      for (const item of dropped) if (item.message.channelType === 'web') perChat.set(item.message.channelId, (perChat.get(item.message.channelId) ?? 0) + 1);
+      for (const [target, count] of perChat) {
+        try { web.sendQueueDropped(target, { dropped: count, reason }); } catch { /* best effort */ }
+      }
     }
     this.announceQueue();
     return dropped.length;
@@ -5360,6 +5399,7 @@ export class Agent {
           inputTokens: turnTotals.inputTokens,
           outputTokens: turnTotals.outputTokens,
           totalTokens: turnTotals.totalTokens,
+          cachedInputTokens: turnTotals.cachedInputTokens,
           budgetUsed: this.tokenBudget.getDailyUsed(),
           budgetTotal: this.tokenBudget.getBudget(),
           budgetPercentage: this.tokenBudget.getUsagePercentage(),

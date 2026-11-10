@@ -98,6 +98,20 @@ export interface ChatMessage {
   artifacts?: import("./artifacts").ArtifactRef[];
   /** This answer is a research report: how the run went. */
   research?: ResearchSnapshot;
+  /** What this reply cost: every model step of its turn (runtimes from #296 on). */
+  usage?: ReplyUsage;
+}
+
+/** One reply's tokens, steps, time and model. */
+export interface ReplyUsage {
+  inputTokens: number;
+  /** Of the input, how much the provider served from its prompt cache. */
+  cachedInputTokens: number;
+  outputTokens: number;
+  steps?: number;
+  elapsedMs?: number;
+  provider?: string;
+  model?: string;
 }
 
 /** A page a research run tried to read. */
@@ -479,4 +493,24 @@ export interface SkillDraft {
   intents: string[];
   instructions: string;
   allowedTools?: string[];
+}
+
+/** A chat a turn runs or waits in (runtimes from ADR-037 on). */
+export interface TurnChat {
+  /** The thread it belongs to — desktop chats always have one. */
+  sessionId?: string;
+  channelType: string;
+  channelId: string;
+}
+
+/** Chats running at once, and the limit. */
+export interface TurnsInfo {
+  /** In effect now. */
+  limit: number;
+  /** What was set: 0 = automatic. */
+  configured: number;
+  /** What automatic gives on this machine. */
+  auto: number;
+  running: Array<TurnChat & { startedAt: number; activity: string; steps: number }>;
+  waiting: Array<TurnChat & { waiting: number; position: number }>;
 }

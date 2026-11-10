@@ -4,6 +4,7 @@
    ═══════════════════════════════════════════════════════════════ */
 
 import { http, ApiError } from "./client";
+import type { TurnsInfo } from "./types";
 import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
   BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
@@ -87,6 +88,10 @@ export const chat = {
   save: (threadId: string, saved: boolean) => http.post<{ id: string; saved: boolean; savedAt: string | null }>(`/api/chat/threads/${encodeURIComponent(threadId)}/save`, { saved }),
   undo: (threadId: string, content: string) => http.post<{ ok: boolean; content: string; removed: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/undo`, { content }),
   answer: (promptId: string, action: string, targetId?: string) => http.post<{ resolved: boolean }>(`/api/chat/permission/${encodeURIComponent(promptId)}`, { action, targetId }),
+  /** Which chats are working now, which wait for a slot, and how many may run at once. */
+  running: () => http.get<TurnsInfo>("/api/chat/running"),
+  /** How many chats may run at once: 0 = automatic, else 1–16. Applies at once. */
+  setConcurrency: (maxTurns: number) => http.put<TurnsInfo>("/api/chat/concurrency", { maxTurns }),
   /** Put this chat's waiting message first in line. */
   queueFirst: (threadId: string) => http.post<{ moved: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/queue/first`, {}),
   /** This chat's research: on for the next message, the run going now, or its last one. */

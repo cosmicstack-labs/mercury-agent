@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { saveConfig, type MercuryConfig } from '../../utils/config.js';
-import type { TokenBudget } from '../../utils/tokens.js';
+import { cachedWeightOf, type TokenBudget } from '../../utils/tokens.js';
 import type { SaverMode } from '../../core/saver-mode.js';
 
 /**
@@ -11,7 +11,10 @@ import type { SaverMode } from '../../core/saver-mode.js';
  *   PUT /api/budget  { dailyBudget?, saver?: { manual?, autoEnabled?, autoThreshold? },
  *                      bots?: { perBot?, fleet? } } → the same shape as GET
  *
- * daily:  today's tokens against the daily cap (Mercury pauses at the cap).
+ * daily:  today's tokens against the daily cap (Mercury pauses at the cap),
+ *         with today's split (cache hits, uncached input, output) and
+ *         `cachedWeight`: how much a cache hit counts toward the cap (0–1).
+ *         PUT { cachedWeight } sets it.
  * saver:  Token Saver: on by hand, or on by itself at a share of the cap.
  * bots:   the cap a bot gets when it sets none, and the cap for all bots
  *         together (0 = no cap).
@@ -38,6 +41,8 @@ function snapshot(c: BudgetControls) {
       used: tokens.getDailyUsed(),
       remaining: tokens.getRemaining(),
       percentage: Math.round(tokens.getUsagePercentage()),
+      split: tokens.getDailySplit(),
+      cachedWeight: cachedWeightOf(cfg),
     },
     saver: {
       state: saver.getState(),
@@ -74,6 +79,7 @@ budget.put('/api/budget', async (c) => {
   if (!controls) return c.json({ error: 'Budgets are not available yet.' }, 503);
   const body = (await c.req.json().catch(() => ({}))) as {
     dailyBudget?: unknown;
+    cachedWeight?: unknown;
     saver?: { manual?: unknown; autoEnabled?: unknown; autoThreshold?: unknown };
     bots?: { perBot?: unknown; fleet?: unknown };
   };
@@ -83,6 +89,9 @@ budget.put('/api/budget', async (c) => {
   const perBot = body.bots?.perBot === undefined ? undefined : tokensFrom(body.bots.perBot, 'The per-bot budget', 0);
   const fleet = body.bots?.fleet === undefined ? undefined : tokensFrom(body.bots.fleet, 'The all-bots budget', 0);
   for (const v of [daily, perBot, fleet]) if (typeof v === 'string') return c.json({ error: v }, 400);
+  if (body.cachedWeight !== undefined && (typeof body.cachedWeight !== 'number' || !Number.isFinite(body.cachedWeight) || body.cachedWeight < 0 || body.cachedWeight > 1)) {
+    return c.json({ error: 'cachedWeight must be a number from 0 to 1.' }, 400);
+  }
   const s = body.saver ?? {};
   if (s.manual !== undefined && typeof s.manual !== 'boolean') return c.json({ error: 'saver.manual must be true or false.' }, 400);
   if (s.autoEnabled !== undefined && typeof s.autoEnabled !== 'boolean') return c.json({ error: 'saver.autoEnabled must be true or false.' }, 400);
@@ -97,6 +106,11 @@ budget.put('/api/budget', async (c) => {
   if (typeof s.autoEnabled === 'boolean') saver.setAutoEnabled(s.autoEnabled);
   if (s.manual === true && !saver.isManual()) saver.enable();
   if (s.manual === false && saver.isManual()) saver.disable();
+  if (typeof body.cachedWeight === 'number') {
+    const cfg = controls.config();
+    cfg.tokens = { ...cfg.tokens, cachedWeight: Math.round(body.cachedWeight * 100) / 100 };
+    saveConfig(cfg);
+  }
   if (typeof perBot === 'number' || typeof fleet === 'number') {
     const cfg = controls.config();
     cfg.bots = cfg.bots ?? ({} as MercuryConfig['bots']);

@@ -39,6 +39,27 @@ export function setSessionSyncEnabledCallback(fn: () => boolean): void {
   sessionSyncEnabledFn = fn;
 }
 
+/**
+ * What one reply cost (#296: every step of its turn), from what the turn
+ * recorded: tokens in (and how many came from the prompt cache), tokens out,
+ * steps, time and the model. Nothing for replies recorded before usage was.
+ */
+function usageOf(meta: Record<string, unknown> | undefined): { usage?: { provider?: string; model?: string; inputTokens: number; cachedInputTokens: number; outputTokens: number; steps?: number; elapsedMs?: number } } {
+  if (!meta || typeof meta.inputTokens !== 'number' || typeof meta.outputTokens !== 'number') return {};
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  return {
+    usage: {
+      ...(typeof meta.provider === 'string' ? { provider: meta.provider } : {}),
+      ...(typeof meta.model === 'string' ? { model: meta.model } : {}),
+      inputTokens: num(meta.inputTokens) ?? 0,
+      cachedInputTokens: num(meta.cachedInputTokens) ?? 0,
+      outputTokens: num(meta.outputTokens) ?? 0,
+      ...(num(meta.steps) !== undefined ? { steps: num(meta.steps) } : {}),
+      ...(num(meta.elapsedMs) !== undefined ? { elapsedMs: num(meta.elapsedMs) } : {}),
+    },
+  };
+}
+
 function toThread(session: ReturnType<SessionRepository['get']>, includeMessages = true) {
   return {
     id: session.id,
@@ -61,6 +82,7 @@ function toThread(session: ReturnType<SessionRepository['get']>, includeMessages
       ...(typeof message.metadata?.voiceRole === 'string' ? { voice: message.metadata.voiceRole } : {}),
       ...(Array.isArray(message.metadata?.artifacts) && message.metadata.artifacts.length ? { artifacts: message.metadata.artifacts } : {}),
       ...(message.metadata?.research && typeof message.metadata.research === 'object' ? { research: message.metadata.research } : {}),
+      ...(message.role === 'assistant' ? usageOf(message.metadata) : {}),
       ...(Array.isArray(message.metadata?.attachments) && message.metadata.attachments.length > 0
         ? { attachments: (message.metadata.attachments as Array<{ name: string; kind: string; mime?: string; ref: string }>).map((a) => ({ name: a.name, kind: a.kind, mime: a.mime, url: `/api/chat/uploads/${a.ref}` })) }
         : {}),
@@ -91,6 +113,37 @@ let queueControls: { state: (threadId: string) => QueueState; prioritize: (threa
 /** The agent's line of turns: where a chat stands, and moving one to the front ("do mine first"). */
 export function setQueueControls(controls: typeof queueControls): void {
   queueControls = controls;
+}
+
+/** A chat a turn runs or waits in, as screens see it (ADR-037). */
+export interface TurnChat {
+  /** The thread/session it belongs to, when it has one (desktop/web chats always do). */
+  sessionId?: string;
+  channelType: string;
+  channelId: string;
+}
+
+/** Chats running at once: what runs, what waits, and the limit (ADR-037). */
+export interface TurnControls {
+  running: () => Array<TurnChat & { startedAt: number; activity: string; steps: number }>;
+  waiting: () => Array<TurnChat & { waiting: number; position: number }>;
+  /** `limit`: in effect now. `configured`: 0 = automatic. `auto`: what automatic gives on this machine. */
+  limit: () => { limit: number; configured: number; auto: number };
+  /** Set the configured limit (0 = automatic); applies at once and persists. */
+  setLimit: (configured: number) => void;
+}
+let turnControls: TurnControls | null = null;
+export function setTurnControls(controls: TurnControls | null): void {
+  turnControls = controls;
+}
+
+function turnsSnapshot(controls: TurnControls) {
+  const label = (activity: string) => activity.replace(/^\W+/u, '').replace(/\s+/g, ' ').trim().slice(0, 90);
+  return {
+    ...controls.limit(),
+    running: controls.running().map((t) => ({ ...t, activity: label(t.activity) })),
+    waiting: controls.waiting(),
+  };
 }
 
 /** Research runs per chat: what's going on, "write the report now". */
@@ -815,6 +868,24 @@ chat.post('/api/chat/threads/:id/delete', async (c) => {
 });
 
 /** Save a thread to come back to later, or unsave it: { saved: boolean }. */
+// Which chats are working right now, which wait, and how many may run at once (ADR-037).
+chat.get('/api/chat/running', (c) => {
+  if (!turnControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  return c.json(turnsSnapshot(turnControls));
+});
+
+// How many chats may run at once: { maxTurns: 0 (automatic) … 16 }. Applies at once.
+chat.put('/api/chat/concurrency', async (c) => {
+  if (!turnControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  const body = await c.req.json<{ maxTurns?: unknown }>().catch(() => ({} as { maxTurns?: unknown }));
+  const n = body.maxTurns;
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 16) {
+    return c.json({ error: 'maxTurns must be a whole number from 0 (automatic) to 16.' }, 400);
+  }
+  turnControls.setLimit(n);
+  return c.json(turnsSnapshot(turnControls));
+});
+
 // Where this chat's message stands: running, waiting in line (and behind what), or nothing.
 chat.get('/api/chat/threads/:id/queue', (c) => {
   if (!queueControls) return c.json({ state: 'none' });

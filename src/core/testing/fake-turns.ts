@@ -14,7 +14,7 @@ import { Lifecycle } from '../lifecycle.js';
  * an always-admitting governor and a capability stub with a plain cwd.
  */
 export function bareTurnFields(opts: { limit?: number; cwd?: string } = {}): Record<string, unknown> {
-  const limit = opts.limit ?? 4;
+  let limit = opts.limit ?? 4;
   let cwd = opts.cwd ?? process.cwd();
   return {
     messageQueue: [],
@@ -27,6 +27,7 @@ export function bareTurnFields(opts: { limit?: number; cwd?: string } = {}): Rec
     lastAdmitRefusal: null,
     governor: {
       limit: () => limit,
+      setLimit: (n: number) => { limit = n; },
       canAdmit: (running: number) => (running === 0 || running < limit ? { ok: true } : { ok: false, reason: 'capacity' }),
       noteIdle: () => {},
     },

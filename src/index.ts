@@ -46,6 +46,7 @@ import {
   clearSlackAccess,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
+import { autoTurnLimit, machineFacts, resolveTurnLimit } from './core/turn-governor.js';
 import type { ProviderName } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { devBuildLabel, isDevBuild } from './utils/dev-build.js';
@@ -99,7 +100,7 @@ import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/prov
 import { withBaseUrl } from './providers/basic-auth.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setResearchControls as setWebResearchControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setTurnControls as setWebTurnControls, setResearchControls as setWebResearchControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
 import { validateApiKey, validateBaseUrl, validateModelName } from './providers/provider-meta.js';
 import { setFirstProviderHandler, setProvidersReload } from './web/api/providers.js';
 import { setCloudReload } from './web/api/cloud.js';
@@ -3565,6 +3566,19 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   setWebStop((target) => agent.stopAllWork('stopped', target));
   setWebSessionBusy((sessionId) => agent.isBusyWith(sessionId));
   setWebQueueControls({ state: (id) => agent.queueStateFor(id), prioritize: (id) => agent.prioritize(id) });
+  setWebTurnControls({
+    running: () => agent.runningTurns().map((t) => ({
+      ...(t.sessionId ? { sessionId: t.sessionId } : {}),
+      channelType: t.channelType, channelId: t.channelId, startedAt: t.startedAt, activity: t.activity, steps: t.completedSteps,
+    })),
+    waiting: () => agent.waitingChats(),
+    limit: () => ({ limit: agent.governor.limit(), configured: config.concurrency?.maxTurns ?? 0, auto: autoTurnLimit(machineFacts()) }),
+    setLimit: (configured) => {
+      config.concurrency = { ...(config.concurrency ?? {}), maxTurns: configured };
+      saveConfig(config);
+      agent.setConcurrentTurnLimit(resolveTurnLimit(configured, machineFacts()));
+    },
+  });
   setWebResearchControls({
     state: (id) => agent.researchMode.stateFor(id),
     finish: (id) => agent.finishResearch(id),

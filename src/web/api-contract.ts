@@ -56,6 +56,9 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'chat.favicon',      // GET /api/chat/favicon?domain= — a site's icon (204 when it has none), fetched and cached by the runtime
   'security.remote',   // device pairing needs the owner (202 + POST /api/auth/token/pending), sensitive remote actions 428 + X-Mercury-Approval, /api/security/* (this computer), SSE 'owner_approval' (local activity), expired devices 401 { expired }
   'updates',           // GET /api/updates[?seen=1], POST /api/updates/check, POST /api/updates/server { version?, now? } (202; remote → 428 owner), POST /api/updates/server/cancel — see UPDATES.md
+  'chat.running',      // GET /api/chat/running (running + waiting chats, limit), PUT /api/chat/concurrency { maxTurns } — ADR-037; SSE 'queue_dropped' (ADR-038)
+  'budget.split',      // GET /api/budget daily.split + daily.cachedWeight, PUT { cachedWeight }; /api/usage split + counted breakdowns — #296
+  'chat.usage',        // message.usage on assistant replies; text_done { usage } — what each reply cost
   'chat.research',     // SSE 'research' / 'research_plan' / 'research_plan_resolved' / 'notice'; GET /api/chat/threads/:id/research, POST …/research/finish, …/research/off, POST /api/chat/research/plan/:id; message.research; step_done { failed, reason }
 ]);
 

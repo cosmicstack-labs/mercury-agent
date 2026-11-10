@@ -136,6 +136,20 @@ describe('concurrent turns', () => {
     await agent.whenIdle();
   });
 
+  it('raising the limit starts waiting chats at once', async () => {
+    const { agent, send, finish, log } = harness(1);
+    send(msg('a1', 'chat-a'));
+    send(msg('b1', 'chat-b'));
+    await tick(5);
+    expect(log).toEqual(['start a1']);
+    agent.setConcurrentTurnLimit(2);
+    await tick(5);
+    expect(log).toEqual(['start a1', 'start b1']);
+    await finish('a1');
+    await finish('b1');
+    await agent.whenIdle();
+  });
+
   it('/stop in one chat stops only that chat', async () => {
     const { agent, send, finish, log } = harness();
     send(msg('a1', 'chat-a'));

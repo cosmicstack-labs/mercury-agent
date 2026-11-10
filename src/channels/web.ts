@@ -22,7 +22,7 @@ interface PendingInteraction {
 }
 
 export interface ChatEvent {
-  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
+  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'queue_dropped' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
   data?: Record<string, unknown>;
 }
 
@@ -279,6 +279,11 @@ export class WebChannel extends BaseChannel {
     this.broadcast({ type: 'queued', data: { targetId, ...data } });
   }
 
+  /** Waiting messages of this chat were dropped (a stop): they will not run (ADR-038). */
+  sendQueueDropped(targetId: string, data: { dropped: number; reason: string }): void {
+    this.broadcast({ type: 'queue_dropped', data: { targetId, ...data } });
+  }
+
   sendSessionSwitched(targetId: string, session: { id: string; shortId: string; alias: string; title: string }): void {
     this.broadcast({ type: 'session_switched', data: { targetId, id: session.id, shortId: session.shortId, alias: session.alias, title: session.title } });
   }
@@ -390,10 +395,10 @@ export class WebChannel extends BaseChannel {
     return [...this.sseClients.values()].some((client) => client.sessionId === targetId);
   }
 
-  async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
+  async send(content: string, targetId?: string, elapsedMs?: number, usage?: Record<string, unknown>): Promise<void> {
     const delivered = this.broadcast({
       type: 'text_done',
-      data: { fullText: content, elapsedMs, targetId },
+      data: { fullText: content, elapsedMs, targetId, ...(usage ? { usage } : {}) },
     });
     if (!delivered) throw new Error('Cloud WebSocket could not accept the terminal response');
   }

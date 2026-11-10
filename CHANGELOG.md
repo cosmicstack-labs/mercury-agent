@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Mercury Desktop
+- **See which chats are working.** A spinner in the sidebar marks a chat Mercury is working on, and a clock marks one waiting for a free slot. The status bar shows how many chats are running (for example 2/4), and clicking it lists them so you can open one.
+- **Choose how many chats run at once** in Settings → AI → Chats at once. Automatic picks a number from your computer's memory. A change applies right away.
+- **Stop clears what was waiting.** When Stop drops a chat's waiting messages, that chat stops showing "Waiting…" and tells you they weren't sent.
+- **What each reply cost.** Hover a reply to see its tokens, how much came from the prompt cache, its steps and how long it took. The tooltip shows the exact numbers and the model.
+- **Today's token split** (cached, new and output) appears in Settings → Budgets and in the status bar's token panel. A new "Prompt cache" setting lets cache hits count at their real price. The provider and source breakdowns now add up to the daily total.
+
 ### Skills
 - **Six useful built-in skills.** Alongside `web-search`: `computer-health` (why the computer is slow or full, what's running, why a container is down), `tidy-files` (clean up and sort folders safely), `data-analysis` (spreadsheets and CSVs, computed and checked), `long-documents` (long PDFs and logs, with page references) and `documents` (make or convert Word, PDF and slides). None of them can act without asking. Each is installed once: delete one and it stays deleted.
 - **`tweet-notifier` and `screenshot` are no longer installed or reinstalled on start.** If your copy is exactly as Mercury installed it, it's moved to `~/.mercury/skills/_retired-<name>/` (nothing is deleted). A copy you edited stays as it is.

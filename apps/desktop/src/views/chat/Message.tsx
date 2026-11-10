@@ -2,7 +2,8 @@ import { Check, ChevronRight, Copy, Square, Wrench } from "lucide-react";
 import { CommandChip } from "./CommandChip";
 import { splitCommand } from "./picker";
 import { memo, useState } from "react";
-import type { ChatMessage, ThoughtTrace } from "~/api/types";
+import type { ChatMessage, ReplyUsage, ThoughtTrace } from "~/api/types";
+import { compact } from "~/views/bots/Usage";
 import { Mark } from "~/components/Logo";
 import { Markdown } from "~/components/Markdown";
 import { StreamCaret } from "~/components/indicators/Thinking";
@@ -79,7 +80,7 @@ export const Message = memo(function Message({ message, undoable = false }: { me
         {message.research && message.artifacts && message.artifacts.filter((a) => a.id !== message.research?.report?.id).length > 0 && (
           <ArtifactStrip items={message.artifacts.filter((a) => a.id !== message.research?.report?.id)} />
         )}
-        <MessageMeta timestamp={message.timestamp} copy={body || undefined} listen={body ? { id: message.id, text: body } : undefined} />
+        <MessageMeta timestamp={message.timestamp} copy={body || undefined} listen={body ? { id: message.id, text: body } : undefined} usage={message.usage} />
         <ReadAloudNotice id={message.id} />
       </div>
     </div>
@@ -108,7 +109,22 @@ function Speaker({ who }: { who: "you" | "mercury" }) {
 }
 
 /** Time and copy, shown on hover so the conversation stays quiet. */
-function MessageMeta({ timestamp, copy, listen, undo, align = "start" }: { timestamp: string; copy?: string; listen?: { id: string; text: string }; undo?: ChatMessage; align?: "start" | "end" }) {
+/** "14k tokens · 82% cached · 6 steps · 12s" for a reply, and the detail for its tooltip. */
+export function usageLabel(u: ReplyUsage): { short: string; detail: string } {
+  const total = u.inputTokens + u.outputTokens;
+  const cachedPct = u.inputTokens > 0 ? Math.round((u.cachedInputTokens / u.inputTokens) * 100) : 0;
+  const parts = [`${compact(total)} tokens`];
+  if (u.cachedInputTokens > 0) parts.push(`${cachedPct}% cached`);
+  if (u.steps && u.steps > 1) parts.push(`${u.steps} steps`);
+  if (u.elapsedMs && u.elapsedMs >= 1000) parts.push(`${Math.round(u.elapsedMs / 1000)}s`);
+  const detail = [
+    `${u.inputTokens.toLocaleString()} in (${u.cachedInputTokens.toLocaleString()} from cache) · ${u.outputTokens.toLocaleString()} out`,
+    u.model ? `${u.provider ? `${u.provider} · ` : ""}${u.model}` : "",
+  ].filter(Boolean).join("\n");
+  return { short: parts.join(" · "), detail };
+}
+
+function MessageMeta({ timestamp, copy, listen, undo, usage, align = "start" }: { timestamp: string; copy?: string; listen?: { id: string; text: string }; undo?: ChatMessage; usage?: ReplyUsage; align?: "start" | "end" }) {
   const [copied, setCopied] = useState(false);
   const reading = useReadingThis(listen?.id ?? "");
   const time = formatTime(timestamp);
@@ -127,6 +143,7 @@ function MessageMeta({ timestamp, copy, listen, undo, align = "start" }: { times
       {listen && <ReadAloudButton id={listen.id} text={listen.text} />}
       {undo && <UndoMessage message={undo} />}
       {time && <span className="px-1.5 text-xs text-ink4">{time}</span>}
+      {usage && (() => { const u = usageLabel(usage); return <span className="px-1.5 font-mono text-2xs text-ink4" title={u.detail}>{u.short}</span>; })()}
     </div>
   );
 }

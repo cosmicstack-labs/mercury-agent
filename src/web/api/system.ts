@@ -226,7 +226,11 @@ system.get('/api/usage', (c) => {
       outputTokens: number;
       totalTokens: number;
       channelType: string;
+      cachedInputTokens?: number;
+      noCacheInputTokens?: number;
+      countedTokens?: number;
     }>;
+    dailySplit?: { inputTokens: number; cachedInputTokens: number; noCacheInputTokens: number; outputTokens: number };
   } = {
     dailyUsed: 0,
     dailyBudget: 0,
@@ -248,9 +252,12 @@ system.get('/api/usage', (c) => {
 
   const byProvider: Record<string, number> = {};
   const byChannel: Record<string, number> = {};
+  // What each request added to the daily total (cache hits at tokens.cachedWeight), so the
+  // breakdowns add up to dailyUsed; older rows without it counted in full.
   for (const row of data.requestLog || []) {
-    byProvider[row.provider] = (byProvider[row.provider] || 0) + (row.totalTokens || 0);
-    byChannel[row.channelType] = (byChannel[row.channelType] || 0) + (row.totalTokens || 0);
+    const counted = typeof row.countedTokens === 'number' ? row.countedTokens : (row.totalTokens || 0);
+    byProvider[row.provider] = (byProvider[row.provider] || 0) + counted;
+    byChannel[row.channelType] = (byChannel[row.channelType] || 0) + counted;
   }
 
   // The budget the runtime enforces is the live one. The tracker file carries whatever was
@@ -268,6 +275,10 @@ system.get('/api/usage', (c) => {
     requestLog: (data.requestLog || []).slice(-100).reverse(),
     byProvider,
     byChannel,
+    // Today's input/output split across every request (#296), when the tracker has it.
+    ...(data.dailySplit && typeof data.dailySplit === 'object' && data.lastResetDate === new Date().toISOString().slice(0, 10)
+      ? { split: data.dailySplit }
+      : {}),
   });
 });
 

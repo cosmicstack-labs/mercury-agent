@@ -1,10 +1,13 @@
 import { forwardRef, useEffect, useState, type ComponentPropsWithoutRef } from "react";
-import { Bot, CalendarClock, Code2, Coins, Cpu, Layers, Server, Shield, ShieldCheck, Trash2 } from "lucide-react";
+import { Bot, CalendarClock, Clock, Code2, Coins, Cpu, Layers, MessagesSquare, Server, Shield, ShieldCheck, Trash2 } from "lucide-react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
 import type { CodeStatus } from "~/api/types";
 import { usePermissionMode } from "~/app/permission";
-import { useBots, useRuntimeState, useUi } from "~/app/store";
+import { useBots, useChat, useRuntimeState, useUi } from "~/app/store";
+import { openThread } from "~/app/events";
+import { surfaceOf } from "~/app/notify/notify";
+import type { TurnChat } from "~/api/types";
 import { refreshPulse, usePulse, type ScheduleInfo } from "~/app/pulse";
 import { scheduleDetail, scheduleIsActive } from "~/app/schedule-status";
 import { http } from "~/api/client";
@@ -12,6 +15,7 @@ import { useConnections } from "~/shell/connections";
 import { StateOrb, LABELS } from "~/components/indicators/StateOrb";
 import { StatusButton, StatusPopover } from "~/layout/StatusBar";
 import { compact } from "~/views/bots/Usage";
+import { splitLine } from "~/views/settings/Budgets";
 import { mercuryUi } from "./registry";
 import { useVoice, phaseOf, PHASE_LABEL } from "~/app/voice";
 import { OptimusFace } from "~/components/OptimusFace";
@@ -73,6 +77,53 @@ function Background() {
       {count === 0 && <p className="text-sm text-ink3">Nothing running in the background.</p>}
       {agents.map((a) => <Line key={a.id} icon={<Cpu size={13} />} title={a.task} detail={`sub-agent · ${a.status}${a.tokensUsed ? ` · ${compact(a.tokensUsed)} tok` : ""}`} />)}
       {runningTasks.map((t) => <Line key={t.id} icon={<Layers size={13} />} title={t.description} detail={t.status} />)}
+    </StatusPopover>
+  );
+}
+
+const CHANNEL_LABELS: Record<string, string> = { cli: "Terminal", telegram: "Telegram", discord: "Discord", slack: "Slack", signal: "Signal", internal: "Scheduled task", web: "Chat" };
+
+/**
+ * Chats working at once (ADR-037): how many of the slots are in use, which
+ * chats, and which wait for a slot. Hidden when nothing runs.
+ */
+function ChatsRunning() {
+  const turns = usePulse((s) => s.turns);
+  const threads = useChat((s) => s.threads);
+  const setView = useUi((s) => s.setView);
+  const openSettings = useUi((s) => s.openSettings);
+  if (!turns || turns.running.length === 0) return null;
+  const titleOf = (t: TurnChat) => {
+    const thread = t.sessionId ? threads.find((th) => th.id === t.sessionId) : undefined;
+    return thread?.title?.replace(/^Code · /, "") || CHANNEL_LABELS[t.channelType] || t.channelType;
+  };
+  const open = (t: TurnChat) => {
+    if (!t.sessionId || !threads.some((th) => th.id === t.sessionId)) return;
+    const surface = surfaceOf(t.sessionId);
+    setView(surface);
+    void openThread(surface, t.sessionId);
+  };
+  const busy = turns.running.length >= turns.limit;
+  return (
+    <StatusPopover width={360} trigger={
+      <Trigger title="Chats working now" tone={busy && turns.waiting.length ? "amber" : "accent"}>
+        <MessagesSquare size={13} />
+        <span>{turns.running.length}/{turns.limit}</span>
+      </Trigger>
+    }>
+      <PanelTitle>Chats working · {turns.running.length} of {turns.limit}</PanelTitle>
+      {turns.running.map((t) => (
+        <button key={`${t.channelType}:${t.channelId}`} onClick={() => open(t)} className="block w-full text-left">
+          <Line icon={<MessagesSquare size={13} />} title={titleOf(t)} detail={`${t.activity || "working"}${t.steps ? ` · step ${t.steps}` : ""} · ${Math.max(1, Math.round((Date.now() - t.startedAt) / 1000))}s`} />
+        </button>
+      ))}
+      {turns.waiting.length > 0 && <div className="mt-2 text-xs font-medium text-ink3">Waiting for a slot</div>}
+      {turns.waiting.map((t) => (
+        <button key={`w:${t.channelType}:${t.channelId}`} onClick={() => open(t)} className="block w-full text-left">
+          <Line icon={<Clock size={13} />} title={titleOf(t)} detail={`${t.waiting} message${t.waiting === 1 ? "" : "s"} · #${t.position} in line`} />
+        </button>
+      ))}
+      <button onClick={() => openSettings("concurrency")} className="mt-1 w-full rounded-md px-1 py-1.5 text-left text-xs text-accent hover:underline">Chats at once: {turns.configured ? turns.configured : `automatic (${turns.auto})`}</button>
     </StatusPopover>
   );
 }
@@ -203,6 +254,7 @@ function Tokens() {
         <span className="text-2xl font-semibold tracking-tight">{compact(usage.dailyUsed)}</span>
         <span className="font-mono text-xs text-ink3">of {compact(usage.dailyBudget)} · {compact(usage.remaining)} left</span>
       </div>
+      {splitLine(usage.split) && <p className="mb-3 font-mono text-xs text-ink3">{splitLine(usage.split)}</p>}
       <Breakdown title="By source" rows={channels} total={usage.dailyUsed} />
       <Breakdown title="By provider" rows={providers} total={usage.dailyUsed} />
       {models.size > 0 && (
@@ -294,6 +346,7 @@ export function registerBuiltinStatusItems(): void {
   mercuryUi.registerStatusItem({ id: "mercury.connection", title: "Connection", area: "status.left", priority: 100, render: Connection });
   mercuryUi.registerStatusItem({ id: "mercury.agent", title: "Agent state", area: "status.left", priority: 90, render: AgentState });
   mercuryUi.registerStatusItem({ id: "mercury.optimus", title: "Optimus voice", area: "status.left", priority: 88, render: OptimusVoice });
+  mercuryUi.registerStatusItem({ id: "mercury.chats", title: "Chats working", area: "status.left", priority: 87, render: ChatsRunning });
   mercuryUi.registerStatusItem({ id: "mercury.bots", title: "Bots running", area: "status.left", priority: 85, render: BotsRunning });
   mercuryUi.registerStatusItem({ id: "mercury.background", title: "Background work", area: "status.left", priority: 80, render: Background });
   mercuryUi.registerStatusItem({ id: "mercury.schedules", title: "Schedules", area: "status.left", priority: 70, render: Schedules });

@@ -1,10 +1,12 @@
-import { Bookmark, BookmarkMinus, Pencil, Search, SquarePen, Trash2, X } from "lucide-react";
+import { Bookmark, BookmarkMinus, Clock, Pencil, Search, SquarePen, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
 import type { ChatThread } from "~/api/types";
 import { refreshThreads, renameThread, setThreadSaved } from "~/app/events";
 import { useNotify } from "~/app/notify/store";
+import { turnStates, usePulse } from "~/app/pulse";
+import { Spinner } from "~/components/ui/bits";
 import { Dialog } from "~/components/ui/Dialog";
 import { Button } from "~/components/ui/Button";
 import { Input } from "~/components/ui/Input";
@@ -34,6 +36,9 @@ export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchL
 }) {
   const unread = useNotify((s) => s.unread);
   const waiting = useNotify((s) => s.waiting);
+  // Chats run at once: which are working now, which wait for a free slot.
+  const turns = usePulse((s) => s.turns);
+  const { running, queued } = useMemo(() => turnStates(turns), [turns]);
   const [limit, setLimit] = useState(PAGE);
   const [query, setQuery] = useState("");
   const [renameTarget, setRenameTarget] = useState<ChatThread | null>(null);
@@ -139,7 +144,9 @@ export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchL
                     <span className={cx("min-w-0 flex-1 truncate", activeId === t.id ? "text-ink" : unread[t.id] ? "font-medium text-ink" : "text-ink2 group-hover:text-ink")}>{(t.title || "Untitled").replace(/^Code · /, "")}</span>
                     {t.id in waiting
                       ? <span className="h-2 w-2 shrink-0 rounded-full bg-amber" aria-label="Waiting for you" title="Waiting for your answer" />
-                      : unread[t.id] && activeId !== t.id ? <span className="h-2 w-2 shrink-0 rounded-full bg-blue" aria-label="New" title="Something new" /> : null}
+                      : running.has(t.id) ? <span className="shrink-0 text-accent" aria-label="Working" title="Working on it"><Spinner size={11} /></span>
+                        : queued.has(t.id) ? <span className="shrink-0 text-ink4" aria-label="In line" title="Waiting for a free slot"><Clock size={12} aria-hidden="true" /></span>
+                          : unread[t.id] && activeId !== t.id ? <span className="h-2 w-2 shrink-0 rounded-full bg-blue" aria-label="New" title="Something new" /> : null}
                   </span>
                   {renderMeta?.(t)}
                 </button>

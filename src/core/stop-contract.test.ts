@@ -152,3 +152,17 @@ describe("a stop clears the chat's line", () => {
     expect(internals.messageQueue).toEqual([]);
   });
 });
+
+describe('the desktop hears about dropped waiting messages (ADR-038)', () => {
+  it('each web chat whose messages a stop dropped gets one queue_dropped with the count', async () => {
+    const { agent, workLedger } = bare();
+    const dropped: Array<{ target: string; dropped: number }> = [];
+    Object.assign(agent, { channels: { get: (t: string) => (t === 'web' ? { sendQueued: () => {}, sendQueueDropped: (target: string, d: { dropped: number }) => dropped.push({ target, dropped: d.dropped }) } : undefined) } });
+    startFakeTurn(agent, msg('a1', 'chat-a'));
+    for (const m of [msg('a2', 'chat-a'), msg('a3', 'chat-a'), msg('b1', 'chat-b')]) agent.queueMessage(m, workLedger.accept(m).entry.key);
+    expect(agent.waitingChats().map((w) => [w.channelId, w.waiting])).toEqual([['chat-a', 2], ['chat-b', 1]]);
+    await agent.stopAllWork('stopped', { channelId: 'chat-a' });
+    expect(dropped).toEqual([{ target: 'chat-a', dropped: 2 }]);
+    expect(agent.waitingChats().map((w) => w.channelId)).toEqual(['chat-b']);
+  });
+});
