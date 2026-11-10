@@ -147,7 +147,7 @@ describe('WorkLedger', () => {
 
     expect(ledger.getUndeliveredResponses()).toEqual([]);
     expect(readdirSync(dir)).toContain('work-ledger.json.corrupt-1234');
-    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({ version: 1, entries: [] });
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({ version: 1, entries: [], eventReceipts: [], eventIngressBlocked: true });
   });
 
   it('bounds terminal history without pruning active work', () => {

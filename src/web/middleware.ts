@@ -8,6 +8,7 @@ import { ipAllowed } from '../security/ip-match.js';
 import { audit } from '../security/audit.js';
 import { loadConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { isEventTriggerRequest } from '../core/event-triggers.js';
 
 const PUBLIC_PATHS = new Set(['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/token', '/api/auth/token/pending', '/api/health']);
 
@@ -182,6 +183,10 @@ export async function authGuard(c: Context, next: Next) {
       return api ? c.json({ error: 'This address is not allowed to connect to this Mercury.', addressBlocked: true }, 403) : c.text('This address is not allowed to connect.', 403);
     }
   }
+
+  // Dedicated ingress verifies its own timestamped signature. Keep it behind
+  // the same host/remote-access policy; browser/device credentials never bypass it.
+  if (isEventTriggerRequest(c.req.method, path)) return next();
 
   if (path.startsWith('/vendor/') || path.startsWith('/static/') || path.startsWith('/assets/') || path.startsWith('/icons/') || path.endsWith('.css') || path.endsWith('.js') || path.endsWith('.png') || path.endsWith('.ico') || path.endsWith('.svg') || path.endsWith('.woff2') || path.endsWith('.webmanifest')) {
     return next();

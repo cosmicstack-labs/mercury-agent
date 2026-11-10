@@ -14,7 +14,7 @@ import { getMercuryHome } from '../utils/config.js';
  *    credentials, .zshrc…): refused to remote devices.
  */
 
-const MERCURY_SECRETS = ['devices.json', 'web-config.json', 'web-sessions.json', 'attach-token', 'remote.json', 'security', 'mercury.yaml', '.env', 'keys', 'github-session.json', 'chatgpt-session.json'];
+const MERCURY_SECRETS = ['devices.json', 'web-config.json', 'web-sessions.json', 'attach-token', 'remote.json', 'event-triggers.yaml', 'security', 'mercury.yaml', '.env', 'keys', 'github-session.json', 'chatgpt-session.json'];
 const HOME_SECRETS = ['.ssh', '.gnupg', '.aws', '.azure', '.config/gcloud', '.kube', '.docker/config.json', '.netrc', '.npmrc', '.pypirc', '.git-credentials', '.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile', '.config/fish', 'Library/Keychains'];
 
 /** The real path, following symlinks; for a file that doesn't exist yet, its nearest existing parent's. */
@@ -60,7 +60,7 @@ export function protectedReason(path: string, remote: boolean): string | null {
 }
 
 /** Mercury's login credentials: never touched by its own tools (a prompt-injected agent can't read or plant a token). */
-const AGENT_DENIED = ['devices.json', 'web-config.json', 'web-sessions.json', 'attach-token', 'remote.json', 'security'];
+const AGENT_DENIED = ['devices.json', 'web-config.json', 'web-sessions.json', 'attach-token', 'remote.json', 'event-triggers.yaml', 'security'];
 
 export function isMercuryCredentialPath(path: string): boolean {
   const real = realPathOf(path);

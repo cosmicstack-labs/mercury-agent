@@ -34,6 +34,8 @@ import voiceRoutes from './api/voice.js';
 import deviceRoutes from './api/devices.js';
 import securityRoutes from './api/security.js';
 import updatesRoutes from './api/updates.js';
+import eventTriggerRoutes from './api/event-triggers.js';
+export { configureEventTriggers } from './api/event-triggers.js';
 import { bodyLimit } from 'hono/body-limit';
 import { migrateDevices } from './devices.js';
 import { BoardManager } from '../core/board-manager.js';
@@ -138,6 +140,7 @@ app.route('/', voiceRoutes);
 app.route('/', deviceRoutes);
 app.route('/', securityRoutes);
 app.route('/', updatesRoutes);
+app.route('/', eventTriggerRoutes);
 
 // ── Legacy static assets (vendor fonts, icons, wasm — still needed by React SPA) ──
 app.get('/vendor/*', (c) => {
