@@ -433,3 +433,21 @@
   - **First-response window.** With no chunk of any kind within 150 s (`MERCURY_FIRST_RESPONSE_TIMEOUT_MS`, 0 = off), the attempt is treated as stalled and the next provider in the chain takes over.
   - **draw.io tools** join Spotify as a niche group, sent only when the turn is about diagrams.
 - **Consequence**: A new turn's request is mostly cache reads on every provider, a multi-step Anthropic turn is billed close to linearly instead of quadratically, and nothing waits on a picker before the model runs. On a model that ignores suggestions, a skill that the old forced routing would have run now has to be picked by the model. Hidden-reasoning models that think for over 150 s before their first token fall back to the next provider unless the window is raised.
+
+## ADR-040: Generic built-in skills; skills are chosen by the model or the user, never by a fuzzy matcher
+
+- **Context**:
+  - **Three defaults were reseeded on every start.** A deleted copy came back:
+    - `web-search`
+    - `tweet-notifier`: one owner's tweet-approval workflow, naming "Optimus Prime" as the founder and Telegram supporters. Wrong for everyone else.
+    - `screenshot`: assumed Playwright and Chromium were "installed globally on this system", and its `allowed-tools` (`run_command`, `create_file`, `write_file`, `send_file`, …) made shell commands and file writes prompt-free for the turn through `elevateForSkill`.
+  - **The intent router scored messages fuzzily.** It counted single shared keywords, word-pair similarity and words from skill descriptions. After ADR-039 its only use was a suggestion in the per-turn context, which duplicated the skill list the model already reads in the system prompt.
+- **Decision**:
+  - **Built-in skills are generic procedures only.** Alongside `web-search`, there are five more: `computer-health` (read-only diagnostics per OS), `tidy-files` (plan → yes → move to `_to-delete`, never delete), `data-analysis` (compute with code, check totals), `long-documents` (read in sections, cite pages or lines) and `documents` (pandoc or a script, verify the file opens). To qualify, a default uses only tools Mercury has, lists no `allowed-tools` that could make actions prompt-free, works on macOS, Linux, Windows and Termux, and doesn't duplicate a built-in mode. Each default is installed once (`.seeded-defaults.json`): an edit is kept and a deletion is respected.
+  - **The old defaults are retired.** `tweet-notifier` and `screenshot` are no longer seeded. A user copy whose SHA-256 matches a version Mercury ever seeded (`RETIRED_SEEDS`, taken from git history) was never edited, and moves to `_retired-<name>`, which isn't loaded and isn't deleted. An edited copy is the owner's skill and stays.
+  - **No automatic skill routing.** `#skill-name` is the user's explicit pick. Otherwise the model chooses from the skill list and descriptions in the system prompt. The pre-model batch executor is gone from the agent.
+  - **The router keeps exact matching only:** whole-phrase intents and whole-word tags. The keyword-overlap, word-pair and description layers are removed.
+- **Consequence**:
+  - Fresh installs carry six general-purpose skills, and nothing reinstalls a skill the owner removed.
+  - No default skill can make shell commands prompt-free.
+  - A skill gets used when its description fits or when the user names it. Skill authors should write descriptions that say plainly when to use the skill.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Skills
+- **Six useful built-in skills.** Alongside `web-search`: `computer-health` (why the computer is slow or full, what's running, why a container is down), `tidy-files` (clean up and sort folders safely), `data-analysis` (spreadsheets and CSVs, computed and checked), `long-documents` (long PDFs and logs, with page references) and `documents` (make or convert Word, PDF and slides). None of them can act without asking. Each is installed once: delete one and it stays deleted.
+- **`tweet-notifier` and `screenshot` are no longer installed or reinstalled on start.** If your copy is exactly as Mercury installed it, it's moved to `~/.mercury/skills/_retired-<name>/` (nothing is deleted). A copy you edited stays as it is.
+- **No more guessing which skill you meant.** Mercury no longer matches your message to skills by similar words. The model picks a skill when its description fits, or you pick one with `#skill-name`.
+- **No default skill can run commands without asking.** The old `screenshot` skill let shell commands and file writes skip approval while it was in use.
+
 ### Token usage
 - **Token usage is now counted correctly** (#296, thanks @parz1val-t). Mercury used to record only the last model call of each turn, under-reporting usage by about 6–12×. Every call is now counted, including the steps of a turn that ended early (a failed provider, a pause), so `dailyBudget` fills up and Token Saver kicks in much sooner than before. If you hit the budget earlier than expected, raise `tokens.dailyBudget`, or set `tokens.cachedWeight` (0–1, e.g. `0.1`) to count prompt-cache hits at a discount. `/budget` now shows today's cached, uncached and output split. Usage from past days is not recalculated.
 - **Each provider is billed for its own steps** when a turn moves from one provider to another.

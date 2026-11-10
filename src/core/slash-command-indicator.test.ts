@@ -21,7 +21,7 @@ describe('slash commands do not show the processing indicator', () => {
   });
 
   it('raises the indicator again right before a fallen-through command reaches the model', () => {
-    const idx = agent.indexOf('await this.routeSkillIntent(msg, trimmed, messages);');
+    const idx = agent.indexOf('this.applyExplicitSkillPick(msg, trimmed, messages);');
     expect(idx).toBeGreaterThan(0);
     expect(agent.slice(idx - 200, idx)).toContain('raiseTurnIndicator();');
   });

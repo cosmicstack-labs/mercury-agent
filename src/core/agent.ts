@@ -35,7 +35,6 @@ import { ProgrammingMode, scopedProgrammingState, type ProgrammingSnapshot } fro
 import { ResearchMode } from './research-mode.js';
 import { SaverMode, NORMAL_HISTORY_WINDOW } from './saver-mode.js';
 import { BackgroundTaskManager } from './background-tasks.js';
-import { SkillBatcher } from '../skills/batcher.js';
 import type { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
 import { refinePersona } from '../bots/persona-template.js';
@@ -637,20 +636,6 @@ export function laneKeyFor(msg: ChannelMessage): string {
   return `${msg.channelType}:${conversation}`;
 }
 
-/**
- * The owner's own words, for skill routing: what a channel says they said
- * (`metadata.routingText`), else the message without a leading `[...]`
- * channel note (voice wrappers carry Mercury's own instructions, which named
- * web_search and made every voice question "match" the web-search skill).
- */
-export function routingTextOf(msg: ChannelMessage): string {
-  const given = msg.metadata?.routingText;
-  if (typeof given === 'string') return given.trim();
-  const text = msg.content.trim();
-  const note = /^\[[^\]]*\][^\n]*\n/.exec(text);
-  return (note ? text.slice(note[0].length) : text).trim();
-}
-
 export class Agent {
   private readonly globalLifecycle: Lifecycle;
   readonly scheduler: Scheduler;
@@ -828,7 +813,6 @@ export class Agent {
   readonly researchMode: ResearchMode;
   readonly saverMode: SaverMode;
   spotifyClient?: SpotifyClient;
-  private skillBatcher: SkillBatcher | null = null;
   private skillLoader?: SkillLoader;
   readonly backgroundTasks: BackgroundTaskManager;
   private titleGenerationInFlight = new Set<string>();
@@ -908,9 +892,6 @@ export class Agent {
 
   setSkillLoader(skillLoader: SkillLoader): void {
     this.skillLoader = skillLoader;
-    if (this.supervisor) {
-      this.skillBatcher = new SkillBatcher(this.supervisor, this.backgroundTasks);
-    }
   }
 
   /** Wire the Mercury Bots runtime (see bots/bot-manager.ts, BOTS-ARCHITECTURE.md). */
@@ -1012,9 +993,6 @@ export class Agent {
 
   setSupervisor(supervisor: import('../core/supervisor.js').SubAgentSupervisor): void {
     this.supervisor = supervisor;
-    if (this.skillLoader) {
-      this.skillBatcher = new SkillBatcher(supervisor, this.backgroundTasks);
-    }
     supervisor.setSaverMode(this.saverMode);
     supervisor.setNotifyCallback(async (channelType, channelId, message) => {
       const channel = this.channels.get(channelType as any);
@@ -3247,67 +3225,36 @@ export class Agent {
   }
 
   /**
-   * Skill intent routing and batch execution (see the strategy note at the
-   * call site): an explicit `#skill` pick, a clear multi-skill batch, or an
-   * ambiguous match the user disambiguates. May rewrite or append to
-   * `messages`; never ends the turn on its own.
+   * The user's explicit skill pick (ADR-039, ADR-040): `#skill-name …` tells
+   * the model to use that skill; an unknown `#tag` is stripped. Nothing else
+   * is routed — the model sees every installed skill and its description in
+   * the system prompt and picks itself. Mercury used to stop the turn on a
+   * skill picker before the first model call, answer that picker itself on
+   * voice channels, tell the model "User clarified: use X" although nobody
+   * had, run skill batches as sub-agents up front, and later suggest skills
+   * from a fuzzy match.
    */
-  /**
-   * Skill routing (ADR-039). Two things only, and nothing blocks the turn:
-   *  - `#skill-name …` is the user's explicit pick: the model is told to use it.
-   *  - otherwise the router may *suggest* skills in the per-turn context; the
-   *    model decides. It used to stop the turn on a skill picker before the
-   *    first model call (2 minutes on the desktop, then the first option), to
-   *    answer that picker itself on voice channels, and to tell the model
-   *    "User clarified: use X" although nobody had — and to run whole skill
-   *    batches as sub-agents before the model was even asked.
-   * Routing reads the owner's own words (`metadata.routingText`, or the
-   * message without a leading channel note), never Mercury's own wrapper text.
-   * Returns the hint for the per-turn context, or '' for none.
-   */
-  private async routeSkillIntent(msg: ChannelMessage, trimmed: string, messages: Array<{ role: string; content: unknown }>): Promise<string> {
-    if (!this.skillLoader || msg.channelType === 'internal') return '';
+  private applyExplicitSkillPick(msg: ChannelMessage, trimmed: string, messages: Array<{ role: string; content: unknown }>): void {
+    if (!this.skillLoader || msg.channelType === 'internal') return;
+    const hashMatch = trimmed.match(/^#([a-z0-9_:.-]+)\b\s*(.*)$/i);
+    if (!hashMatch) return;
     try {
-      const intentRouter = this.skillLoader.intentRouter;
-      if (!intentRouter || !intentRouter.isInitialized()) return '';
-
-      // (1) Explicit `#skill-name <rest>` shortcut from the # picker.
-      const hashMatch = trimmed.match(/^#([a-z0-9_:.-]+)\b\s*(.*)$/i);
-      if (hashMatch) {
-        const skillName = hashMatch[1];
-        const rest = hashMatch[2].trim();
-        const knownSkills = this.skillLoader.getDiscovered?.() || [];
-        if (knownSkills.some((s: any) => s.name === skillName)) {
-          messages[messages.length - 1] = { role: 'user', content: rest || trimmed };
-          messages.push({
-            role: 'user',
-            content: `[Routing] The user explicitly selected the \`${skillName}\` skill via #-prefix. Invoke it via \`use_skill\` with name="${skillName}" before doing anything else, then act on the result.`,
-          });
-        } else {
-          // Unknown #tag: just strip it.
-          const stripped = rest || trimmed.replace(/^#\S+\s*/, '');
-          if (stripped) messages[messages.length - 1] = { role: 'user', content: stripped };
-        }
-        return '';
+      const skillName = hashMatch[1];
+      const rest = hashMatch[2].trim();
+      const knownSkills = this.skillLoader.getDiscovered?.() || [];
+      if (knownSkills.some((s: any) => s.name === skillName)) {
+        messages[messages.length - 1] = { role: 'user', content: rest || trimmed };
+        messages.push({
+          role: 'user',
+          content: `[Routing] The user explicitly selected the \`${skillName}\` skill via #-prefix. Invoke it via \`use_skill\` with name="${skillName}" before doing anything else, then act on the result.`,
+        });
+      } else {
+        // Unknown #tag: just strip it.
+        const stripped = rest || trimmed.replace(/^#\S+\s*/, '');
+        if (stripped) messages[messages.length - 1] = { role: 'user', content: stripped };
       }
-
-      // (2) A suggestion, never a gate.
-      const text = routingTextOf(msg);
-      if (!text) return '';
-      const analysis = intentRouter.analyzeMatch(text, { clearThreshold: 0.85, gap: 0.15 });
-      const candidates = analysis.clearWinner && analysis.top
-        ? [analysis.top]
-        : analysis.ambiguous ? analysis.closeContenders.slice(0, 3) : [];
-      if (candidates.length === 0) return '';
-      this.markProgress(`Possible skills: ${candidates.map((c) => c.name).join(', ')}`);
-      const lines = candidates.map((c) => {
-        const desc = intentRouter.getSkillDescription?.(c.name) || '';
-        return `- ${c.name}${desc ? ` — ${desc.slice(0, 160)}` : ''}`;
-      });
-      return `Skills that may fit this message (use one with use_skill only if it actually fits; otherwise answer directly):\n${lines.join('\n')}`;
     } catch (err) {
-      logger.warn({ err }, 'Intent routing failed — continuing without it');
-      return '';
+      logger.warn({ err }, 'Explicit skill pick failed — continuing without it');
     }
   }
 
@@ -3711,7 +3658,7 @@ export class Agent {
 
       if (!canonicalSessionId) messages.push({ role: 'user', content: msg.content });
 
-      let volatileSystem = [
+      const volatileSystem = [
         promptParts.dynamic,
         contextBlocks.length > 0 ? `## Context for this turn\n\n${contextBlocks.join('\n\n')}` : '',
       ].filter(Boolean).join('\n\n');
@@ -3724,22 +3671,11 @@ export class Agent {
         recentMemory.map((m) => m.content),
       );
 
-      // ── Skill Intent Routing & Batch Execution ──
-      //
-      // Routing strategy:
-      //   1. Explicit pick via `#skill-name` prefix → run that skill directly,
-      //      no ambiguity resolution needed.
-      //   2. Otherwise consult the intent router:
-      //      - Clear winner (high confidence + clear gap) → let the LLM invoke
-      //        it normally via use_skill (single skill) OR batch-execute when
-      //        the top batch is multi-skill in the same category.
-      //      - Ambiguous (multiple contenders bunched near the top) → ask the
-      //        user to disambiguate before doing anything.
-      //      - No usable match → fall through to the normal LLM loop.
       // A command that reached the model is a real turn after all.
       raiseTurnIndicator();
-      const routingHint = await this.routeSkillIntent(msg, trimmed, messages);
-      if (routingHint) volatileSystem = volatileSystem ? `${volatileSystem}\n\n${routingHint}` : routingHint;
+      // `#skill-name` is the user's explicit pick; any other skill choice is
+      // the model's (ADR-040).
+      this.applyExplicitSkillPick(msg, trimmed, messages);
 
       this.lifecycle.transition('responding');
 

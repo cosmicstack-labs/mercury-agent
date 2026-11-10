@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync, unlinkSync, renameSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, resolve, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
@@ -6,7 +7,7 @@ import type { SkillDiscovery, Skill, SkillMeta } from './types.js';
 import { recordSelfMadeUse, SELF_MADE_CATEGORY, SELF_MADE_LABEL } from './self-made.js';
 import { IntentRouter } from './intent-router.js';
 import { logger } from '../utils/logger.js';
-import { DEFAULT_SKILL_SEEDS, PREVIOUS_SEED_CONTENTS, getCategoryLabel } from './default-skills.js';
+import { DEFAULT_SKILL_SEEDS, PREVIOUS_SEED_CONTENTS, RETIRED_SEEDS, getCategoryLabel } from './default-skills.js';
 
 /**
  * The web-search skill dir holds a skill that tells the model to fetch a
@@ -21,6 +22,8 @@ export function isBrokenSearchSkill(dirName: string, content: string): boolean {
 }
 
 const SKILL_FILE = 'SKILL.md';
+/** Which built-in skills were installed once (see ensureDefaultSkills). */
+const SEEDED_FILE = '.seeded-defaults.json';
 const DISABLED_FILE = '.disabled';
 
 function parseSkillMd(content: string): { meta: SkillMeta; instructions: string } | null {
@@ -67,6 +70,7 @@ export class SkillLoader {
     }
 
     if (this.seedDefaults) {
+      this.retireOldDefaults();
       this.ensureDefaultSkills();
     }
 
@@ -204,11 +208,16 @@ export class SkillLoader {
     let text = '**Available Skills** (invoke with the `use_skill` tool):\n';
 
     if (hasCategories && categories.size > 1) {
-      // Group by category
+      // Group by category. A skill in several categories is listed once,
+      // under the first (every line here is re-sent with each request).
+      const listed = new Set<string>();
       for (const [category, catSkills] of categories) {
+        const fresh = catSkills.filter((s) => !listed.has(s.name));
+        if (fresh.length === 0) continue;
         const label = category === SELF_MADE_CATEGORY ? SELF_MADE_LABEL : getCategoryLabel(category);
         text += `\n**${label}:**\n`;
-        for (const s of catSkills) {
+        for (const s of fresh) {
+          listed.add(s.name);
           const discovered = this.discovered.get(s.name);
           const desc = discovered?.description || s.description;
           text += `- ${s.name}: ${desc}\n`;
@@ -229,12 +238,6 @@ export class SkillLoader {
       text += '\n\n**Current information:** for news, prices or anything newer than your training data, look it up '
         + '(the web_search tool, or the `web-search` skill when you want its full procedure) instead of answering from memory. '
         + 'Questions about this computer, its files or programs are not web questions.';
-    }
-
-    const hasTweetNotifier = skills.some(s => s.name === 'tweet-notifier');
-    if (hasTweetNotifier) {
-      text += '\n\n**Tweets:** for scheduling, approving or posting tweets, the `tweet-notifier` skill has the templates, '
-        + 'workflow and memory schema; load it with `use_skill` before starting that work.';
     }
 
     text += '\n\n**Using skills** — When a request clearly matches a skill, invoke it via `use_skill`. '
@@ -420,18 +423,68 @@ Describe what this skill enables Mercury to do. When invoked via the use_skill t
 - Keep instructions concise to save tokens
 - List only the tools you need in allowed-tools
 - The skill name must be unique among installed skills
-- Add \`category\`, \`categories\`, \`intents\`, and \`tags\` in frontmatter for automatic intent routing
+- Add \`category\` and \`tags\` in frontmatter to group the skill in lists; the description is what Mercury reads to decide when to use it
 `;
 
     writeFileSync(join(templateDir, SKILL_FILE), content, 'utf-8');
     logger.info('Seeded template skill');
   }
 
+  /**
+   * Built-in skills Mercury no longer ships (ADR-040). A copy that is byte
+   * for byte one Mercury seeded was never touched by the owner: it moves to
+   * `_retired-<name>` (underscore folders are not loaded, nothing is
+   * deleted). An edited copy is the owner's own skill and stays where it is.
+   */
+  private retireOldDefaults(): void {
+    for (const [dirName, hashes] of Object.entries(RETIRED_SEEDS)) {
+      const skillDir = join(this.skillsDir, dirName);
+      const skillFile = join(skillDir, SKILL_FILE);
+      if (!existsSync(skillFile)) continue;
+      try {
+        const hash = createHash('sha256').update(readFileSync(skillFile)).digest('hex');
+        if (!hashes.includes(hash)) continue;
+        let target = join(this.skillsDir, `_retired-${dirName}`);
+        if (existsSync(target)) target = `${target}-${Date.now()}`;
+        renameSync(skillDir, target);
+        logger.info({ skill: dirName, movedTo: target }, 'Retired a built-in skill Mercury no longer ships');
+      } catch (err) {
+        logger.warn({ err, skill: dirName }, 'Could not retire an old built-in skill');
+      }
+    }
+  }
+
+  /**
+   * Defaults are installed once (ADR-040). Which ones were installed is kept
+   * in `.seeded-defaults.json`, so a default the owner deletes stays deleted
+   * instead of coming back on the next start; a new default Mercury adds
+   * later is still installed once.
+   */
+  private readSeededDefaults(): Set<string> {
+    try {
+      const parsed = JSON.parse(readFileSync(join(this.skillsDir, SEEDED_FILE), 'utf-8')) as { seeded?: unknown };
+      return new Set(Array.isArray(parsed.seeded) ? parsed.seeded.filter((n): n is string => typeof n === 'string') : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  private writeSeededDefaults(seeded: Set<string>): void {
+    try {
+      writeFileSync(join(this.skillsDir, SEEDED_FILE), JSON.stringify({ seeded: [...seeded].sort() }, null, 2) + '\n', 'utf-8');
+    } catch (err) {
+      logger.warn({ err }, 'Could not record installed default skills');
+    }
+  }
+
   private ensureDefaultSkills(): void {
+    const seeded = this.readSeededDefaults();
+    const before = seeded.size;
     for (const seed of DEFAULT_SKILL_SEEDS) {
       const skillDir = join(this.skillsDir, seed.dirName);
       const skillFile = join(skillDir, seed.fileName);
       if (existsSync(skillFile)) {
+        seeded.add(seed.dirName);
         // Upgrade an untouched copy of an older built-in version; never overwrite edits.
         try {
           const current = readFileSync(skillFile, 'utf-8');
@@ -451,9 +504,13 @@ Describe what this skill enables Mercury to do. When invoked via the use_skill t
         continue;
       }
 
+      // Installed before and gone now: the owner removed it. Leave it removed.
+      if (seeded.has(seed.dirName)) continue;
       mkdirSync(skillDir, { recursive: true });
       writeFileSync(skillFile, seed.content, 'utf-8');
+      seeded.add(seed.dirName);
       logger.info({ skill: seed.dirName }, 'Seeded default skill');
     }
+    if (seeded.size !== before) this.writeSeededDefaults(seeded);
   }
 }
