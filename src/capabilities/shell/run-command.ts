@@ -9,6 +9,7 @@ import { redactSecrets } from '../../utils/redact.js';
 import { logger } from '../../utils/logger.js';
 import { pulseProgress, TOOL_PULSE_INTERVAL_MS } from '../../core/progress-pulse.js';
 import { planArgvExecution, minimalEnv, type ArgvPlan } from './argv-lane.js';
+import { killProcessTree, processTreeAlive, processTreeSpawnOptions, trackProcessTree, untrackProcessTree } from './process-tree.js';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_BUFFER = 1024 * 1024;
@@ -41,6 +42,8 @@ export function executeCommand(command: string, cwd: string, timeoutMs: number, 
     cwd,
     shell: true,
     stdio: ['pipe', 'pipe', 'pipe'],
+    // Its own process group, so a stop ends everything it started.
+    ...processTreeSpawnOptions(),
   }), timeoutMs, options);
 }
 
@@ -55,6 +58,7 @@ export function executeArgv(file: string, args: readonly string[], cwd: string, 
     env: minimalEnv(),
     shell: false,
     windowsHide: true,
+    ...processTreeSpawnOptions(),
     // Output is bounded by the stream handlers below; execFile's own buffer
     // limit would kill a long but legitimate listing.
     maxBuffer: Number.MAX_SAFE_INTEGER,
@@ -79,27 +83,32 @@ function superviseChild(start: () => ChildProcess, timeoutMs: number, options: E
       return;
     }
 
+    trackProcessTree(child);
     const onAbort = () => terminate('abort');
 
     const finish = (exitCode: number | null, timedOut: boolean, aborted = false) => {
       if (settled) return;
       settled = true;
       if (timeoutHandle) clearTimeout(timeoutHandle);
-      if (sigkillHandle) clearTimeout(sigkillHandle);
+      // NOT the SIGKILL timer: a terminated tree still gets its escalation.
       if (pulseHandle) clearInterval(pulseHandle);
       signal?.removeEventListener('abort', onAbort);
+      if (!sigkillHandle) untrackProcessTree(child);
       resolve({ stdout, stderr, exitCode, timedOut, aborted });
     };
 
-    // SIGTERM, then SIGKILL after a grace period. Used for both the tool's
-    // own timeout and an abort from the agent loop — previously an aborted
-    // turn left the child running to completion.
+    // SIGTERM to the whole tree, then SIGKILL to whatever of it is still
+    // alive after a grace period (ADR-038). Used for the tool's own timeout
+    // and for an abort from the agent loop (the owner's Stop). Killing only
+    // the shell used to leave `npm run build` and friends running.
     const terminate = (reason: 'timeout' | 'abort') => {
       if (settled) return;
-      child.kill('SIGTERM');
+      killProcessTree(child, 'SIGTERM');
       sigkillHandle = setTimeout(() => {
-        if (!child.killed || child.exitCode === null) child.kill('SIGKILL');
+        if (processTreeAlive(child)) killProcessTree(child, 'SIGKILL');
+        untrackProcessTree(child);
       }, SIGTERM_GRACE_MS);
+      sigkillHandle.unref?.();
       finish(null, reason === 'timeout', reason === 'abort');
     };
 

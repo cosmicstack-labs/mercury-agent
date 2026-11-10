@@ -5,6 +5,8 @@
 ### Chats at the same time
 - **Mercury answers several chats at once.** A long research run or coding task in one chat no longer makes the terminal, Telegram, the desktop app or a scheduled task wait. Each chat still handles its own messages in order.
 - **Sized to your machine.** Up to 4 chats run at once, 3 under 8 GB of RAM, and 2 on Termux or under 4 GB. When memory runs short, new chats wait for a free slot, and if memory keeps growing the most recently started task stops while the rest carry on. Set `concurrency.maxTurns` in `mercury.yaml` (or `MERCURY_MAX_CONCURRENT_TURNS`) to choose the limit; `1` restores one chat at a time.
+- **Stop really stops.** A stopped task no longer comes back a few seconds later. Before, it could resume through an automatic retry after a tool had run, through a stall retry, or through the next message waiting in that chat. Stop also ends everything a running command started (`npm run build` and the like keep going no more) and drops the messages that chat had waiting. A stopped sub-agent stays stopped.
+- **No more "(no text response)".** When Mercury Code (or a sub-agent or bot) finishes by writing files or running commands without a closing message, you now get what it did: the files it wrote or edited, and each command with whether it succeeded.
 - **`/stop` stops the chat you're in.** Esc in the terminal, the Stop button in Mercury Desktop and `/stop` in Telegram stop that chat's task and the sub-agents it started. `/halt` still stops everything.
 
 ### Providers

@@ -24,7 +24,7 @@ export async function handleBgCommand(agent: Agent, trimmed: string, msg: Channe
     const sourceChannelId = turn.message.channelId;
     const sourceChannelType = turn.message.channelType as any;
 
-    agent.abortTurn(turn, 'backgrounded');
+    agent.abortTurn(turn, 'backgrounded', 'Moved to the background (/bg current).');
 
     if (agent.supervisor) {
       const agentId = await agent.supervisor.spawn({

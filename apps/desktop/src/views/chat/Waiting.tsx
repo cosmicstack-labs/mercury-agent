@@ -26,8 +26,9 @@ export function WaitingNotice({ threadId, waiting }: { threadId: string | null; 
     setProblem(null);
     try {
       await api.chat.queueFirst(threadId);
-      // Stop only the chat this one waits for, not every running chat.
-      await api.chat.stop(waiting.busySessionId);
+      // Stop only the turn this one waits for — not every running chat, and
+      // not the messages that chat has waiting.
+      await api.chat.stop(waiting.busySessionId, { keepQueued: true });
     } catch (e) {
       setProblem(e instanceof Error ? e.message : String(e));
     } finally {

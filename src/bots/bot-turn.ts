@@ -1,4 +1,5 @@
 import { streamText, stepCountIs, tool, zodSchema } from 'ai';
+import { summarizeSilentTurn } from '../core/silent-turn.js';
 import { z } from 'zod';
 import { withAttachments } from '../core/attachments.js';
 import type { ChannelAttachment } from '../types/channel.js';
@@ -547,7 +548,12 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
     }
 
     // The bot's own report is what the owner reads; its last words are the fallback.
-    const output = (report?.summary || lastResult?.text || '').trim() || '(no text response)';
+    // Neither a report nor last words: say what the run did, from its own trace.
+    const output = (report?.summary || lastResult?.text || '').trim() || summarizeSilentTurn(trace.map((t) => ({
+      tool: t.name,
+      input: t.arg === undefined ? {} : t.name === 'run_command' ? { command: t.arg } : { path: t.arg },
+      ok: t.ok,
+    })));
     const outcome = outcomeNow(lastResult?.text ?? '');
     const claimedWithoutAction = outcome === 'none' && CLAIM_PATTERN.test(output);
 

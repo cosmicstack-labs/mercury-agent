@@ -50,6 +50,7 @@ export function startFakeTurn(agent: Agent, message: ChannelMessage, activity = 
     startedAt,
     abort: new AbortController(),
     abortReason: null,
+    cancelled: null,
     activity,
     completedStepCount: 0,
     stepNarrative: [],

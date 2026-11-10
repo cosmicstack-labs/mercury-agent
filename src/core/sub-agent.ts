@@ -1,4 +1,6 @@
 import { generateText, stepCountIs } from 'ai';
+import { isFailedToolResult } from './execute-guard.js';
+import { summarizeSilentTurn, type TurnAction } from './silent-turn.js';
 import type { ChannelMessage } from '../types/channel.js';
 import type { SubAgentConfig, SubAgentResult, SubAgentStatus } from '../types/agent.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -29,6 +31,8 @@ export class SubAgent {
   readonly config: SubAgentConfig;
   private status: SubAgentStatus = 'pending';
   private abortController: AbortController;
+  /** Every tool step, for a report when the model ends without text. */
+  private actions: TurnAction[] = [];
   private startTime: number = 0;
   private result: SubAgentResult | null = null;
   private filesModified: string[] = [];
@@ -291,6 +295,16 @@ export class SubAgent {
                 for (let i = 0; i < toolCalls.length; i++) {
                   const tc = toolCalls[i];
                   const toolName = tc.toolName as string;
+                  {
+                    type StepResult = { toolCallId?: string; output?: unknown; result?: unknown };
+                    const results = toolResults as unknown as StepResult[];
+                    const callId = (tc as { toolCallId?: string }).toolCallId;
+                    const tr = results.find((r) => r?.toolCallId !== undefined && r.toolCallId === callId) ?? results[i];
+                    const out = (tr?.output ?? tr?.result) as { type?: string; value?: unknown } | string | undefined;
+                    const text = typeof out === 'string' ? out : typeof out?.value === 'string' ? out.value : JSON.stringify(out ?? '');
+                    const failed = (typeof out === 'object' && (out?.type === 'error-text' || out?.type === 'error-json')) || isFailedToolResult(text);
+                    this.actions.push({ tool: toolName, input: tc.input, ok: tr !== undefined && !failed });
+                  }
 
                   if (['write_file', 'edit_file', 'create_file', 'delete_file'].includes(toolName)) {
                     const filePath = (tc.input as any)?.path || (tc.input as any)?.filePath;
@@ -433,7 +447,8 @@ export class SubAgent {
           return this.result;
         }
 
-        const finalText = (result?.text || '').trim() || '(no text response)';
+        // Ended on tool calls without a word: report what it did instead.
+        const finalText = (result?.text || '').trim() || summarizeSilentTurn(this.actions);
 
         this.tokenBudget.recordUsage({
           provider: provider.name,

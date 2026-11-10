@@ -87,4 +87,27 @@ describe('eval · chat mode never forces guard rounds', () => {
     expect(JSON.stringify(turn.providerCalls[1].prompt)).toContain('tool-result');
     expectTimings(turn);
   });
+
+  it('the model writes a file and ends without a word → the owner is told what was done, never "(no text response)"', async () => {
+    const result = await runScenario({
+      name: 'chat-silent-turn',
+      turns: [{
+        message: 'write my notes to notes.md',
+        steps: [
+          toolStep([call('create_file', { path: 'notes.md', content: '# Notes\n- buy milk\n' })]),
+          textStep(''),
+        ],
+        expect: {
+          deliveredCount: 1,
+          finalTextIncludes: ['Wrote `notes.md`'],
+          noEventIncludes: ['(no text response)'],
+          toolsUsed: ['create_file'],
+        },
+      }],
+    });
+    expect(result.failures).toEqual([]);
+    const [turn] = result.turns;
+    // What the session remembers is the summary too, not a placeholder.
+    expect(turn.sessionEntries.filter((m) => m.kind === 'message').map((m) => m.content).join('\n')).not.toContain('(no text response)');
+  });
 });

@@ -2,7 +2,6 @@ import { generateText, streamText, stepCountIs } from 'ai';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
-import { getHeapStatistics } from 'node:v8';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
@@ -98,6 +97,7 @@ import { requiresFinalSend } from './response-delivery.js';
 import { updateCliProviderStatus } from './provider-status.js';
 import { compactConversation } from './memory-governor.js';
 import { writeCrashFlag } from './crash-flag.js';
+import { summarizeSilentTurn, type TurnAction } from './silent-turn.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
@@ -578,6 +578,15 @@ export function looksLikeCodingTask(text: string): boolean {
 
 
 export type AbortReason = 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted';
+/** Aborts that come from the owner: final for the turn, never retried or resumed (ADR-038). */
+export type CancelReason = 'stopped' | 'halted' | 'backgrounded';
+
+/** What the chat is told when the owner ended its turn. */
+export function stopNoteFor(reason: CancelReason): string {
+  if (reason === 'backgrounded') return 'This task was moved to the background and will report back when it finishes.';
+  return `⏹ Task ${reason}. Its work entry was cancelled — a restart will not resume it. Send the request again or ask me to continue if you change your mind.`;
+}
+const CANCEL_REASONS: ReadonlySet<AbortReason> = new Set<AbortReason>(['stopped', 'halted', 'backgrounded']);
 
 /** One running turn (ADR-037): everything that used to be a single field on the agent. */
 interface TurnState {
@@ -587,6 +596,13 @@ interface TurnState {
   readonly startedAt: number;
   abort: AbortController | null;
   abortReason: AbortReason | null;
+  /**
+   * Set once the owner stops this turn (/stop, /halt, Stop button, /bg
+   * current) and never cleared (ADR-038). Internal recovery (stall retry,
+   * provider fallback, continuation rounds, durable retry) checks it and
+   * gives up; a new abort controller is born aborted.
+   */
+  cancelled: CancelReason | null;
   activity: string;
   completedStepCount: number;
   stepNarrative: import('../utils/tool-label.js').NarrativeStep[];
@@ -667,15 +683,30 @@ export class Agent {
   }
   set currentAbort(value: AbortController | null) {
     const t = this.turn();
-    if (t) t.abort = value;
+    if (!t) return;
+    t.abort = value;
+    // A stopped turn never gets a live controller back: a retry that makes a
+    // fresh one (stall recovery) finds it already aborted.
+    if (t.cancelled && value && !value.signal.aborted) value.abort(new Error(`Task ${t.cancelled} by the user`));
   }
 
+  /** The calling turn's abort reason; once the owner stopped it, always that (ADR-038). */
   get currentAbortReason(): AbortReason | null {
-    return this.turn()?.abortReason ?? null;
+    const t = this.turn();
+    return t?.cancelled ?? t?.abortReason ?? null;
   }
   set currentAbortReason(value: AbortReason | null) {
     const t = this.turn();
-    if (t) t.abortReason = value;
+    if (!t) return;
+    // Internal handling (stall, time limit, memory) may set or clear its own
+    // reason; it can never overwrite or clear the owner's stop.
+    if (t.cancelled) return;
+    t.abortReason = value;
+  }
+
+  /** Has the owner stopped the calling turn? Every retry/continue path asks this. */
+  private turnCancelled(): boolean {
+    return this.turn()?.cancelled != null;
   }
 
   private get lastProgressAt(): number {
@@ -1444,12 +1475,22 @@ export class Agent {
    * false when it was already stopping.
    */
   abortTurn(t: TurnState, reason: AbortReason, ledgerNote?: string): boolean {
+    if (t.done) return false;
+    if (CANCEL_REASONS.has(reason)) {
+      // The owner's stop is recorded even when the controller is already
+      // aborted (a stall retry in flight): that retry must not carry on.
+      const first = t.cancelled === null;
+      if (first) t.cancelled = reason as CancelReason;
+      t.abortReason = reason;
+      if (t.abort && !t.abort.signal.aborted) t.abort.abort(new Error(`Task ${reason} by the user`));
+      if (ledgerNote && t.workKey) {
+        try { this.workLedger.markCancelled(t.workKey, ledgerNote); } catch { /* entry may not exist */ }
+      }
+      return first;
+    }
     if (!t.abort || t.abort.signal.aborted) return false;
     t.abortReason = reason;
     t.abort.abort();
-    if (ledgerNote && t.workKey) {
-      try { this.workLedger.markCancelled(t.workKey, ledgerNote); } catch { /* entry may not exist */ }
-    }
     return true;
   }
 
@@ -1622,7 +1663,9 @@ export class Agent {
     const turn = this.turnForChannel(sessionId);
     if (!turn?.abort || turn.abort.signal.aborted) return { ok: false, reason: 'The research is already finishing.' };
     run.finishRequested = true;
-    this.abortTurn(turn, 'stopped');
+    // Not a cancellation: the turn goes on to write the report from what it read.
+    turn.abortReason = 'stopped';
+    turn.abort.abort();
     return { ok: true };
   }
 
@@ -1695,7 +1738,7 @@ export class Agent {
    * going (ADR-037). Without one (`/halt`, or a caller that names no chat)
    * every running turn and every sub-agent stops.
    */
-  async stopAllWork(reason: 'stopped' | 'halted', target?: { channelId?: string; sessionId?: string }): Promise<string> {
+  async stopAllWork(reason: 'stopped' | 'halted', target?: { channelId?: string; sessionId?: string; keepQueued?: boolean }): Promise<string> {
     // The user deliberately killed this work — cancel its ledger entry so
     // a restart never tries to resume it. (Only real crashes auto-resume.)
     const label = reason === 'stopped' ? 'Stopped by the user (/stop).' : 'Halted by the user (/halt).';
@@ -1706,6 +1749,13 @@ export class Agent {
         ?? (target.sessionId ? this.turnForSession(target.sessionId) : undefined);
       if (turn && caller && turn.id === caller.id) turn = undefined;
       if (turn) this.abortTurn(turn, reason, label);
+      // Messages this chat had waiting go too (unless the caller only wants
+      // the running turn gone, e.g. "do mine first"): a stop that let the
+      // next queued message start would look like the task resuming.
+      const dropped = target.keepQueued ? 0 : this.dropWaiting((m) =>
+        (target.channelId !== undefined && m.channelId === target.channelId)
+        || (target.sessionId !== undefined && (m.sessionId ?? m.metadata?.sessionId) === target.sessionId)
+        || (turn !== undefined && laneKeyFor(m) === turn.laneKey), label);
       const channelId = turn?.message.channelId ?? target.channelId;
       const halted = this.supervisor && channelId ? await this.supervisor.haltForChannel(channelId) : [];
       const others = [...this.activeTurns.values()]
@@ -1720,12 +1770,18 @@ export class Agent {
       }
       const tail = cleared ? ' Locks released, task board cleared.' : '';
       const elsewhere = others > 0 ? ` ${others} task${others === 1 ? '' : 's'} in other chats keep${others === 1 ? 's' : ''} running — /halt stops everything.` : '';
-      if (!turn && halted.length === 0) {
+      if (!turn && halted.length === 0 && dropped === 0) {
         return cleared ? `Nothing was running.${tail}` : `Nothing is running in this chat.${elsewhere}`;
       }
-      const parts = [turn ? 'Stopped this chat\'s task' : null, halted.length ? `halted ${halted.length} sub-agent${halted.length === 1 ? '' : 's'} it started` : null].filter(Boolean);
+      const parts = [
+        turn ? 'Stopped this chat\'s task' : null,
+        halted.length ? `halted ${halted.length} sub-agent${halted.length === 1 ? '' : 's'} it started` : null,
+        dropped ? `dropped ${dropped} waiting message${dropped === 1 ? '' : 's'}` : null,
+      ].filter(Boolean) as string[];
+      parts[0] = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
       return `${parts.join(', ')}.${tail}${elsewhere}`;
     }
+    this.dropWaiting(() => true, label);
     let stoppedTurns = 0;
     for (const turn of this.activeTurns.values()) {
       if (caller && turn.id === caller.id) continue;
@@ -1742,6 +1798,23 @@ export class Agent {
     }
     if (turnsNote) return `${turnsNote} ${reason}.${reason === 'stopped' ? ' Locks released, task board cleared.' : ''}`;
     return reason === 'halted' ? 'Foreground task halted.' : 'Foreground task stopped, locks released, task board cleared.';
+  }
+
+  /**
+   * Take waiting messages out of the line and cancel their work entries
+   * (never started: a restart must not run them after all). Returns how many.
+   */
+  private dropWaiting(match: (m: ChannelMessage) => boolean, reason: string): number {
+    const dropped = this.messageQueue.filter((i) => match(i.message));
+    if (dropped.length === 0) return 0;
+    this.messageQueue = this.messageQueue.filter((i) => !match(i.message));
+    for (const item of dropped) {
+      if (!item.workKey) continue;
+      this.queuedWorkKeys.delete(item.workKey);
+      try { this.workLedger.markCancelled(item.workKey, reason); } catch { /* entry may not exist */ }
+    }
+    this.announceQueue();
+    return dropped.length;
   }
 
   /** Resolves when this lane has no running turn (or after the deadline). */
@@ -2548,6 +2621,7 @@ export class Agent {
       startedAt: Date.now(),
       abort: null,
       abortReason: null,
+      cancelled: null,
       activity: '',
       completedStepCount: 0,
       stepNarrative: [],
@@ -2589,6 +2663,11 @@ export class Agent {
   /** One queued message, start to finish: the work ledger and scheduled-run bookkeeping around handleMessage. */
   private async runQueuedItem(item: { message: ChannelMessage; workKey?: string }): Promise<void> {
     const msg = item.message;
+    // Cancelled while it waited (or a retry timer that raced a stop): never run it.
+    if (item.workKey && this.workLedger.get(item.workKey)?.status === 'cancelled') {
+      logger.info({ workKey: item.workKey }, 'Skipping cancelled work');
+      return;
+    }
     try {
       if (item.workKey) this.workLedger.markRunning(item.workKey);
       await this.withSessionProgramming(msg, () => this.handleMessage(msg));
@@ -2624,7 +2703,7 @@ export class Agent {
       id: t.id,
       startedAt: t.startedAt,
       label: `${t.laneKey}: ${this.describeTurn(t)}`,
-      isStopping: () => t.done || !t.abort || t.abort.signal.aborted,
+      isStopping: () => t.done || t.cancelled !== null || !t.abort || t.abort.signal.aborted,
       shed: (error: Error) => {
         if (!t.abort || t.abort.signal.aborted) return;
         t.abortReason = 'memory-pressure';
@@ -2815,6 +2894,8 @@ export class Agent {
   }
 
   private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown, continuation = false): number {
+    // Stopped work is never retried or continued (ADR-038).
+    if (this.turnCancelled() || this.workLedger.get(workKey)?.status === 'cancelled') return 0;
     const attempts = this.workLedger.get(workKey)?.attempts ?? 1;
     const delayMs = continuation
       ? Math.min(2_000 * 2 ** Math.min(attempts - 1, 5), 60_000)
@@ -3722,6 +3803,9 @@ export class Agent {
       // Compact per-turn tool trace, written to the session at turn end so
       // the next turn's history carries what was read and written.
       const turnToolTrace: string[] = [];
+      // The same steps as data: a turn that ends without text is answered
+      // with what it did instead of "(no text response)".
+      const turnActions: TurnAction[] = [];
       // Files this turn makes that are worth keeping (images, PDFs, reports…): artifacts of the conversation.
       const artifactCollector = new ArtifactCollector({
         startedAt: Date.now(),
@@ -3748,6 +3832,7 @@ export class Agent {
             args: summarizeToolArgs(tc.input),
             outcome: summarizeToolResult(raw, !isFailedToolResult(text)),
           }));
+          turnActions.push({ tool: tc.toolName, input: tc.input, ok: !isFailedToolResult(text) });
         }
       };
       let lastStepHadToolCalls = false;
@@ -4524,7 +4609,7 @@ export class Agent {
           }
           if (this.currentAbortReason === 'backgrounded') {
             researchRun?.end('stopped', 'it was moved to the background');
-            result = { text: 'This task was moved to the background and will report back when it finishes.', usage: undefined };
+            result = { text: stopNoteFor('backgrounded'), usage: undefined };
             break;
           }
           if (this.currentAbortReason === 'stopped' && researchRun?.finishRequested && researchRun.readCount() > 0) {
@@ -4535,7 +4620,7 @@ export class Agent {
           }
           if (this.currentAbortReason === 'stopped' || this.currentAbortReason === 'halted') {
             researchRun?.end('stopped', 'you stopped it');
-            result = { text: `⏹ Task ${this.currentAbortReason}. Its work entry was cancelled — a restart will not resume it. Send the request again or ask me to continue if you change your mind.`, usage: undefined };
+            result = { text: stopNoteFor(this.currentAbortReason), usage: undefined };
             this.currentAbortReason = null;
             break;
           }
@@ -4588,6 +4673,15 @@ export class Agent {
             await this.sendFallbackNotice(msg, line).catch((e) => logger.warn({ e }, 'channel send failed'));
           }
         }
+      }
+
+      // Stopped by the owner however the attempt ended (mid-tool, between
+      // steps, in a fallback): the answer is the stop note — never a retry,
+      // a continuation or a failure report (ADR-038).
+      const ownerStop = this.turn()?.cancelled ?? null;
+      if (!result && ownerStop) {
+        researchRun?.end('stopped', ownerStop === 'backgrounded' ? 'it was moved to the background' : 'you stopped it');
+        result = { text: stopNoteFor(ownerStop), usage: undefined };
       }
 
       if (!result && researchRun && !memoryPressureStop) {
@@ -5100,7 +5194,18 @@ export class Agent {
       // Recompute AFTER the guard: the continuation's output (not the
       // original narration) must be what reaches the session store, the
       // work ledger, and the final delivery.
-      let finalText = (result.text || '').trim() || '(no text response)';
+      // Stopped during a continuation or verification round: deliver the
+      // stop note, never the earlier answer dressed up as complete.
+      {
+        const stoppedAs = this.turn()?.cancelled ?? null;
+        if (stoppedAs && (result.text || '').trim() !== stopNoteFor(stoppedAs)) {
+          if (researchRun?.outcome === 'running') researchRun.end('stopped', stoppedAs === 'backgrounded' ? 'it was moved to the background' : 'you stopped it');
+          result = { ...result, text: stopNoteFor(stoppedAs) };
+        }
+      }
+      // No text from the model (it ended on tool calls): say what was done.
+      const modelWroteText = (result.text || '').trim().length > 0;
+      let finalText = modelWroteText ? (result.text || '').trim() : summarizeSilentTurn(turnActions);
       let researchReportText: string | null = null;
 
       // A research run: an empty answer still gets a report from what was
@@ -5267,7 +5372,9 @@ export class Agent {
           meta: completionMeta,
           verificationNote: lastVerificationNote || undefined,
           traceId,
-          alreadyStreamed: !requiresFinalSend(msg.channelType, cliResponseStreamed),
+          // Nothing was streamed when the model wrote no text: the summary
+          // of what was done must be sent, or the screen shows nothing.
+          alreadyStreamed: modelWroteText && !this.turnCancelled() && !requiresFinalSend(msg.channelType, cliResponseStreamed),
           forceBanner: isMercuryCodeExecution,
         });
         replyDelivered();
@@ -5750,15 +5857,7 @@ export class Agent {
    * queued for it. Other chats keep going. Returns whether anything stopped.
    */
   stopWorkFor(channelPrefix: string, reason = 'Stopped by the owner.'): boolean {
-    const dropped = this.messageQueue.filter((i) => i.message.channelId.startsWith(channelPrefix));
-    this.messageQueue = this.messageQueue.filter((i) => !i.message.channelId.startsWith(channelPrefix));
-    // Never started: cancel them, or a restart would run them after all.
-    for (const item of dropped) {
-      if (!item.workKey) continue;
-      this.queuedWorkKeys.delete(item.workKey);
-      try { this.workLedger.markCancelled(item.workKey, reason); } catch { /* entry may not exist */ }
-    }
-    let stopped = dropped.length > 0;
+    let stopped = this.dropWaiting((m) => m.channelId.startsWith(channelPrefix), reason) > 0;
     for (const turn of this.activeTurns.values()) {
       if (turn.message.channelId.startsWith(channelPrefix) && this.abortTurn(turn, 'stopped', reason)) stopped = true;
     }

@@ -398,7 +398,7 @@ export function getTelegramHelp(): string {
   lines.push('/models — List providers or switch AI model (saved across restarts)');
   lines.push('/cloud models — List Mercury Cloud models and switch');
   lines.push('/stream — Toggle text streaming on/off');
-  lines.push("/stop — Stop this chat's task and its agents now (other chats keep going)");
+  lines.push("/stop — Stop this chat's task, its agents and waiting messages now (other chats keep going)");
   lines.push("/halt — Emergency: stop every chat's task and all agents");
   lines.push('');
 

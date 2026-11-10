@@ -196,6 +196,9 @@ export class WorkLedger {
 
   markRetry(key: string, error: unknown, nextAttemptAt: number, context: WorkContinuationContext = {}): WorkEntry {
     return this.update(key, (entry) => {
+      // A user-cancelled entry is terminal: a retry scheduled by a turn the
+      // owner stopped must never bring it back (ADR-038).
+      if (entry.status === 'cancelled') return;
       entry.status = 'queued';
       entry.error = error instanceof Error ? error.message : String(error);
       entry.nextAttemptAt = nextAttemptAt;

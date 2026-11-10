@@ -387,3 +387,22 @@
   - **One governor.** `TurnGovernor` sets the limit: heap headroom divided by a 192 MB per-turn budget, capped at 4, 3 under 8 GB of RAM, 2 on Termux or under 4 GB. `concurrency.maxTurns` / `MERCURY_MAX_CONCURRENT_TURNS` overrides it (1–16). It admits a turn only while the heap leaves that turn its budget (and, on Linux/Android, while the OS still has memory available), and always admits one when nothing runs. A single process-wide timer replaces the per-turn guard. The stop line is the old single-task line with one turn running and widens by one budget per extra turn. Past it, the newest turn is stopped, one per 5 s cooldown, after each turn has first compacted its own conversation. Past the exit line the process exits with a crash flag, so the work ledger recovers every interrupted chat.
   - **Stopping.** `/stop`, Esc, the desktop Stop button and a cloud `task.stop` stop that chat's turn and the sub-agents it started. With nothing else running, `/stop` is the full stop it was (locks released, task board cleared). `/halt` stops everything.
 - **Consequence**: Chats no longer block each other, up to the limit. What stays shared is deliberate: the owner's Allow All, approved scopes, token budget, provider fallback state and permission-answer evidence for learning. The terminal's live feed shows the terminal's own turn and mirrors another chat's only while the terminal is idle. A `/workspace` or `cd` from a remote chat now moves only that chat, not the terminal. Recovered interrupted work resumes concurrently after a restart, still one turn per chat.
+
+## ADR-038: A stop is final — sticky cancellation, nothing retries, the whole command dies
+
+- **Context**: Owners reported that Stop "doesn't stop — it resumes again", most often in the middle of multi-step work. Five separate paths let stopped work come back:
+  1. When an attempt aborted after a tool had run, the turn scheduled a durable continuation. `WorkLedger.markRetry` turned the cancelled entry back to `queued`, and a timer re-ran it seconds later.
+  2. A stop that arrived while the stall watchdog had already aborted the attempt was dropped, because the controller was already aborted. The stall branch then cleared the reason and retried with a fresh controller.
+  3. A stop during a continuation or verification round delivered the earlier answer as if it were complete.
+  4. Messages the chat had waiting started right after the stop.
+  5. Only the shell of a command was killed, so `npm run build` and similar kept running. The SIGKILL escalation was cleared before it could ever fire.
+
+  On top of these, a halted sub-agent could still step-budget auto-resume.
+- **Decision**:
+  - **Sticky cancellation.** An owner stop (`stopped`, `halted`, `backgrounded`) sets `TurnState.cancelled` once and nothing clears it. The turn's abort reason always reads as that stop, internal handlers (stall, time limit, memory) can't overwrite it, and any abort controller made after it is created already aborted. It is recorded even when the controller was already aborted.
+  - **Nothing retries stopped work.** `scheduleDurableRetry` is a no-op for a cancelled turn or entry, and a cancelled ledger entry is terminal for retry, pause and failure. A queued item whose entry is cancelled never runs. However the attempt ended, a stopped turn delivers the stop note: never a continuation notice, a failure report or an earlier answer.
+  - **The chat's line is cleared.** `/stop` (and the Stop button) also drops that chat's waiting messages and cancels their entries, as OpenClaw's `/stop` does. "Do mine first" passes `keepQueued`. `/halt` empties the whole line.
+  - **Whole process trees.** On POSIX each command runs in its own process group (`detached`) and is signalled as a group: SIGTERM, then SIGKILL after 5 s to whatever ignored it. On Windows the tree is ended with `taskkill /T /F`. Groups still alive when Mercury exits get SIGTERM.
+  - **Final sub-agent halts.** Halted ids are remembered: no step-budget auto-resume, no start from the wait queue.
+  - Research "write the report now" stays a non-cancelling abort: that turn goes on to write the report.
+- **Consequence**: Stop means stopped. "Continue" or sending the request again is the only way back. A command that needs the terminal's `/dev/tty` (an interactive password prompt) no longer gets it, since commands run in their own session. They never could answer through Mercury anyway.

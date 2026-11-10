@@ -81,7 +81,8 @@ export const chat = {
    * turn stops (runtimes that run chats at once); without one, everything.
    * Needs the "chat.stop" feature.
    */
-  stop: (threadId?: string | null) => http.post<{ ok: boolean; note?: string }>("/api/chat/stop", threadId ? { threadId } : {}),
+  stop: (threadId?: string | null, opts?: { keepQueued?: boolean }) =>
+    http.post<{ ok: boolean; note?: string }>("/api/chat/stop", threadId ? { threadId, ...(opts?.keepQueued ? { keepQueued: true } : {}) } : {}),
   /** Take back your last message and the reply (stop the turn first); returns your text. */
   save: (threadId: string, saved: boolean) => http.post<{ id: string; saved: boolean; savedAt: string | null }>(`/api/chat/threads/${encodeURIComponent(threadId)}/save`, { saved }),
   undo: (threadId: string, content: string) => http.post<{ ok: boolean; content: string; removed: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/undo`, { content }),
