@@ -164,6 +164,15 @@ describe('finishing a Google sign-in', () => {
     await login.done;
   }, 20_000);
 
+  it('lets the address be pasted again when passing it to gws failed', async () => {
+    const login = await start();
+    const broken = (async () => { throw new Error('socket hang up'); }) as unknown as typeof fetch;
+    const address = `http://localhost:${login.port}/?state=s&code=4%2F0abc`;
+    await expect(submitGoogleRedirect(login, address, broken)).rejects.toThrow(/Couldn't pass the address to gws \(socket hang up\)/);
+    await submitGoogleRedirect(login, address);
+    await expect(login.done).resolves.toMatchObject({ account: 'owner@example.com' });
+  }, 20_000);
+
   it('stops the sign-in when Google says access was denied', async () => {
     const login = await start();
     await expect(submitGoogleRedirect(login, `http://localhost:${login.port}/?error=access_denied`)).rejects.toThrow(/didn't allow access \(access_denied\)/);

@@ -95,6 +95,31 @@ function systemTar(): string {
   return existsSync(bundled) ? bundled : 'tar';
 }
 
+function replaceFile(staging: string, finalPath: string, previous: string): void {
+  try {
+    renameSync(staging, finalPath);
+    return;
+  } catch (err) {
+    if (!existsSync(finalPath)) {
+      rmSync(staging, { force: true });
+      throw err;
+    }
+  }
+  try {
+    renameSync(finalPath, previous);
+    renameSync(staging, finalPath);
+  } catch (err) {
+    rmSync(staging, { force: true });
+    if (!existsSync(finalPath) && existsSync(previous)) renameSync(previous, finalPath);
+    throw new Error(`Couldn't replace gws (${(err as Error).message}). Close anything using gws and try again.`);
+  }
+  try {
+    rmSync(previous, { recursive: true, force: true });
+  } catch {
+    return;
+  }
+}
+
 export async function installGws(opts: InstallGwsOptions = {}): Promise<{ path: string; version: string }> {
   const target = opts.target === undefined
     ? gwsTarget(process.platform, process.arch, process.platform === 'linux' ? detectLibc() : 'gnu')
@@ -131,9 +156,11 @@ export async function installGws(opts: InstallGwsOptions = {}): Promise<{ path: 
     mkdirSync(dir, { recursive: true });
     const finalPath = join(dir, binary);
     const staging = `${finalPath}.new`;
+    const previous = `${finalPath}.old`;
+    rmSync(previous, { recursive: true, force: true });
     copyFileSync(unpacked, staging);
     if (!binary.endsWith('.exe')) chmodSync(staging, 0o755);
-    renameSync(staging, finalPath);
+    replaceFile(staging, finalPath, previous);
     writeFileSync(join(dir, 'version.txt'), `${GWS_VERSION}\n`);
     return { path: finalPath, version: GWS_VERSION };
   } finally {

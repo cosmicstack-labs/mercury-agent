@@ -144,6 +144,15 @@ describe('mercury google connect', () => {
     expect(h.text()).toContain('npm install -g @googleworkspace/cli');
   });
 
+  it('installs nothing when no answer comes in', async () => {
+    const h = harness({ findGws: vi.fn(() => null) });
+    const run = runGoogleConnect({}, h.deps);
+    h.input.end();
+    await expect(run).resolves.toBe(1);
+    expect(h.deps.installGws).not.toHaveBeenCalled();
+    expect(h.text()).toContain('No answer came in, so nothing was installed');
+  });
+
   it('reads the Google app from a client JSON when none is set up', async () => {
     const file = join(work, 'client_secret_123.json');
     writeFileSync(file, JSON.stringify({ installed: { client_id: 'id-1.apps.googleusercontent.com', client_secret: 'secret-1' } }));
@@ -222,6 +231,22 @@ describe('reading the Google client JSON', () => {
     const file = join(work, 'client.json');
     writeFileSync(file, JSON.stringify({ installed: { client_id: 'a', client_secret: 'b' } }));
     expect(readGoogleClientFile(` "${file}" `)).toEqual({ clientId: 'a', clientSecret: 'b' });
+  });
+
+  it('expands ~ in a quoted path', () => {
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = work;
+    process.env.USERPROFILE = work;
+    try {
+      writeFileSync(join(work, 'client.json'), JSON.stringify({ installed: { client_id: 'a', client_secret: 'b' } }));
+      expect(readGoogleClientFile('"~/client.json"')).toEqual({ clientId: 'a', clientSecret: 'b' });
+      expect(readGoogleClientFile("'~/client.json'")).toEqual({ clientId: 'a', clientSecret: 'b' });
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it('refuses a Web application client, a missing file and other JSON', () => {

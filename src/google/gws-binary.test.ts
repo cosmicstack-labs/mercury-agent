@@ -170,6 +170,16 @@ describe('installing gws', () => {
     expect(readFileSync(join(dir, 'gws.exe'), 'utf8')).toBe('fake gws.exe');
   });
 
+  it('replaces a gws that cannot be overwritten in place, and leaves no staging file', async () => {
+    const data = archive(gwsArchiveName(linux), 'gws', 'new gws binary');
+    const dir = join(work, 'gws-bin');
+    mkdirSync(join(dir, 'gws', 'in-use'), { recursive: true });
+    await installGws({ target: linux, dir, checksums: { [linux]: sha256(data) }, fetchImpl: serve(data).fetchImpl });
+    expect(readFileSync(join(dir, 'gws'), 'utf8')).toBe('new gws binary');
+    expect(existsSync(join(dir, 'gws.new'))).toBe(false);
+    expect(existsSync(join(dir, 'gws.old'))).toBe(false);
+  });
+
   it('refuses a download that does not match its checksum and installs nothing', async () => {
     const data = archive(gwsArchiveName(linux), 'gws', 'tampered');
     const dir = join(work, 'gws-bin');

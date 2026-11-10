@@ -10,6 +10,7 @@ import {
   submitGoogleRedirect,
 } from './connect.js';
 import { GOOGLE_SKILL_URL, installGoogleSkill } from './cli.js';
+import { GOOGLE_PERMISSIONS_URL, accessLabel, disconnectGoogle, googleOverview } from './overview.js';
 
 export interface GoogleChatChannel {
   send(content: string, targetId?: string): Promise<void>;
@@ -145,20 +146,15 @@ async function connect(write: boolean, reply: (text: string) => Promise<void>, d
 }
 
 async function status(reply: (text: string) => Promise<void>, deps: GoogleChatDeps, withUsage: boolean): Promise<void> {
-  const gws = deps.findGws();
+  const overview = await googleOverview(deps);
   const lines: string[] = [];
-  if (!gws) {
+  if (!overview.gws) {
     lines.push("gws isn't installed. Send `/google connect` to set it up.");
   } else {
-    try {
-      const current = await deps.googleStatus(gws.path);
-      lines.push(current.signedIn
-        ? `✓ Signed in as ${current.account ?? 'a Google account'} (${isReadOnly(current.scopes) ? 'read-only' : 'read and write'})`
-        : 'Not signed in. Send `/google connect`.');
-    } catch (err) {
-      lines.push(`✗ ${(err as Error).message}`);
-    }
-    for (const finding of deps.findings()) {
+    if (overview.error) lines.push(`✗ ${overview.error}`);
+    else if (overview.status?.signedIn) lines.push(`✓ Signed in as ${overview.status.account ?? 'a Google account'} (${accessLabel(overview.status.scopes)})`);
+    else lines.push('Not signed in. Send `/google connect`.');
+    for (const finding of overview.findings) {
       if (finding.level !== 'ok') lines.push(`${finding.level === 'risk' ? '✗' : '!'} ${finding.title}${finding.fix ? ` · ${finding.fix}` : ''}`);
     }
   }
@@ -167,15 +163,8 @@ async function status(reply: (text: string) => Promise<void>, deps: GoogleChatDe
 }
 
 async function disconnect(reply: (text: string) => Promise<void>, deps: GoogleChatDeps): Promise<void> {
-  const gws = deps.findGws();
-  if (!gws) {
-    await reply("gws isn't installed, so there's nothing to disconnect.");
-    return;
-  }
-  try {
-    const { removed } = await deps.googleLogout(gws.path);
-    await reply(`${removed > 0 ? '✓ Signed gws out on the computer Mercury runs on.' : '✓ gws had no sign-in there.'}\nTo remove the app's access at Google too: https://myaccount.google.com/permissions`);
-  } catch (err) {
-    await reply(`✗ ${(err as Error).message}`);
-  }
+  const result = await disconnectGoogle(deps);
+  if (result.kind === 'not-installed') await reply("gws isn't installed, so there's nothing to disconnect.");
+  else if (result.kind === 'failed') await reply(`✗ ${result.error}`);
+  else await reply(`${result.removed > 0 ? '✓ Signed gws out on the computer Mercury runs on.' : '✓ gws had no sign-in there.'}\nTo remove the app's access at Google too: ${GOOGLE_PERMISSIONS_URL}`);
 }

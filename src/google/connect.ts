@@ -223,7 +223,12 @@ export async function submitGoogleRedirect(login: PendingGoogleLogin, address: s
   if (!url.searchParams.get('code')) throw new Error("That address has no sign-in code. Copy the whole address from your browser's address bar.");
   if (state.redirected) throw new Error('This sign-in already received its address.');
   state.redirected = true;
-  await fetchImpl(`http://127.0.0.1:${login.port}${url.pathname}${url.search}`, { redirect: 'manual', signal: AbortSignal.timeout(15_000) });
+  try {
+    await fetchImpl(`http://127.0.0.1:${login.port}${url.pathname}${url.search}`, { redirect: 'manual', signal: AbortSignal.timeout(15_000) });
+  } catch (err) {
+    state.redirected = false;
+    throw new Error(`Couldn't pass the address to gws (${(err as Error).message}). Try again.`);
+  }
 }
 
 function runGws(gwsPath: string, args: string[], timeoutMs = 30_000): Promise<{ code: number | null; stdout: string; stderr: string }> {

@@ -5,10 +5,11 @@ import readline from 'node:readline';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getMercuryHome } from '../utils/config.js';
-import { getUrlOpeners, openUrl } from '../utils/open-url.js';
+import { openUrl } from '../utils/open-url.js';
 import { SkillLoader } from '../skills/loader.js';
 import { gwsFindings, type SecurityFinding } from '../security/check.js';
 import { GWS_VERSION, findGws, installGws, mercuryGwsDir, type FoundGws } from './gws-binary.js';
+import { GOOGLE_PERMISSIONS_URL, accessLabel, disconnectGoogle, googleOverview } from './overview.js';
 import {
   DEFAULT_GOOGLE_SERVICES,
   googleLogout,
@@ -17,11 +18,11 @@ import {
   isReadOnly,
   startGoogleLogin,
   submitGoogleRedirect,
+  type GoogleStatus,
 } from './connect.js';
 
 export const GOOGLE_SKILL_URL = 'https://mercuryagent.sh/skills/google-workspace/SKILL.md';
 const GOOGLE_APP_DOCS = 'https://mercuryagent.sh/docs/integrations/google-workspace#before-you-start-your-own-google-app';
-const GOOGLE_PERMISSIONS_URL = 'https://myaccount.google.com/permissions';
 
 export interface GoogleCliDeps {
   findGws: typeof findGws;
@@ -62,13 +63,6 @@ export async function installGoogleSkill(): Promise<'installed' | 'present'> {
   return 'installed';
 }
 
-function openInBrowser(url: string): Promise<boolean> {
-  const openers = process.platform === 'win32'
-    ? [{ command: 'rundll32', args: ['url.dll,FileProtocolHandler', url] }, ...getUrlOpeners(url)]
-    : getUrlOpeners(url);
-  return openUrl(url, undefined, openers);
-}
-
 export function defaultGoogleCliDeps(): GoogleCliDeps {
   return {
     findGws,
@@ -78,7 +72,7 @@ export function defaultGoogleCliDeps(): GoogleCliDeps {
     googleLogout,
     startGoogleLogin,
     submitGoogleRedirect,
-    openUrl: openInBrowser,
+    openUrl: (url) => openUrl(url),
     installSkill: installGoogleSkill,
     findings: () => gwsFindings(),
     env: process.env,
@@ -131,7 +125,8 @@ function serviceNames(services: string[]): string {
 }
 
 export function readGoogleClientFile(path: string): { clientId: string; clientSecret: string } {
-  const full = resolve(path.trim().replace(/^~(?=$|[\\/])/, homedir()).replace(/^"(.*)"$/, '$1'));
+  const unquoted = path.trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1');
+  const full = resolve(unquoted.replace(/^~(?=$|[\\/])/, homedir()));
   if (!existsSync(full)) throw new Error(`No file at ${full}.`);
   let data: Record<string, { client_id?: unknown; client_secret?: unknown } | undefined>;
   try {
@@ -152,22 +147,30 @@ export function readGoogleClientFile(path: string): { clientId: string; clientSe
 export async function runGoogleConnect(opts: GoogleConnectOptions, deps: GoogleCliDeps): Promise<number> {
   const say = (line = '') => { deps.output.write(`${line}\n`); };
   const lines = lineReader(deps.input);
-  const ask = async (question: string) => {
+  const ask = async (question: string): Promise<string | null> => {
     deps.output.write(question);
-    return ((await lines.next()) ?? '').trim();
+    const line = await lines.next();
+    return line === null ? null : line.trim();
   };
   try {
     const services = parseServices(opts.services);
     let gws: FoundGws | null = deps.findGws();
+    let statusCheck: Promise<GoogleStatus | null> | null = null;
     if (gws && !opts.install) {
+      if (!opts.client) statusCheck = deps.googleStatus(gws.path).catch(() => null);
       const version = await deps.gwsVersion(gws.path).catch(() => null);
       say(chalk.green(`✓ gws${version ? ` ${version}` : ''} found at ${gws.path}`));
       if (version && version !== GWS_VERSION) say(`  Mercury was checked with gws ${GWS_VERSION}. Newer commands may always ask before they run.`);
     } else {
       say(gws ? `Mercury will install its own gws ${GWS_VERSION} into ${mercuryGwsDir()}.` : `gws isn't installed. Mercury can install gws ${GWS_VERSION} (about 6 MB) into ${mercuryGwsDir()}.`);
       if (!opts.yes) {
-        const answer = (await ask('Install it now? [Y/n] ')).toLowerCase();
-        if (answer === 'n' || answer === 'no') {
+        const answer = await ask('Install it now? [Y/n] ');
+        if (answer === null) {
+          say('');
+          say('No answer came in, so nothing was installed. Run it again in a terminal, or add --yes.');
+          return 1;
+        }
+        if (['n', 'no'].includes(answer.toLowerCase())) {
           say('Nothing was installed. To install gws yourself: npm install -g @googleworkspace/cli');
           return 1;
         }
@@ -181,7 +184,7 @@ export async function runGoogleConnect(opts: GoogleConnectOptions, deps: GoogleC
     if (opts.client) {
       client = readGoogleClientFile(opts.client);
     } else {
-      const status = await deps.googleStatus(gws.path).catch(() => null);
+      const status = await (statusCheck ?? deps.googleStatus(gws.path).catch(() => null));
       const fromEnv = Boolean(deps.env.GOOGLE_WORKSPACE_CLI_CLIENT_ID && deps.env.GOOGLE_WORKSPACE_CLI_CLIENT_SECRET);
       if (!status?.clientConfigured && !fromEnv) {
         say('• Your Google app: none set up yet.');
@@ -249,21 +252,16 @@ export async function runGoogleConnect(opts: GoogleConnectOptions, deps: GoogleC
 
 export async function runGoogleStatus(deps: GoogleCliDeps): Promise<number> {
   const say = (line = '') => { deps.output.write(`${line}\n`); };
-  const gws = deps.findGws();
-  if (!gws) {
+  const overview = await googleOverview(deps);
+  if (!overview.gws) {
     say("gws isn't installed. Connect Google with: mercury google connect");
     return 0;
   }
-  const version = await deps.gwsVersion(gws.path).catch(() => null);
-  say(`gws ${version ?? '(version unknown)'} at ${gws.path} (${gws.source === 'mercury' ? 'installed by Mercury' : 'on your PATH'})`);
-  try {
-    const status = await deps.googleStatus(gws.path);
-    if (status.signedIn) say(chalk.green(`✓ Signed in as ${status.account ?? 'a Google account'} (${isReadOnly(status.scopes) ? 'read-only' : 'read and write'})`));
-    else say('Not signed in. Connect Google with: mercury google connect');
-  } catch (err) {
-    say(chalk.red(`✗ ${(err as Error).message}`));
-  }
-  for (const finding of deps.findings()) {
+  say(`gws ${overview.version ?? '(version unknown)'} at ${overview.gws.path} (${overview.gws.source === 'mercury' ? 'installed by Mercury' : 'on your PATH'})`);
+  if (overview.error) say(chalk.red(`✗ ${overview.error}`));
+  else if (overview.status?.signedIn) say(chalk.green(`✓ Signed in as ${overview.status.account ?? 'a Google account'} (${accessLabel(overview.status.scopes)})`));
+  else say('Not signed in. Connect Google with: mercury google connect');
+  for (const finding of overview.findings) {
     const mark = finding.level === 'ok' ? chalk.green('✓') : finding.level === 'risk' ? chalk.red('✗') : chalk.yellow('!');
     say(`${mark} ${finding.title}${finding.fix ? ` · ${finding.fix}` : ''}`);
   }
@@ -272,20 +270,18 @@ export async function runGoogleStatus(deps: GoogleCliDeps): Promise<number> {
 
 export async function runGoogleDisconnect(deps: GoogleCliDeps): Promise<number> {
   const say = (line = '') => { deps.output.write(`${line}\n`); };
-  const gws = deps.findGws();
-  if (!gws) {
+  const result = await disconnectGoogle(deps);
+  if (result.kind === 'not-installed') {
     say("gws isn't installed, so there's nothing to disconnect.");
     return 0;
   }
-  try {
-    const { removed } = await deps.googleLogout(gws.path);
-    say(chalk.green(removed > 0 ? `✓ Signed out of gws on this computer (${removed} files removed).` : '✓ gws had no sign-in on this computer.'));
-    say(`  To remove the app's access at Google too: ${GOOGLE_PERMISSIONS_URL}`);
-    return 0;
-  } catch (err) {
-    say(chalk.red(`✗ ${(err as Error).message}`));
+  if (result.kind === 'failed') {
+    say(chalk.red(`✗ ${result.error}`));
     return 1;
   }
+  say(chalk.green(result.removed > 0 ? `✓ Signed out of gws on this computer (${result.removed} files removed).` : '✓ gws had no sign-in on this computer.'));
+  say(`  To remove the app's access at Google too: ${GOOGLE_PERMISSIONS_URL}`);
+  return 0;
 }
 
 export function registerGoogleCommand(program: Command, deps: () => GoogleCliDeps = defaultGoogleCliDeps): void {
