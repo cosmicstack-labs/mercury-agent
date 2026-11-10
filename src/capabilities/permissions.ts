@@ -427,6 +427,7 @@ export class PermissionManager {
    * everything else denies. Never combined with autoApproveAll.
    */
   private failClosed = false;
+  private unattendedTurn = false;
 
   /**
    * Bot-scoped shell allow-list (fail-closed runtimes): patterns the bot's
@@ -566,6 +567,10 @@ export class PermissionManager {
 
   getCurrentSenderRole(): 'admin' | 'member' | undefined {
     return this.ctx().senderRole;
+  }
+
+  setUnattendedTurn(value: boolean): void {
+    this.unattendedTurn = value;
   }
 
   onAsk(handler: (prompt: string) => Promise<string>): void {
@@ -1000,7 +1005,7 @@ export class PermissionManager {
       return { allowed: false, reason: 'Blocked: gws sign-in commands are for the owner. Run it yourself in a terminal.', needsApproval: false };
     }
     if (gwsCommands.some((c) => c.kind === 'sensitive')) {
-      if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed) {
+      if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed || this.unattendedTurn) {
         return { allowed: false, reason: 'Sending, sharing, uploading or deleting in Google Workspace needs you to approve it, and nobody can be asked here.', needsApproval: false };
       }
       const answer = await this.askHandler(`Run command (sends, shares, uploads or deletes in Google Workspace, so it always asks): ${trimmed}`);

@@ -13,7 +13,7 @@ An MCP server is the other way to connect Google Workspace. Both use your own Go
 | Made by | Mercury sets up gws, from the [googleworkspace/cli](https://github.com/googleworkspace/cli) project, which says it is not an officially supported Google product | The open-source [workspace-mcp](https://github.com/taylorwilsdon/google_workspace_mcp) project |
 | You install | Nothing: `mercury google connect` installs gws for you | [`uv`](https://docs.astral.sh/uv/) (Python 3.10 or newer) |
 | Approvals | Reads and writes follow your permission mode. **Sends, shares, uploads and deletes always ask, even under Allow All** | Every call asks you, **even under Allow All**, unless you auto-approve that tool |
-| Scheduled tasks | Read and write, never send, share, upload or delete | Only the tools you auto-approve |
+| Scheduled tasks | Never send, share, upload or delete | Only the tools you auto-approve |
 | Where your Google sign-in is kept | Encrypted, with the key in your system keychain (in a file on Linux) | Plain JSON files, readable only by your user account |
 | Good for | Most setups: Gmail, Drive and Docs, drafts, scheduled summaries | Read-only setups where you want to approve every call |
 
@@ -99,7 +99,7 @@ The send, share, upload and delete kind also covers:
 - admin changes;
 - any gws command Mercury can't read, for example one built with `$`, backticks or `~`.
 
-**Scheduled tasks** read and write: a morning inbox summary or a weekly report doc works. They never send, share, upload or delete; if one tries, the run reports that Mercury refused it.
+**Scheduled tasks** never send, share, upload or delete, whichever chat they were created in; if one tries, the run reports that Mercury refused it. Their reads and writes follow the same rules as the rest of the task, so a morning inbox summary or a weekly report doc works.
 
 **Bots** can run gws reads and writes only if their allowed commands name them. Sends, shares, uploads and deletes are refused for bots whatever the list says.
 

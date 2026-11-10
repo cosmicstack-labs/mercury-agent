@@ -701,6 +701,20 @@ describe('gws commands', () => {
     }
   });
 
+  it('refuses a send in a scheduled run created from a chat, without asking', async () => {
+    const { permissions, ask } = gwsPermissions('yes');
+    permissions.setCurrentContext('telegram', 'telegram:42');
+    permissions.setUnattendedTurn(true);
+    const check = await permissions.checkShellCommand(SEND);
+    expect(check).toMatchObject({ allowed: false, needsApproval: false });
+    expect(check.reason).toMatch(/nobody can be asked here/);
+    expect(ask).not.toHaveBeenCalled();
+    await expect(permissions.checkShellCommand(READ)).resolves.toMatchObject({ allowed: true });
+    permissions.setUnattendedTurn(false);
+    await expect(permissions.checkShellCommand(SEND)).resolves.toMatchObject({ allowed: true });
+    expect(String(ask.mock.calls.at(-1)?.[0])).toMatch(ALWAYS_ASKS);
+  });
+
   it('refuses a send for a bot whose allow-list names gws, and runs its reads', async () => {
     const { permissions, ask } = gwsPermissions('yes');
     permissions.setFailClosed(true);

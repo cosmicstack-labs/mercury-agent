@@ -3233,6 +3233,7 @@ export class Agent {
       this.capabilities.setChannelContext(msg.channelId, msg.channelType);
       this.capabilities.permissions.setCurrentChannelType(msg.channelType);
       this.capabilities.permissions.setCurrentSenderRole(msg.senderRole);
+      this.capabilities.permissions.setUnattendedTurn(msg.senderId === 'system');
 
       const providerContextId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : msg.channelId);
       const channelOverride = this.channelProviderOverrides.get(providerContextId);
@@ -4930,6 +4931,7 @@ export class Agent {
         this.capabilities.permissions.endTurnGrant();
       }
       this.capabilities.permissions.clearElevation();
+      this.capabilities.permissions.setUnattendedTurn(false);
     }
   }
 
