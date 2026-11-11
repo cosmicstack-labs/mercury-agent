@@ -7,6 +7,7 @@ import { Markdown } from "~/components/Markdown";
 import { StreamCaret } from "~/components/indicators/Thinking";
 import { Spinner } from "~/components/ui/bits";
 import { cx } from "~/lib/cx";
+import { MediaSkeleton } from "~/components/MediaSkeleton";
 
 /* ═══════════════════════════════════════════════════════════════
    A turn as it happened, top to bottom: thinking, the tools it ran, the
@@ -134,7 +135,11 @@ function StepGroup({ steps, live, now }: { steps: ThoughtStep[]; live: boolean; 
   const hidden = all ? [] : steps.slice(0, Math.max(0, steps.length - SHOW_STEPS)).filter((s) => s.status !== "error" && s.status !== "running");
   const hiddenKeys = new Set(hidden);
   const shown = steps.filter((s) => !hiddenKeys.has(s));
+  // A picture or voice being made in this reply: its placeholder until the reply lands
+  // (the finished file arrives with it). Videos and songs have their own (PendingMedia).
+  const making = live ? steps.filter((s) => s.media && (s.media.kind === "image" || s.media.kind === "speech") && s.status !== "error" && s.status !== "stopped") : [];
   return (
+    <>
     <ol className="flex flex-col gap-1">
       {hidden.length > 0 && (
         <li>
@@ -146,6 +151,10 @@ function StepGroup({ steps, live, now }: { steps: ThoughtStep[]; live: boolean; 
       )}
       {shown.map((s) => <StepRow key={s.key ?? `${s.id}-${s.startedAt}`} step={s} live={live} now={now} />)}
     </ol>
+    {making.map((s) => (
+      <MediaSkeleton key={`m-${s.key ?? s.id}`} shape={s.media!} startedAt={s.startedAt} now={now} note={s.status === "done" ? "Almost there…" : undefined} className="mt-1" />
+    ))}
+    </>
   );
 }
 
@@ -188,17 +197,18 @@ const LONG_QUIET_MS = 120_000;
 
 /**
  * The line under a running turn: what is happening right now and how long
- * the turn has taken. Hidden while the answer is visibly streaming.
+ * the turn has taken. The only progress line (the chat box has none).
  */
 export function LiveStatus({ trace, agent, stopping, now }: { trace: ThoughtTrace; agent: AgentState; stopping: boolean; now: number }) {
   const items = trace.items ?? [];
   const last = items[items.length - 1];
   const quietFor = now - (trace.lastEventAt ?? trace.startedAt);
+  // Always shown while the turn runs: the one place that says what is happening.
   const writing = last?.kind === "text" && quietFor < 2500 && !stopping;
-  if (writing) return null;
   const step = runningStep(trace);
   const thinking = last?.kind === "reasoning" && !last.endedAt;
   const what = stopping ? "Stopping"
+    : writing ? "Writing"
     : step ? (step.title || step.label)
     : thinking ? "Thinking"
     : trace.phase ? trace.phase

@@ -21,8 +21,24 @@ const GEMINI_VOICE = 'Kore';
 /** Speaking models, newest first; the next is tried when one isn't offered or is busy. */
 const GEMINI_SPEAK_MODELS = ['gemini-3.8-flash-tts', 'gemini-2.5-flash-preview-tts'];
 
-/** The audio type synthesizeSpeech returns for an engine. */
-export function speechMime(engine: SpeechEngine): string {
+/** Voices each service offers by name (ElevenLabs uses voice ids; Deepgram, Aura model names). */
+export const SPEECH_VOICES: Partial<Record<SpeechEngine['kind'], string[]>> = {
+  openai: ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'],
+  gemini: ['Kore', 'Puck', 'Charon', 'Fenrir', 'Aoede', 'Leda', 'Orus', 'Zephyr'],
+  deepgram: ['aura-2-thalia-en', 'aura-2-andromeda-en', 'aura-2-apollo-en', 'aura-2-arcas-en', 'aura-2-helena-en', 'aura-2-orion-en'],
+};
+
+/**
+ * mp3 plays everywhere; "ogg" is Ogg/Opus, what Telegram and WhatsApp play
+ * as a voice note. OpenAI and Deepgram make it themselves; Gemini and
+ * ElevenLabs output is converted with ffmpeg when it is installed (else it
+ * stays as it was, and goes as an audio file).
+ */
+export type SpeechFormat = 'mp3' | 'ogg';
+
+/** The audio type synthesizeSpeech returns for an engine (and format). */
+export function speechMime(engine: SpeechEngine, format: SpeechFormat = 'mp3'): string {
+  if (format === 'ogg' && (engine.kind === 'openai' || engine.kind === 'deepgram')) return 'audio/ogg';
   return engine.kind === 'gemini' ? 'audio/wav' : 'audio/mpeg';
 }
 
@@ -31,6 +47,11 @@ type Fetch = typeof fetch;
 export interface SpeakOptions {
   fetch?: Fetch;
   signal?: AbortSignal;
+  /** A voice the service knows (SPEECH_VOICES; an ElevenLabs voice id). */
+  voice?: string;
+  /** How to say it ("calm and warm", "excited"): OpenAI gpt-4o-mini-tts and Gemini follow it. */
+  instructions?: string;
+  format?: SpeechFormat;
 }
 
 /** Speak `text` with `engine`; resolves with audio bytes of type speechMime(engine). */
@@ -39,9 +60,12 @@ export async function synthesizeSpeech(text: string, engine: SpeechEngine, opts:
   if (!input) throw new Error('nothing to say');
   const f = opts.fetch ?? fetch;
   const signal = opts.signal;
+  const ogg = opts.format === 'ogg';
 
   if (engine.kind === 'deepgram') {
-    const res = await f(`https://api.deepgram.com/v1/speak?model=${DEEPGRAM_MODEL}&encoding=mp3`, {
+    const model = opts.voice && /^aura-/i.test(opts.voice) ? opts.voice : DEEPGRAM_MODEL;
+    const encoding = ogg ? 'encoding=opus&container=ogg' : 'encoding=mp3';
+    const res = await f(`https://api.deepgram.com/v1/speak?model=${encodeURIComponent(model)}&${encoding}`, {
       method: 'POST',
       headers: { Authorization: `Token ${engine.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: input.slice(0, DEEPGRAM_MAX_CHARS) }),
@@ -57,8 +81,9 @@ export async function synthesizeSpeech(text: string, engine: SpeechEngine, opts:
         method: 'POST',
         headers: { 'x-goog-api-key': engine.apiKey, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: input.slice(0, SPEAK_MAX_CHARS) }] }],
-          generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: GEMINI_VOICE } } } },
+          // Gemini takes the style as words in front of the text.
+          contents: [{ parts: [{ text: (opts.instructions ? `Say this ${opts.instructions.replace(/[.:]+$/, '')}: ` : '') + input.slice(0, SPEAK_MAX_CHARS) }] }],
+          generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: opts.voice || GEMINI_VOICE } } } },
         }),
         signal,
       });
@@ -75,7 +100,7 @@ export async function synthesizeSpeech(text: string, engine: SpeechEngine, opts:
   }
 
   if (engine.kind === 'elevenlabs') {
-    const res = await f(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE}?output_format=mp3_44100_128`, {
+    const res = await f(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(opts.voice || ELEVENLABS_VOICE)}?output_format=mp3_44100_128`, {
       method: 'POST',
       headers: { 'xi-api-key': engine.apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: input.slice(0, SPEAK_MAX_CHARS), model_id: ELEVENLABS_MODEL }),
@@ -87,14 +112,24 @@ export async function synthesizeSpeech(text: string, engine: SpeechEngine, opts:
   const base = (engine.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
   const say = (model: string) => f(`${base}/audio/speech`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${engine.apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, voice: OPENAI_VOICE, input: input.slice(0, SPEAK_MAX_CHARS), response_format: 'mp3' }),
+    headers: { ...(engine.headers ?? { Authorization: `Bearer ${engine.apiKey}` }), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      voice: opts.voice || OPENAI_VOICE,
+      input: input.slice(0, SPEAK_MAX_CHARS),
+      // "opus" is Ogg/Opus: a voice note as it is.
+      response_format: ogg ? 'opus' : 'mp3',
+      // Only the instructable models take a style; tts-1 rejects the field.
+      ...(opts.instructions && !/^tts-1/i.test(model) ? { instructions: opts.instructions } : {}),
+    }),
     signal,
   });
+  // A chosen model is used as is; otherwise the newer one, then the classic one
+  // on an OpenAI-compatible endpoint that doesn't have it.
+  if (engine.model) return audioOf(await say(engine.model), engine.label);
   let res = await say('gpt-4o-mini-tts');
-  // An OpenAI-compatible endpoint without the newer model: try the classic one.
   if (res.status === 400 || res.status === 404) res = await say('tts-1');
-  return audioOf(res, 'OpenAI');
+  return audioOf(res, engine.label || 'OpenAI');
 }
 
 /**

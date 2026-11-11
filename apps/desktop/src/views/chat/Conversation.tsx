@@ -10,12 +10,34 @@ import { StateLabel } from "~/components/indicators/StateOrb";
 import { Approval } from "~/components/indicators/Approval";
 import { ThinkingDots } from "~/components/indicators/Thinking";
 import { Message, StreamingMessage } from "./Message";
+import { MediaSkeleton } from "~/components/MediaSkeleton";
+import { useNow } from "~/components/TurnTimeline";
+import { Mark } from "~/components/Logo";
+import type { PendingMedia } from "~/api/types";
 import { Composer, type ComposerProps } from "./Composer";
 import { WaitingNotice } from "./Waiting";
 import { ResearchBar, ResearchPlan } from "./Research";
 import { AlertTriangle, Info } from "lucide-react";
 
 const PAGE = 30;
+
+/** Videos and songs being made in the background: their places in the chat, until they arrive (media_ready). */
+function PendingMediaList({ items }: { items: PendingMedia[] }) {
+  const now = useNow(true);
+  return (
+    <>
+      {items.map((p) => (
+        <div key={p.jobId} className="flex gap-4">
+          <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center" aria-hidden="true"><Mark size={22} /></span>
+          <div className="min-w-0 flex-1">
+            <MediaSkeleton shape={{ kind: p.kind, aspect: p.aspect, prompt: p.prompt }} startedAt={p.startedAt} now={now} />
+            <p className="mt-1 text-2xs text-ink4">It will appear here when it's ready — you can keep chatting.</p>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
 
 /**
  * One conversation column: header, messages (newest PAGE, older on
@@ -36,6 +58,7 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
   const waiting = useConversation((s) => s.waiting);
   const stopping = useConversation((s) => s.stopping);
   const notice = useConversation((s) => s.notice);
+  const pendingMedia = useConversation((s) => s.pendingMedia);
   const researching = useConversation((s) => s.research?.run?.state === "running");
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -111,6 +134,7 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
             {(streaming || (live && (agent === "thinking" || agent === "working" || agent === "streaming" || agent === "needs-you"))) && (
               <StreamingMessage text={streaming} live={live} agent={agent} stopping={stopping} />
             )}
+            {pendingMedia.length > 0 && <PendingMediaList items={pendingMedia} />}
             {waiting && !streaming ? (
               <WaitingNotice threadId={activeId} waiting={waiting} />
             ) : !streaming && !live && (agent === "thinking" || agent === "working") && (

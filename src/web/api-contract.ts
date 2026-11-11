@@ -60,7 +60,10 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'budget.split',      // GET /api/budget daily.split + daily.cachedWeight, PUT { cachedWeight }; /api/usage split + counted breakdowns — #296
   'chat.usage',        // message.usage on assistant replies; text_done { usage } — what each reply cost
   'chat.effort',       // POST /api/chat/effort, GET /api/chat/models?sessionId= current.effort — per-chat effort (#188)
-  'chat.trace',        // live step ids/durations, progress/phase events, message.trace on replies (ADR-041)
+  'media.image',       // GET /api/media/models, PUT /api/media/default; POST /api/chat/send { media: { kind: "image", aspect? } } (ADR-042)
+  'media.jobs',        // GET /api/media/models video, music; PUT /api/media/default { kind: video|music }; SSE 'media_ready' { text, artifacts }; send { media: { kind: video|music } } (ADR-042 phase 3)
+  'media.speech',      // GET /api/media/models speech { options, current, choice, voice, replies }, PUT /api/media/speech (ADR-042 phase 2)
+  'chat.trace',        // live step ids/durations, progress/phase events, message.trace on replies (ADR-041); GET /api/chat/threads/:id/live (a running reply so far)
   'chat.research',     // SSE 'research' / 'research_plan' / 'research_plan_resolved' / 'notice'; GET /api/chat/threads/:id/research, POST …/research/finish, …/research/off, POST /api/chat/research/plan/:id; message.research; step_done { failed, reason }
 ]);
 

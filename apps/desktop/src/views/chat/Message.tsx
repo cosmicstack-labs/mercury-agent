@@ -78,7 +78,7 @@ export const Message = memo(function Message({ message, undoable = false }: { me
         {stopped && <StoppedMarker partial={!!body} />}
         {message.research
           ? <ResearchReport run={message.research} content={body} />
-          : message.artifacts && message.artifacts.length > 0 && <ArtifactStrip items={message.artifacts} />}
+          : message.artifacts && message.artifacts.length > 0 && <ArtifactStrip items={message.artifacts} fresh={isFresh(message.timestamp)} />}
         {message.research && message.artifacts && message.artifacts.filter((a) => a.id !== message.research?.report?.id).length > 0 && (
           <ArtifactStrip items={message.artifacts.filter((a) => a.id !== message.research?.report?.id)} />
         )}
@@ -88,6 +88,12 @@ export const Message = memo(function Message({ message, undoable = false }: { me
     </div>
   );
 });
+
+/** Arrived just now (not loaded from history): a generated picture is revealed, not just shown. */
+function isFresh(timestamp: string): boolean {
+  const t = Date.parse(timestamp);
+  return Number.isFinite(t) && Date.now() - t < 60_000;
+}
 
 /** The honest end of a stopped turn: nothing after this was done. */
 function StoppedMarker({ partial }: { partial: boolean }) {

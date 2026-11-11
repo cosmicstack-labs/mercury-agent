@@ -63,6 +63,8 @@ export class ArtifactCollector {
       const args = (input ?? {}) as Record<string, unknown>;
       const text = typeof result === 'string' ? result : JSON.stringify(result ?? '');
       if (tool === 'send_file' && typeof args.path === 'string') this.add(expand(args.path, cwd), 'sent', tool);
+      // Made for the owner by an image model: always a deliverable.
+      else if (tool === 'generate_image' || tool === 'generate_speech') for (const p of pathsIn(text.slice(0, 4000), cwd, { relative: false })) this.add(p, 'sent', tool);
       else if ((tool === 'write_file' || tool === 'create_file') && typeof args.path === 'string') {
         if (!/^(Error|⚠)/.test(text.trim())) this.add(expand(args.path, cwd), 'written', tool);
       } else if (tool === 'run_command') {

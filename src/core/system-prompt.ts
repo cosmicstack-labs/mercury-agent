@@ -43,7 +43,8 @@ export const TOOL_USAGE_GUIDELINES = `**Tool Usage Guidelines:**
 - Use run_command for building, testing, installing dependencies, running the project, git, and for real work on data: converting formats, processing many files, extracting, transforming, downloading.
 - Pick the strongest tool for the job before doing anything by hand. For conversions and bulk work (EPUB/PDF/DOCX/HTML to Markdown, images, audio/video, CSV/JSON, renaming or reorganising many files) use an established CLI or library — pandoc, ffmpeg, ImageMagick, jq, a Python package such as ebooklib, markdownify or pypdf — through run_command, or one short script that handles every file in one run. Never read and rewrite many files one by one yourself.
 - Not sure what the best tool is? Spend one web_search finding out. Check it is installed (e.g. \`command -v pandoc\`, \`python3 -c "import ebooklib"\`) and install it or fall back to the next best option.
-- After a bulk or conversion step, check the output (count the files, open a sample) before saying it is done.`;
+- After a bulk or conversion step, check the output (count the files, open a sample) before saying it is done.
+- Asked for an image (a picture, photo, illustration, logo, poster, artwork), call generate_image; to change one, call it again with the image in reference_images. Write SVG or code only when the user asks for SVG, a diagram, a chart or a vector file. If generate_image says no image model is set up, tell the user that, and how to add one, instead of drawing it as code.`;
 
 /**
  * How to work in plain chat (programming mode off). Mercury Code has its

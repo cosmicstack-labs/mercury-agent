@@ -9,12 +9,12 @@ import { useEffect } from "react";
 import { openStream } from "~/api/stream";
 import * as api from "~/api/mercury";
 import { ApiError, http } from "~/api/client";
-import type { BotActivityEvent, BotInboxEntry, BotStatus, ChatMessage, CodeMode, PendingPrompt, ReplyUsage, ResearchPlanPrompt, ResearchSnapshot } from "~/api/types";
+import type { BotActivityEvent, BotInboxEntry, BotStatus, ChatMessage, CodeMode, ImageIntent, PendingMedia, PendingPrompt, ThoughtTrace, ReplyUsage, ResearchPlanPrompt, ResearchSnapshot } from "~/api/types";
 import { useBots, useChat, useRuntimeState, type AgentState } from "./store";
-import { conversations, useCodeSessions, type ConversationStore, type Surface } from "./conversation";
+import { conversations, useCodeSessions, type ConversationState, type ConversationStore, type Surface } from "./conversation";
 import type { ArtifactRef } from "~/api/artifacts";
 import { useNotify } from "./notify/store";
-import { addNote, addReasoning, addText, endReasoning, finishTool, finishTrace, hasProcess, markStopped, newTrace, normalizeMessages, setPhase, startTool } from "./trace";
+import { addNote, addReasoning, addText, endReasoning, finishTool, finishTrace, hasProcess, liveFromSnapshot, markStopped, newTrace, normalizeMessages, setPhase, startTool } from "./trace";
 
 export function useRuntimeEvents(enabled: boolean): void {
   const chatId = conversations.chat((s) => s.activeId);
@@ -187,6 +187,21 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
         if (conv.live || conv.agent !== "idle") conv.setLive((l) => setPhase(l, label));
       }
       break;
+    case "media_pending": {
+      // A video or song started in the background: hold its place until it arrives.
+      if (typeof data.jobId !== "string") break;
+      const job = { jobId: data.jobId, kind: data.kind === "music" ? "music" as const : "video" as const, prompt: String(data.prompt ?? ""), startedAt: Number(data.startedAt) || Date.now(), ...(typeof data.aspect === "string" ? { aspect: data.aspect } : {}) };
+      conv.setPendingMedia((list) => [...list.filter((p) => p.jobId !== job.jobId), job]);
+      break;
+    }
+    case "media_ready": {
+      // A video or song made in the background (after its turn ended): its own message.
+      if (typeof data.jobId === "string") conv.setPendingMedia((list) => list.filter((p) => p.jobId !== data.jobId));
+      const items = Array.isArray(data.artifacts) ? (data.artifacts as ArtifactRef[]) : [];
+      conv.addMessage({ id: crypto.randomUUID(), role: "assistant", content: String(data.text ?? ""), timestamp: new Date().toISOString(), ...(items.length ? { artifacts: items } : {}) });
+      void refreshThreads();
+      break;
+    }
     case "progress":
       // "Checking my work…": a note inside the running turn, not its reply.
       if (typeof data.text === "string" && data.text.trim()) conv.setLive((l) => addNote(l, data.text as string));
@@ -236,6 +251,7 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
         title: typeof data.title === "string" ? data.title : undefined,
         label: String(data.label ?? tool),
         step: Number(data.step) || undefined,
+        ...(data.media && typeof data.media === "object" ? { media: data.media as ThoughtTrace["steps"][number]["media"] } : {}),
       }));
       break;
     }
@@ -398,10 +414,57 @@ export async function refreshBots(): Promise<void> {
   } catch { /* bots unavailable on this runtime */ }
 }
 
+/**
+ * A chat's running reply as the screen showed it, kept when you switch
+ * away, so coming back shows it at once (the runtime's snapshot then
+ * brings it up to date).
+ */
+const leftMidTurn = new Map<string, { live: ThoughtTrace | null; streaming: string; agent: AgentState; step: ConversationState["step"] }>();
+
+function busy(agent: AgentState): boolean {
+  return agent === "thinking" || agent === "working" || agent === "streaming";
+}
+
+/** The runtime's snapshot of a reply still being worked on, onto the screen. */
+async function restoreRunningTurn(store: ConversationStore, id: string): Promise<void> {
+  let snap: { running: boolean; startedAt?: number; activity?: string; trace?: unknown; text?: string };
+  try {
+    snap = await api.chat.live(id);
+  } catch {
+    return; // older Mercury: what was kept on screen stays
+  }
+  const s = store.getState();
+  if (s.activeId !== id) return;
+  if (!snap.running) {
+    // It finished while you were away: the reply is in the messages now.
+    if (busy(s.agent) && !s.waiting) { s.clearLive(); s.clearStreaming(); s.setAgent(s.prompts.length ? "needs-you" : "idle"); }
+    return;
+  }
+  const live = liveFromSnapshot(snap.trace, snap.text ?? "", snap.startedAt ?? Date.now(), snap.activity);
+  s.setLive(() => live);
+  if (snap.text) { s.clearStreaming(); s.appendStreaming(snap.text); }
+  const running = live.steps.some((st) => st.status === "running");
+  if (!s.prompts.length) s.setAgent(running ? "working" : snap.text ? "streaming" : "thinking");
+}
+
 export async function openThread(surface: Surface, id: string | null): Promise<void> {
   const store = conversations[surface];
+  // Leaving a chat mid-reply: keep what it showed.
+  const before = store.getState();
+  if (before.activeId && before.activeId !== id && (before.live || busy(before.agent))) {
+    leftMidTurn.set(before.activeId, { live: before.live, streaming: before.streaming, agent: before.agent, step: before.step });
+  }
   store.getState().setActive(id);
   store.getState().clearStreaming();
+  // Coming back to one: show it straight away, then ask the runtime how far it got.
+  const kept = id ? leftMidTurn.get(id) : undefined;
+  if (id && kept) {
+    leftMidTurn.delete(id);
+    if (kept.live) store.getState().setLive(() => kept.live!);
+    if (kept.streaming) store.getState().appendStreaming(kept.streaming);
+    store.getState().setAgent(kept.agent);
+    store.getState().setStep(kept.step);
+  }
   if (!id) {
     store.getState().setMessages([]);
     return;
@@ -443,6 +506,12 @@ export async function openThread(surface: Surface, id: string | null): Promise<v
   try {
     const thread = await api.chat.thread(id);
     store.getState().setMessages(normalizeMessages(thread.messages ?? []));
+    // A reply still being worked on (here or from another device): show it as far as it got.
+    await restoreRunningTurn(store, id);
+    // Videos or songs still being made for this chat: their placeholders.
+    void http.get<{ jobs?: PendingMedia[] }>(`/api/media/jobs?sessionId=${encodeURIComponent(id)}`)
+      .then((r) => { if (store.getState().activeId === id) store.getState().setPendingMedia(() => r.jobs ?? []); })
+      .catch(() => { /* older Mercury */ });
   } catch {
     store.getState().setMessages([]);
   } finally {
@@ -455,7 +524,7 @@ export interface CodeTurn {
   folder: string | null;
 }
 
-export async function sendMessage(surface: Surface, content: string, attachments: Array<{ name: string; data: string; mime?: string }> = [], code?: CodeTurn): Promise<void> {
+export async function sendMessage(surface: Surface, content: string, attachments: Array<{ name: string; data: string; mime?: string }> = [], code?: CodeTurn, media?: ImageIntent): Promise<void> {
   const store = conversations[surface];
   let id = store.getState().activeId;
   if (!id) {
@@ -484,7 +553,7 @@ export async function sendMessage(surface: Surface, content: string, attachments
   store.getState().addMessage(optimistic);
   store.getState().setAgent("thinking");
   store.getState().setLive(() => newTrace());
-  await api.chat.send(content, id, attachments.map(({ name, data }) => ({ name, data })), code ? { programming: code.mode, cwd: code.folder ?? undefined } : undefined);
+  await api.chat.send(content, id, attachments.map(({ name, data }) => ({ name, data })), code ? { programming: code.mode, cwd: code.folder ?? undefined } : undefined, media);
   void refreshThreads();
 }
 

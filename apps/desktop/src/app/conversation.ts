@@ -33,6 +33,9 @@ export interface ConversationState {
   waiting: { position: number; busyWith?: string; busySessionId?: string } | null;
   setWaiting(waiting: ConversationState["waiting"]): void;
   setStopping(stopping: boolean): void;
+  /** Videos and songs being made in the background for this chat: placeholders until they arrive. */
+  pendingMedia: import("~/api/types").PendingMedia[];
+  setPendingMedia(update: (list: import("~/api/types").PendingMedia[]) => import("~/api/types").PendingMedia[]): void;
   /** An effort picked before this chat existed: applied when its thread is created. */
   pendingEffort?: import("~/api/types").ReasoningChoice;
   setPendingEffort(level: import("~/api/types").ReasoningChoice | undefined): void;
@@ -87,6 +90,8 @@ function makeConversation(surface: Surface): ConversationStore {
     setStopping: (stopping) => set({ stopping }),
     draft: null,
     setDraft: (draft) => set({ draft }),
+    pendingMedia: [],
+    setPendingMedia: (update) => set((s) => ({ pendingMedia: update(s.pendingMedia) })),
     pendingEffort: undefined,
     setPendingEffort: (pendingEffort) => set({ pendingEffort }),
     plan: null,
@@ -99,7 +104,7 @@ function makeConversation(surface: Surface): ConversationStore {
     setNotice: (notice) => set({ notice }),
     setLive: (update) => set((s) => ({ live: update(s.live ?? newTrace()) })),
     clearLive: () => set({ live: null }),
-    setActive: (activeId) => set({ activeId, prompts: [], step: null, agent: "idle", live: null, stopping: false, plan: null, research: null, researchPlan: null, notice: null, pendingEffort: undefined }),
+    setActive: (activeId) => set({ activeId, prompts: [], step: null, agent: "idle", live: null, stopping: false, plan: null, research: null, researchPlan: null, notice: null, pendingEffort: undefined, pendingMedia: [] }),
     setMessages: (messages) => set({ messages }),
     addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
     appendStreaming: (text) => set((s) => ({ streaming: s.streaming + text })),

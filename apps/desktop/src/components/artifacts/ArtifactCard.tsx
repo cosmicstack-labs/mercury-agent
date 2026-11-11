@@ -47,12 +47,58 @@ export function ArtifactThumb({ id, kind, name, className }: { id: string; kind:
 }
 
 /** Under a reply: what this turn made, one tap from a preview. */
-export function ArtifactStrip({ items, onOpenThread }: { items: ArtifactRef[]; onOpenThread?: (threadId: string) => void }) {
+/** Made by a media model (generate_image, _video, _music, _speech): shown large and playable. */
+function isGenerated(a: ArtifactRef): boolean {
+  return !!a.tool?.startsWith("generate_") && (a.kind === "image" || a.kind === "video" || a.kind === "audio");
+}
+
+/**
+ * A generated picture, clip or sound in the reply itself, where its
+ * placeholder was (MediaSkeleton); `fresh` reveals it from soft to sharp.
+ */
+function GeneratedMedia({ a, fresh, onOpen }: { a: ArtifactRef; fresh: boolean; onOpen: () => void }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void artifactBlobUrl(a.id).then((u) => { if (live) setUrl(u); });
+    return () => { live = false; };
+  }, [a.id]);
+  if (a.kind === "audio") {
+    return (
+      <div className={cx("flex w-full max-w-[420px] flex-col gap-1.5 rounded-xl border border-line bg-surface px-3 py-2.5", fresh && "media-reveal")}>
+        {url ? <audio src={url} controls preload="metadata" className="h-9 w-full" /> : <div className="h-9" />}
+        <button onClick={onOpen} className="truncate text-left text-xs text-ink4 hover:text-ink2">{a.name} · {formatBytes(a.size)}</button>
+      </div>
+    );
+  }
+  if (a.kind === "video") {
+    return (
+      <div className={cx("w-full max-w-[520px] overflow-hidden rounded-xl border border-line bg-black", fresh && "media-reveal")}>
+        {url ? <video src={url} controls playsInline preload="metadata" className="block max-h-[480px] w-full" /> : <div className="aspect-video" />}
+      </div>
+    );
+  }
+  return (
+    <button onClick={onOpen} title={a.name} className={cx("block max-w-[380px] overflow-hidden rounded-xl border border-line bg-soft", fresh && "media-reveal")}>
+      {url ? <img src={url} alt={a.name} className="block h-auto w-full" draggable={false} /> : <div className="aspect-square w-[380px] max-w-full" />}
+    </button>
+  );
+}
+
+export function ArtifactStrip({ items, onOpenThread, fresh = false }: { items: ArtifactRef[]; onOpenThread?: (threadId: string) => void; fresh?: boolean }) {
   const [open, setOpen] = useState<string | null>(null);
   if (!items.length) return null;
+  const media = items.filter(isGenerated);
+  const rest = items.filter((a) => !isGenerated(a));
   return (
-    <div className="mt-3 flex flex-wrap gap-2" aria-label="Artifacts">
-      {items.map((a) => (
+    <div className="mt-3 flex flex-col gap-2" aria-label="Artifacts">
+      {media.length > 0 && (
+        <div className={cx("grid gap-2", media.filter((a) => a.kind === "image").length > 1 ? "max-w-[520px] grid-cols-2" : "grid-cols-1")}>
+          {media.map((a) => <GeneratedMedia key={a.id} a={a} fresh={fresh} onOpen={() => setOpen(a.id)} />)}
+        </div>
+      )}
+      {rest.length > 0 && <div className="flex flex-wrap gap-2">
+      {rest.map((a) => (
         <button key={a.id} onClick={() => setOpen(a.id)} title={a.path}
           className="group flex w-[220px] items-center gap-2.5 overflow-hidden rounded-xl border border-line bg-surface p-1.5 pr-3 text-left transition-colors hover:border-ink/25">
           <span className="h-12 w-12 shrink-0 overflow-hidden rounded-lg"><ArtifactThumb id={a.id} kind={a.kind} name={a.name} /></span>
@@ -62,6 +108,7 @@ export function ArtifactStrip({ items, onOpenThread }: { items: ArtifactRef[]; o
           </span>
         </button>
       ))}
+      </div>}
       <Dialog open={!!open} onOpenChange={(o) => { if (!o) setOpen(null); }} title="Artifact" width={860}>
         {open && <div className="-m-5 h-[70vh]"><ArtifactViewer id={open} onOpenThread={onOpenThread ? (t) => { setOpen(null); onOpenThread(t); } : undefined} onDeleted={() => setOpen(null)} /></div>}
       </Dialog>

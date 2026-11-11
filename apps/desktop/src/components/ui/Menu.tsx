@@ -3,16 +3,25 @@ import { Check } from "lucide-react";
 import type { ReactNode } from "react";
 import { cx } from "~/lib/cx";
 
-export function Menu({ trigger, children, align = "start", side = "bottom" }: { trigger: ReactNode; children: ReactNode; align?: "start" | "center" | "end"; side?: "top" | "bottom" | "left" | "right" }) {
+export function Menu({ trigger, children, align = "start", side = "bottom", className, onOpenChange }: {
+  trigger: ReactNode;
+  children: ReactNode;
+  align?: "start" | "center" | "end";
+  side?: "top" | "bottom" | "left" | "right";
+  /** Extra classes for the open menu (a width, no padding…). */
+  className?: string;
+  onOpenChange?: (open: boolean) => void;
+}) {
   return (
-    <Dropdown.Root>
+    <Dropdown.Root onOpenChange={onOpenChange}>
       <Dropdown.Trigger asChild>{trigger}</Dropdown.Trigger>
       <Dropdown.Portal>
         <Dropdown.Content
           align={align}
           side={side}
           sideOffset={6}
-          className="z-50 min-w-[200px] rounded-lg border border-line bg-raised p-1 text-sm text-ink shadow-xl animate-fade-in"
+          collisionPadding={12}
+          className={cx("z-50 min-w-[200px] rounded-lg border border-line bg-raised p-1 text-sm text-ink shadow-xl animate-fade-in", className)}
         >
           {children}
         </Dropdown.Content>

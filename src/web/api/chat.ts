@@ -20,6 +20,8 @@ import type { SessionRepository } from '../../sessions/index.js';
 import { SessionTitleError } from '../../sessions/repository.js';
 import { loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
 import { discoverReasoningCaps } from '../../providers/reasoning-discovery.js';
+import { mediaService } from '../../media/runtime.js';
+import { isChatModelId } from '../../utils/provider-models.js';
 import {
   getModelPref, setModelPref, humanizeModelName, modelGroupLabel,
   reasoningLevelsFor, effectiveReasoning, isReasoningLevel, isValidModelRef, type ReasoningLevel,
@@ -134,6 +136,8 @@ export interface TurnControls {
   limit: () => { limit: number; configured: number; auto: number };
   /** Set the configured limit (0 = automatic); applies at once and persists. */
   setLimit: (configured: number) => void;
+  /** The reply a chat is working on now, as far as it got (agent.liveTurn). */
+  live?: (id: string) => { startedAt: number; activity: string; trace: unknown } | undefined;
 }
 let turnControls: TurnControls | null = null;
 export function setTurnControls(controls: TurnControls | null): void {
@@ -328,6 +332,8 @@ chat.post('/api/chat/send', async (c) => {
     programming?: unknown;
     /** Folder the coding turn works in (an existing directory). */
     cwd?: unknown;
+    /** The desktop's Image switch: { kind: "image", aspect? } (ADR-042). */
+    media?: unknown;
   }>();
   const content = body.content?.trim() ?? '';
   const upload = storeInlineAttachments(body.attachments);
@@ -362,7 +368,11 @@ chat.post('/api/chat/send', async (c) => {
       }
       codeCwd = resolvedCwd;
     }
-    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, { ...(programming ? { programming, cwd: codeCwd } : {}), thisComputer: isThisComputer(c) });
+    const mediaRaw = body.media as { kind?: unknown; aspect?: unknown } | undefined;
+    const media = mediaRaw?.kind === 'image' || mediaRaw?.kind === 'video' || mediaRaw?.kind === 'music'
+      ? { kind: mediaRaw.kind as 'image' | 'video' | 'music', ...(mediaRaw.aspect === 'square' || mediaRaw.aspect === 'landscape' || mediaRaw.aspect === 'portrait' ? { aspect: mediaRaw.aspect } : {}) }
+      : undefined;
+    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, { ...(programming ? { programming, cwd: codeCwd } : {}), thisComputer: isThisComputer(c), ...(media ? { media } : {}) });
     return c.json({
       sent: true,
       sessionId: session.id,
@@ -533,25 +543,77 @@ async function listChatGPTModels(): Promise<string[]> {
   }
 }
 
+/**
+ * Mercury Cloud's chat models this account's tier may use (its /v1/models
+ * marks each `available`), with Cloud's own names. Cached for five minutes.
+ */
+let cloudModelCache: { at: number; models: Array<{ id: string; label?: string }> } | null = null;
+const CLOUD_MODEL_TTL_MS = 5 * 60 * 1000;
+const cloudLabels = new Map<string, string>();
+/** Why the last Mercury Cloud lookup failed, for the picker to say. */
+let cloudProblem: string | null = null;
+
+async function listMercuryCloudModels(): Promise<string[]> {
+  if (cloudModelCache && Date.now() - cloudModelCache.at < CLOUD_MODEL_TTL_MS) return cloudModelCache.models.map((m) => m.id);
+  if (recentlyFailed('mercuryCloud')) return cloudModelCache?.models.map((m) => m.id) ?? [];
+  try {
+    // The provider's own endpoint and auth (a fresh JWT or the access key).
+    const ep = await mediaService()?.endpointFor('mercuryCloud');
+    if (!ep) throw new Error('Mercury Cloud is not connected');
+    const res = await fetch(`${ep.baseUrl}/models`, { headers: ep.headers, signal: AbortSignal.timeout(5000) });
+    if (res.status === 401 || res.status === 403) throw new Error('Mercury Cloud sign-in expired: run `mercury cloud login` (or sign in again in Settings → Cloud) to see your models.');
+    if (!res.ok) throw new Error(`Mercury Cloud didn't answer (HTTP ${res.status}).`);
+    const data = (await res.json()) as { data?: Array<{ id?: string; label?: string; available?: boolean; output_modalities?: unknown }> };
+    const all = (data.data ?? []).filter((m): m is { id: string; label?: string; available?: boolean; output_modalities?: unknown } => typeof m.id === 'string' && m.id.length > 0);
+    // The tier decides: only models marked available (older deployments without the flag: all of them).
+    const tiered = all.some((m) => typeof m.available === 'boolean') ? all.filter((m) => m.available === true) : all;
+    const chat = tiered.filter((m) => isChatModelId(m.id) && (!Array.isArray(m.output_modalities) || m.output_modalities.includes('text')));
+    for (const m of chat) if (m.label) cloudLabels.set(m.id, m.label);
+    cloudModelCache = { at: Date.now(), models: chat.map((m) => ({ id: m.id, ...(m.label ? { label: m.label } : {}) })) };
+    failedLookups.delete('mercuryCloud');
+    cloudProblem = null;
+    return cloudModelCache.models.map((m) => m.id);
+  } catch (err) {
+    cloudProblem = err instanceof Error ? err.message : String(err);
+    failedLookups.set('mercuryCloud', Date.now());
+    return cloudModelCache?.models.map((m) => m.id) ?? [];
+  }
+}
+
 /** Providers that serve many models list each one; others list their configured model. */
 async function listProviderModels(p: ProviderConfig): Promise<string[]> {
   if (p.name === 'ollamaLocal') return listOllamaModels(p);
   if (p.name === 'chatgptWeb') return [...(await listChatGPTModels())];
+  if (p.name === 'mercuryCloud') return listMercuryCloudModels();
   return [];
 }
 
 /** What the picker needs to show a model in plain language. */
 function describeModel(provider: string, model: string) {
   const pref = getModelPref(provider, model);
+  // Mercury Cloud names its models itself ("Mercury Pro").
+  const auto = (provider === 'mercuryCloud' ? cloudLabels.get(model) : undefined) ?? humanizeModelName(model);
   return {
-    label: pref.label ?? humanizeModelName(model),
-    autoLabel: humanizeModelName(model),
+    label: pref.label ?? auto,
+    autoLabel: auto,
     customLabel: pref.label ?? null,
     group: modelGroupLabel(provider, model),
     reasoning: effectiveReasoning(provider, model) ?? 'auto',
     reasoningLevels: reasoningLevelsFor(provider, model),
   };
 }
+
+/**
+ * The reply this chat is working on right now: its thinking and steps so
+ * far, the text written so far, and what it is doing. A screen that left
+ * the chat mid-turn shows this on return, then follows the live events.
+ */
+chat.get('/api/chat/threads/:id/live', (c) => {
+  const id = c.req.param('id');
+  const live = turnControls?.live?.(id);
+  if (!live) return c.json({ running: false });
+  return c.json({ running: true, startedAt: live.startedAt, activity: live.activity, trace: live.trace, text: webChannel?.liveTextFor(id) ?? '' });
+});
 
 chat.get('/api/chat/models', async (c) => {
   const config = loadConfig();
@@ -581,6 +643,8 @@ chat.get('/api/chat/models', async (c) => {
   const chatKey = sessionId && isValidModelRef(sessionId) ? sessionId : undefined;
   const effort = effortFor(current.name, current.model, chatKey);
   return c.json({
+    // Lookups that failed, said plainly (an expired Mercury Cloud sign-in).
+    notices: active.some((p) => p.name === 'mercuryCloud') && cloudProblem ? [cloudProblem] : [],
     current: {
       ...current,
       ...describeModel(current.name, current.model),

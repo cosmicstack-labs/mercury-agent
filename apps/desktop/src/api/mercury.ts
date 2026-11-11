@@ -4,7 +4,7 @@
    ═══════════════════════════════════════════════════════════════ */
 
 import { http, ApiError } from "./client";
-import type { ChatEffort, TurnsInfo } from "./types";
+import type { ChatEffort, ImageIntent, MediaModelsResponse, TurnsInfo, VoiceReplies } from "./types";
 import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
   BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
@@ -75,8 +75,8 @@ export const chat = {
   createThread: (title?: string) => http.post<ChatThread>("/api/chat/threads", { title }),
   renameThread: (id: string, title: string) => http.put<{ id: string; title: string }>(`/api/chat/threads/${encodeURIComponent(id)}/title`, { title }),
   deleteThread: (id: string) => http.post<{ deleted: boolean }>(`/api/chat/threads/${encodeURIComponent(id)}/delete`, { confirmSessionId: id }),
-  send: (content: string, sessionId?: string, attachments?: Array<{ name: string; data: string }>, code?: { programming: string; cwd?: string }) =>
-    http.post<{ sent: boolean; sessionId: string }>("/api/chat/send", { content, sessionId, ...(attachments?.length ? { attachments } : {}), ...(code ?? {}) }),
+  send: (content: string, sessionId?: string, attachments?: Array<{ name: string; data: string }>, code?: { programming: string; cwd?: string }, media?: ImageIntent) =>
+    http.post<{ sent: boolean; sessionId: string }>("/api/chat/send", { content, sessionId, ...(attachments?.length ? { attachments } : {}), ...(code ?? {}), ...(media ? { media } : {}) }),
   /**
    * Interrupt a running turn (same as /stop). With a thread, only that chat's
    * turn stops (runtimes that run chats at once); without one, everything.
@@ -107,6 +107,8 @@ export const chat = {
   settings: () => http.get<ChatSettings>("/api/chat/settings"),
   updateSettings: (patch: Partial<ChatSettings>) => http.put<ChatSettings>("/api/chat/settings", patch),
   models: (sessionId?: string | null) => http.get<ModelsResponse>(`/api/chat/models${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`),
+  /** The reply this chat is working on now, as far as it got (runtimes from ADR-041 on). */
+  live: (id: string) => http.get<{ running: boolean; startedAt?: number; activity?: string; trace?: unknown; text?: string }>(`/api/chat/threads/${encodeURIComponent(id)}/live`),
   /** This chat's effort: a level, "auto", or null for the model's default (#188). */
   setEffort: (sessionId: string, level: ReasoningChoice | null) => http.post<{ ok: boolean; effort: ChatEffort }>("/api/chat/effort", { sessionId, level }),
   switchModel: (provider: string, model?: string) => http.post<{ ok: boolean; message: string }>("/api/chat/models/switch", { provider, model }),
@@ -205,3 +207,11 @@ export const skills = {
 };
 
 export type { ChatMessage };
+
+/** Image models on the configured providers, and the default (ADR-042). */
+export const media = {
+  models: (refresh = false) => http.get<MediaModelsResponse>(`/api/media/models${refresh ? "?refresh=1" : ""}`),
+  setDefault: (ref: string | null, kind: "image" | "video" | "music" = "image") => http.put<{ ok: boolean }>("/api/media/default", { kind, ref }),
+  /** Speaking: what speaks, the voice, and when chat-app replies come as voice notes. null clears. */
+  setSpeech: (update: { choice?: string | null; voice?: string | null; replies?: VoiceReplies }) => http.put<{ ok: boolean }>("/api/media/speech", update),
+};

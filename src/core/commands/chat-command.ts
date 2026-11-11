@@ -37,6 +37,12 @@ import {
 import { MAX_STEPS } from '../agent.js';
 import { displayModelName, effortFor, effortLabel, setChatEffort, setModelPref, type ReasoningLevel } from '../../utils/model-prefs.js';
 import { discoverReasoningCaps } from '../../providers/reasoning-discovery.js';
+import { mediaService } from '../../media/runtime.js';
+import { setMediaDefault, setSpeechPrefs } from '../../media/prefs.js';
+import { getSpeechService, type SpeechService } from '../../media/speech.js';
+import { mediaJobs } from '../../media/jobs.js';
+import { unusableReason, type MediaService } from '../../media/service.js';
+import type { MediaModel } from '../../media/catalog.js';
 import path from 'node:path';
 import type { ChannelType } from '../../types/channel.js';
 import { createProvider, ProviderRegistry as ProviderRegistryImpl } from '../../providers/registry.js';
@@ -286,6 +292,28 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
       `Skills: ${ctx.skillNames().length > 0 ? ctx.skillNames().join(', ') : 'none'}`,
     ];
     await channel.send(lines.join('\n'), channelId);
+    return true;
+  }
+
+  if (cmd === '/media' || cmd.startsWith('/media ') || cmd === '/image' || cmd === '/imagine' || cmd === '/img' || cmd === '/video' || cmd === '/music' || cmd === '/song') {
+    const media = mediaService();
+    if (!media) {
+      await channel.send('Media generation is not available in this process.', channelId);
+      return true;
+    }
+    const arg = cmd.startsWith('/media') ? trimmed.slice('/media'.length).trim() : '';
+    const reply = await mediaCommand(media, arg, getSpeechService());
+    await channel.send(reply.text, channelId);
+    // On an owner screen, offer the models as a picker.
+    if (reply.pick && isOwnerScreen(channel, channelType) && reply.pick.length > 1) {
+      const labels = [...reply.pick.map((m) => `${m.label} · ${m.group}`), 'Automatic', 'Keep as is'];
+      const picked = await pickOnOwnerScreen(agent, channel, channelType, channelId, 'Default image model?', labels);
+      if (picked && picked !== 'Keep as is') {
+        const chosen = picked === 'Automatic' ? null : reply.pick[labels.indexOf(picked)]?.ref ?? null;
+        setMediaDefault('image', chosen);
+        await channel.send(chosen ? `Images now use **${picked}**.` : 'Images now use the best model available automatically.', channelId);
+      }
+    }
     return true;
   }
 
@@ -1866,5 +1894,155 @@ function effortStatusLine(agent: Agent): string {
   } catch {
     return 'Effort: —';
   }
+}
+
+/**
+ * /media (ADR-042): which model makes images, and choosing it.
+ *   /media                 the image model in use and the ones available
+ *   /media image <n|ref|auto>  set the default (a number from the list, "provider::model", or auto)
+ *   /media refresh         ask the providers again
+ *   /image                 (no prompt) the same overview; /image <prompt> makes one
+ */
+export async function mediaCommand(media: MediaService, arg: string, speech: SpeechService | null = null): Promise<{ text: string; pick?: MediaModel[] }> {
+  const [verb, ...rest] = arg.split(/\s+/).filter(Boolean);
+  if (speech && (verb === 'speech' || verb === 'voice' || verb === 'replies')) {
+    return { text: await speechVerb(speech, verb, rest.join(' ').trim()) };
+  }
+  if (verb === 'video' || verb === 'videos' || verb === 'music' || verb === 'song') {
+    return { text: await jobKindVerb(media, verb.startsWith('video') ? 'video' : 'music', rest.join(' ').trim()) };
+  }
+  if (verb === 'jobs') return { text: jobsSummary() };
+  const refresh = verb === 'refresh';
+  const setup = await media.imageSetup({ refresh });
+  const list = setup.models;
+  const numbered = list.slice(0, 30);
+  if (verb === 'image' || verb === 'images') {
+    const value = rest.join(' ').trim();
+    if (!value) return { text: 'Usage: `/media image <number|provider::model|auto>` — see `/media` for the list.' };
+    if (/^(auto|automatic|default|clear)$/i.test(value)) {
+      setMediaDefault('image', null);
+      return { text: `Images now use the best model available automatically${setup.auto ? ` (now: **${setup.auto.label}** · ${setup.auto.group})` : ''}.` };
+    }
+    const byNumber = /^\d+$/.test(value) ? numbered[Number(value) - 1] : undefined;
+    const chosen = byNumber ?? list.find((m) => m.ref === value || m.model === value);
+    if (!chosen) return { text: `No image model "${value}". Use a number from \`/media\`, or provider::model.` };
+    setMediaDefault('image', chosen.ref);
+    return { text: `Images now use **${chosen.label}** · ${chosen.group}.` };
+  }
+  if (!list.length) {
+    return {
+      text: [
+        '**Images** · no image model found on your providers.',
+        'Image models come from providers that serve them: OpenAI (gpt-image), OpenRouter (Gemini image, FLUX, …), LiteLLM, AI/ML API, Atlas Cloud, Runcrate, Mercury Cloud, or an Ollama image model.',
+        'Add one with `mercury doctor` (or Mercury Desktop → Settings → AI), then `/media refresh`.',
+      ].join('\n'),
+    };
+  }
+  const inUse = setup.default?.available
+    ? list.find((m) => m.ref === setup.default!.ref)
+    : setup.auto;
+  const lines = [
+    `**Images** · ${inUse ? `${inUse.label} · ${inUse.group}` : 'none'} (${setup.default?.available ? 'your default' : 'automatic'})`,
+    ...(setup.default && !setup.default.available ? [`Your default (${setup.default.ref}) isn't offered right now, so the automatic pick is used.`] : []),
+    '',
+    ...numbered.map((m, i) => `${i + 1}. ${m.label} · ${m.group}${m.canEdit ? '' : ' (no edits)'}${inUse?.ref === m.ref ? ' ← in use' : ''}${unusableReason(m.ref) ? ` (skipped: ${unusableReason(m.ref)})` : ''}`),
+    ...(list.length > numbered.length ? [`…and ${list.length - numbered.length} more`] : []),
+    '',
+    'Make one: `/image <what to draw>` (add `--landscape` or `--portrait`). Change the default: `/media image <number>` or `/media image auto`.',
+    ...(speech ? ['', await speechSummary(speech)] : []),
+    '',
+    await jobKindSummary(media, 'video'),
+    '',
+    await jobKindSummary(media, 'music'),
+  ];
+  return { text: lines.join('\n'), pick: numbered };
+}
+
+const REPLY_LABEL = { off: 'never', mirror: 'when you send a voice note', always: 'on every reply' } as const;
+
+/** The Speech part of /media. */
+async function speechSummary(speech: SpeechService): Promise<string> {
+  const [target, options] = await Promise.all([speech.target(), speech.options()]);
+  const prefs = speech.prefs();
+  const replies = prefs.replies ?? 'mirror';
+  if (!target) {
+    return '**Speech** · no speech service. Add an OpenAI key (Settings → Models) or a Gemini, Deepgram or ElevenLabs key (Settings → Voice).';
+  }
+  return [
+    `**Speech** · ${target.label}${target.voice ? ` · voice ${target.voice}` : ''} (${prefs.choice ? 'your choice' : 'from Settings → Voice'})`,
+    ...options.slice(0, 20).map((o, i) => `${i + 1}. ${o.label} · ${o.group}${o.id === target.id ? ' ← in use' : ''}`),
+    `Voice-note replies in chat apps: ${REPLY_LABEL[replies]}.`,
+    'Say something: `/say <text>`. Change: `/media speech <number|auto>`, `/media voice <name>`, `/media replies off|mirror|always`.',
+  ].join('\n');
+}
+
+async function speechVerb(speech: SpeechService, verb: string, value: string): Promise<string> {
+  try {
+    if (verb === 'replies') {
+      if (!['off', 'mirror', 'always'].includes(value)) return 'Usage: `/media replies off|mirror|always` — mirror answers a voice note with a voice note.';
+      setSpeechPrefs({ replies: value as 'off' | 'mirror' | 'always' });
+      return `Voice-note replies: ${REPLY_LABEL[value as keyof typeof REPLY_LABEL]}.`;
+    }
+    if (verb === 'voice') {
+      if (!value) {
+        const target = await speech.target();
+        const option = (await speech.options()).find((o) => o.id === target?.id);
+        return `Voice: ${target?.voice ?? 'the service default'}.${option?.voices.length ? ` Voices: ${option.voices.join(', ')}.` : ''} Use \`/media voice <name>\` or \`/media voice default\`.`;
+      }
+      setSpeechPrefs({ voice: /^(default|auto|clear)$/i.test(value) ? null : value });
+      return /^(default|auto|clear)$/i.test(value) ? "Voice: the service's default." : `Voice: **${value}**.`;
+    }
+    if (!value) return 'Usage: `/media speech <number|auto>` — see `/media` for the list.';
+    if (/^(auto|default|clear)$/i.test(value)) {
+      setSpeechPrefs({ choice: null });
+      const t = await speech.target();
+      return `Speech now follows Settings → Voice${t ? ` (now: **${t.label}**)` : ''}.`;
+    }
+    const options = await speech.options();
+    const chosen = /^\d+$/.test(value) ? options[Number(value) - 1] : options.find((o) => o.id === value || o.label.toLowerCase() === value.toLowerCase());
+    if (!chosen) return `No speech service "${value}". Use a number from \`/media\`.`;
+    setSpeechPrefs({ choice: chosen.id });
+    return `Speech now uses **${chosen.label}** · ${chosen.group}.`;
+  } catch (err) {
+    return `Couldn't change that: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/** The Video / Music part of /media. */
+async function jobKindSummary(media: MediaService, kind: 'video' | 'music'): Promise<string> {
+  const setup = await media.setup(kind);
+  const title = kind === 'video' ? '**Video**' : '**Music**';
+  if (!setup.models.length) {
+    return `${title} · none found. ${kind === 'video' ? 'A Gemini key (Settings → Voice) gives Gemini Omni video; gateways (LiteLLM, Mercury Cloud) can serve others.' : 'A Gemini key (Lyria) or an ElevenLabs key (Settings → Voice) makes music.'}`;
+  }
+  const inUse = setup.default?.available ? setup.models.find((m) => m.ref === setup.default!.ref) : setup.auto;
+  return [
+    `${title} · ${inUse ? `${inUse.label} · ${inUse.group}` : 'none'} (${setup.default?.available ? 'your default' : 'automatic'})`,
+    ...setup.models.slice(0, 15).map((m, i) => `${i + 1}. ${m.label} · ${m.group}${inUse?.ref === m.ref ? ' ← in use' : ''}${unusableReason(m.ref) ? ` (skipped: ${unusableReason(m.ref)})` : ''}`),
+    kind === 'video'
+      ? 'Make one: `/video <the shot>` (`--portrait`, `--seconds 6`). Change: `/media video <number|auto>`. It arrives here when ready.'
+      : 'Make one: `/music <genre, mood, lyrics>` (`--instrumental`, `--seconds 60`). Change: `/media music <number|auto>`.',
+  ].join('\n');
+}
+
+async function jobKindVerb(media: MediaService, kind: 'video' | 'music', value: string): Promise<string> {
+  if (!value) return jobKindSummary(media, kind);
+  if (/^(auto|automatic|default|clear)$/i.test(value)) {
+    setMediaDefault(kind, null);
+    return `${kind === 'video' ? 'Videos' : 'Music'} now use the best model available automatically.`;
+  }
+  const list = await media.models(kind);
+  const chosen = /^\d+$/.test(value) ? list[Number(value) - 1] : list.find((m) => m.ref === value || m.model === value);
+  if (!chosen) return `No ${kind} model "${value}". Use a number from \`/media ${kind}\`.`;
+  setMediaDefault(kind, chosen.ref);
+  return `${kind === 'video' ? 'Videos' : 'Music'} now use **${chosen.label}** · ${chosen.group}.`;
+}
+
+/** /media jobs: videos and songs being made, and the last few made. */
+function jobsSummary(): string {
+  const list = mediaJobs()?.list(undefined, 10) ?? [];
+  if (!list.length) return 'No videos or songs made yet. `/video <shot>` or `/music <style>` makes one.';
+  const ago = (t: number) => { const s = Math.round((Date.now() - t) / 1000); return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; };
+  return ['**Media jobs**', ...list.map((j) => `• ${j.kind === 'video' ? '🎬' : '🎵'} ${j.prompt.slice(0, 60)}${j.prompt.length > 60 ? '…' : ''} — ${j.status === 'running' ? `making (started ${ago(j.createdAt)})` : j.status === 'done' ? `ready ${ago(j.finishedAt ?? j.createdAt)}` : `failed: ${(j.error ?? '').slice(0, 80)}`}`)].join('\n');
 }
 

@@ -98,6 +98,19 @@ export const CHAT_COMMAND_HELP: ReadonlyArray<readonly [string, string]> = [
   ['/permissions', 'Change permission mode (Ask Me / Allow All)'],
   ['/models', 'List configured providers and their models'],
   ['/models use <provider>', 'Switch the default model (saved across restarts)'],
+  ['/image <prompt>', 'Make an image with an image model (add --landscape or --portrait)'],
+  ['/media', 'Show the image model in use and the ones your providers offer'],
+  ['/media image <number|auto>', 'Choose the default image model (or let Mercury pick)'],
+  ['/media refresh', 'Ask your providers again which image models they have'],
+  ['/say <text>', 'Say it out loud: a voice note in chat apps, audio in the apps (add --style "calm")'],
+  ['/video <shot>', 'Make a short video (3–15 s; --portrait, --seconds 6); it arrives here when ready'],
+  ['/music <style>', 'Make a song or instrumental (--instrumental, --seconds 60); it arrives here when ready'],
+  ['/media video <number|auto>', 'Choose the video model'],
+  ['/media music <number|auto>', 'Choose the music model'],
+  ['/media jobs', 'Videos and songs being made, and the last few made'],
+  ['/media speech <number|auto>', 'Choose what speaks (OpenAI, Gemini, ElevenLabs, Deepgram, or a provider model)'],
+  ['/media voice <name|default>', 'Choose the voice (e.g. nova, Kore)'],
+  ['/media replies <off|mirror|always>', 'When chat-app replies also come as a voice note (mirror: when you send one)'],
   ['/effort', 'Show the thinking effort in this chat and the levels the model takes'],
   ['/effort <auto|low|medium|high|xhigh|max>', 'Set the thinking effort for this chat only'],
   ['/effort default', "Go back to the model's default effort in this chat"],
@@ -400,6 +413,10 @@ export function getTelegramHelp(): string {
   lines.push('/update ignore — Silence the offered update notice');
   lines.push('/permissions — Switch Ask Me / Allow All mode');
   lines.push('/models — List providers or switch AI model (saved across restarts)');
+  lines.push('/image <prompt> — Make an image with an image model');
+  lines.push('/media — Image model in use; /media image <n> to change it');
+  lines.push('/say <text> — Say it out loud (a voice note in chat apps)');
+  lines.push('/video <shot>, /music <style> — Make a video or song; it arrives when ready');
   lines.push('/effort — Show or set how hard the current model thinks');
   lines.push('/cloud models — List Mercury Cloud models and switch');
   lines.push('/stream — Toggle text streaming on/off');
@@ -519,6 +536,10 @@ export function getDiscordHelp(): string {
   lines.push('/update ignore \u2014 Silence the offered update notice');
   lines.push('/permissions \u2014 Switch Ask Me / Allow All mode');
   lines.push('/models \u2014 List providers or switch AI model (saved across restarts)');
+  lines.push('/image <prompt> \u2014 Make an image with an image model');
+  lines.push('/media \u2014 Image model in use; /media image <n> to change it');
+  lines.push('/say <text> \u2014 Say it out loud (a voice note in chat apps)');
+  lines.push('/video <shot>, /music <style> \u2014 Make a video or song; it arrives when ready');
   lines.push('/effort \u2014 Show or set how hard the current model thinks');
   lines.push('/cloud models \u2014 List Mercury Cloud models and switch');
   lines.push('/stop \u2014 Stop the current task and its agents now');

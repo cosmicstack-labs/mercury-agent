@@ -1,8 +1,8 @@
-import { ArrowUp, AudioLines, ChevronDown, Gauge, Paperclip, Shield, ShieldCheck, Square, Telescope, X } from "lucide-react";
+import { ArrowUp, AudioLines, ChevronDown, Clapperboard, Gauge, Image as ImageIcon, Music, Paperclip, Shield, ShieldCheck, Square, Telescope, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
-import type { ChatEffort, ModelsResponse, ReasoningChoice, ReasoningLevel } from "~/api/types";
+import type { ChatEffort, ImageAspect, ImageIntent, MediaModelsResponse, ModelsResponse, ReasoningChoice, ReasoningLevel } from "~/api/types";
 import { usePermissionMode } from "~/app/permission";
 import { useBots, useRuntimeState } from "~/app/store";
 import { CommandPicker } from "./CommandPicker";
@@ -66,6 +66,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
   const [sending, setSending] = useState(false);
   // Research the next message (one run, then back to off). Chat only.
   const [researchNext, setResearchNext] = useState<ResearchNext>("off");
+  const [imageNext, setImageNext] = useState<ImageIntent | null>(null);
   const threadKey = useConversation((s) => s.activeId);
   useEffect(() => { setResearchNext("off"); }, [threadKey]);
   const [error, setError] = useState<string | null>(null);
@@ -200,15 +201,17 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
 
   async function submit(override?: string) {
     let content = (override ?? (token ? `${token.fill}${text}` : text)).trim();
-    if (surface === "chat" && researchNext !== "off" && content && !/^[/#]/.test(content)) content = `/research ${researchNext === "plan" ? "plan " : ""}${content}`;
+    if (surface === "chat" && researchNext !== "off" && !imageNext && content && !/^[/#]/.test(content)) content = `/research ${researchNext === "plan" ? "plan " : ""}${content}`;
+    const media: ImageIntent | undefined = surface === "chat" && imageNext && content && !/^[/#]/.test(content) ? imageNext : undefined;
     if ((!content && files.length === 0) || sending) return;
     setSending(true);
     setError(null);
     try {
-      await sendMessage(surface, content, files.map((f) => ({ name: f.name, data: f.data, mime: f.mime })), code);
+      await sendMessage(surface, content, files.map((f) => ({ name: f.name, data: f.data, mime: f.mime })), code, media);
       setText("");
       setToken(null);
       setResearchNext("off");
+      setImageNext(null);
       for (const f of files) if (f.preview) URL.revokeObjectURL(f.preview);
       setFiles([]);
     } catch (err) {
@@ -300,7 +303,9 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
           />
           </div>
           )}
-          <div className="flex flex-wrap items-center gap-1 px-3 pb-3 pt-1.5">
+          {/* One line, always: the model name gives way first, then the chips drop to their icons (base.css .composer-row). */}
+          <div className="composer-row flex flex-nowrap items-center gap-1 px-3 pb-3 pt-1.5">
+            <div className="flex min-w-0 flex-1 items-center gap-1">
             <Tooltip label="Attach images, PDFs, TXT or Markdown" side="top">
               <Button variant="ghost" size="md" icon onClick={() => picker.current?.click()} disabled={!connected || files.length >= MAX_FILES} aria-label="Attach">
                 <Paperclip size={17} />
@@ -316,14 +321,12 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
               </Tooltip>
             )}
             <ModelPicker />
-            {surface === "chat" && <ResearchToggle value={researchNext} onChange={(v) => { setResearchNext(v); ref.current?.focus(); }} />}
+            {surface === "chat" && <ImageToggle value={imageNext} onChange={(v) => { setImageNext(v); if (v) setResearchNext("off"); ref.current?.focus(); }} />}
+            {surface === "chat" && <ResearchToggle value={researchNext} onChange={(v) => { setResearchNext(v); if (v !== "off") setImageNext(null); ref.current?.focus(); }} />}
             {surface === "chat" && <ModePicker />}
-            <div className="flex-1" />
-            {busy ? (
-              <span className="mr-2 text-xs text-ink4">{stopping ? "Stopping" : agent === "streaming" ? "Answering" : agent === "working" ? "Working" : "Thinking"}…</span>
-            ) : text.length > 0 ? (
-              <span className="mr-2 hidden text-2xs text-ink4 sm:inline">⇧↵ new line</span>
-            ) : null}
+            </div>
+            {/* What Mercury is doing shows inside the chat, under the reply (TurnTimeline's status line), not here. */}
+            <div className="flex shrink-0 items-center gap-1">
             {!recording && <MicButton d={dictation} disabled={!connected} />}
             {!recording && surface === "chat" && voiceAvailable && !text.trim() && files.length === 0 && !busy && (
               <Tooltip label="Talk to Mercury (voice call)" side="top">
@@ -345,6 +348,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
                 </Button>
               </Tooltip>
             )}
+            </div>
           </div>
         </div>
       </div>
@@ -367,13 +371,18 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
+/** How many models before the picker offers a search box. */
+const SEARCH_FROM = 8;
+
 function ModelPicker() {
   const [models, setModels] = useState<ModelsResponse | null>(null);
+  const [query, setQuery] = useState("");
   const provider = useRuntimeState((s) => s.provider);
   const model = useRuntimeState((s) => s.model);
   const store = useConversationStore();
   const threadId = useConversation((s) => s.activeId);
   const pendingEffort = useConversation((s) => s.pendingEffort);
+  const search = useRef<HTMLInputElement>(null);
 
   async function load() {
     try { setModels(await api.chat.models(threadId)); } catch { setModels(null); }
@@ -381,37 +390,64 @@ function ModelPicker() {
   useEffect(() => { void load(); }, [provider, model, threadId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const label = models?.current?.label || model || provider || "Model";
+  const all = models?.providers ?? [];
+  const q = query.trim().toLowerCase();
+  // Every word must match the name, the model id or the provider ("pro cloud", "gpt 5").
+  const matches = (p: ModelsResponse["providers"][number]) => !q || q.split(/\s+/).every((w) => `${p.label} ${p.model} ${p.group}`.toLowerCase().includes(w));
+  const shown = all.filter(matches);
   const groups = new Map<string, ModelsResponse["providers"]>();
-  for (const p of models?.providers ?? []) {
-    const list = groups.get(p.group) ?? [];
-    list.push(p);
-    groups.set(p.group, list);
-  }
-
+  for (const p of shown) groups.set(p.group, [...(groups.get(p.group) ?? []), p]);
   const current = models?.current;
   return (
     <>
     <Menu
       side="top"
+      className="flex w-[min(360px,calc(100vw-32px))] flex-col p-0"
+      onOpenChange={(open) => {
+        if (open) { setQuery(""); void load(); setTimeout(() => search.current?.focus(), 0); }
+      }}
       trigger={
-        <button className="flex h-8 items-center gap-1 rounded-md px-2 text-sm text-ink2 hover:bg-ink/[0.06] hover:text-ink" aria-label="Model">
-          <span className="max-w-[180px] truncate">{label}</span>
-          <ChevronDown size={12} className="text-ink4" />
+        <button className="flex h-8 min-w-0 items-center gap-1 rounded-md px-2 text-sm text-ink2 hover:bg-ink/[0.06] hover:text-ink" aria-label={`Model: ${label}`} title={label}>
+          <span className="min-w-0 max-w-[200px] truncate">{label}</span>
+          <ChevronDown size={12} className="shrink-0 text-ink4" />
         </button>
       }
     >
-      {[...groups.entries()].map(([group, list], gi) => (
-        <div key={group}>
-          {gi > 0 && <MenuSeparator />}
-          <MenuLabel>{group}</MenuLabel>
-          {list.map((p) => (
-            <MenuItem key={`${p.name}:${p.model}`} selected={p.isCurrent} disabled={!p.available} hint={p.available ? undefined : "no key"} onSelect={() => { void api.chat.switchModel(p.name, p.model).then(load); }}>
-              {p.label}
-            </MenuItem>
-          ))}
+      {all.length >= SEARCH_FROM && (
+        <div className="border-b border-line p-1.5">
+          <input
+            ref={search}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            // Typing goes to the box, not to the menu's jump-to-letter.
+            onKeyDown={(e) => { if (e.key !== "ArrowDown" && e.key !== "Escape" && e.key !== "Tab") e.stopPropagation(); }}
+            placeholder={`Search ${all.length} models`}
+            aria-label="Search models"
+            className="h-8 w-full rounded-md border border-line bg-bg px-2.5 text-sm text-ink outline-none placeholder:text-ink4 focus:border-accent"
+          />
         </div>
-      ))}
-      {groups.size === 0 && <MenuItem disabled>No providers configured</MenuItem>}
+      )}
+      {/* At most this tall, whatever the screen: longer lists scroll. */}
+      <div className="max-h-[min(420px,55vh)] overflow-y-auto overscroll-contain p-1">
+        {[...groups.entries()].map(([group, list], gi) => (
+          <div key={group}>
+            {gi > 0 && <MenuSeparator />}
+            <MenuLabel>{group}{list.length > 1 ? ` · ${list.length}` : ""}</MenuLabel>
+            {list.map((p) => (
+              <MenuItem key={`${p.name}:${p.model}`} selected={p.isCurrent} disabled={!p.available} hint={p.available ? undefined : "no key"} onSelect={() => { void api.chat.switchModel(p.name, p.model).then(load); }}>
+                <span className="block truncate" title={p.model}>{p.label}</span>
+              </MenuItem>
+            ))}
+          </div>
+        ))}
+        {all.length === 0 && <MenuItem disabled>No providers configured</MenuItem>}
+        {all.length > 0 && shown.length === 0 && <MenuItem disabled>No model matches “{query}”</MenuItem>}
+      </div>
+      {(models?.notices?.length ?? 0) > 0 && (
+        <div className="border-t border-line px-3 py-2 text-xs text-amber">
+          {models!.notices!.map((n) => <p key={n}>{n}</p>)}
+        </div>
+      )}
     </Menu>
     {current && current.reasoningLevels?.length > 0 && (
       <EffortPicker
@@ -474,12 +510,12 @@ function EffortPicker({ effort, levels, modelLabel, onChat, onDefault }: {
       side="top"
       trigger={
         <button
-          className={cx("flex h-8 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", effort.effective === "auto" ? "text-ink3" : "text-ink2")}
+          className={cx("flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", effort.effective === "auto" ? "text-ink3" : "text-ink2")}
           aria-label="Thinking effort"
           title={`${EFFORT_LABEL[effort.effective]} · ${own ? "this chat" : effort.source === "model" ? `${modelLabel} default` : "the model decides"}`}
         >
           <Gauge size={14} />
-          {shown}
+          <span className="chip-label">{shown}</span>
           {own && <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-label="set for this chat" />}
           <ChevronDown size={12} className="text-ink4" />
         </button>
@@ -503,6 +539,63 @@ function EffortPicker({ effort, levels, modelLabel, onChat, onDefault }: {
   );
 }
 
+const ASPECT_LABEL: Record<ImageAspect, string> = { square: "Square", landscape: "Landscape", portrait: "Portrait" };
+const KIND_LABEL = { image: "Image", video: "Video", music: "Music" } as const;
+const ASPECT_RATIO: Record<"image" | "video", Record<ImageAspect, string>> = {
+  image: { square: "1:1", landscape: "3:2", portrait: "2:3" },
+  video: { square: "1:1", landscape: "16:9", portrait: "9:16" },
+};
+
+/**
+ * Create with the next message (ADR-042): an image, a video or music, made
+ * by a real model (never an SVG). The models are the defaults in Settings →
+ * AI → Media, or the best ones Mercury finds on your providers. Videos and
+ * music take a while and arrive in the chat when ready.
+ */
+function ImageToggle({ value, onChange }: { value: ImageIntent | null; onChange: (v: ImageIntent | null) => void }) {
+  const [info, setInfo] = useState<MediaModelsResponse | null>(null);
+  const provider = useRuntimeState((s) => s.provider);
+  // Asked again when the chat provider changes (a new provider may bring media models).
+  useEffect(() => { void api.media.models().then(setInfo).catch(() => setInfo(null)); }, [provider]);
+  const has = (k: "image" | "video" | "music") => info === null || (info[k]?.models.length ?? 0) > 0;
+  const using = (k: "image" | "video" | "music") => {
+    const i = info?.[k];
+    if (!i) return null;
+    return i.default?.available ? i.models.find((m) => m.ref === i.default!.ref)?.label ?? null : i.auto?.label ?? null;
+  };
+  // Short, so the row stays on one line: "Video 16:9", "Image 3:2", "Music".
+  const label = value ? `${KIND_LABEL[value.kind]}${value.aspect ? ` ${ASPECT_RATIO[value.kind === "video" ? "video" : "image"][value.aspect]}` : ""}` : "Create";
+  return (
+    <Menu
+      side="top"
+      trigger={
+        <button className={cx("flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", value ? "bg-accent/10 text-accent" : "text-ink3")} aria-label={`Create: ${label}`} title={label} aria-pressed={!!value}>
+          {value?.kind === "video" ? <Clapperboard size={14} /> : value?.kind === "music" ? <Music size={14} /> : <ImageIcon size={14} />}
+          <span className="chip-label">{label}</span>
+        </button>
+      }
+    >
+      <MenuLabel>Your next message</MenuLabel>
+      <MenuItem selected={!value} onSelect={() => onChange(null)}>Normal answer</MenuItem>
+      <MenuSeparator />
+      <MenuLabel>Image{using("image") ? ` · ${using("image")}` : ""}</MenuLabel>
+      {(["square", "landscape", "portrait"] as ImageAspect[]).map((a) => (
+        <MenuItem key={a} selected={value?.kind === "image" && value.aspect === a} disabled={!has("image")} onSelect={() => onChange({ kind: "image", aspect: a })}>{ASPECT_LABEL[a]}</MenuItem>
+      ))}
+      <MenuLabel>Video{using("video") ? ` · ${using("video")}` : ""}</MenuLabel>
+      {(["landscape", "portrait"] as ImageAspect[]).map((a) => (
+        <MenuItem key={a} selected={value?.kind === "video" && value.aspect === a} disabled={!has("video")} onSelect={() => onChange({ kind: "video", aspect: a })}>{ASPECT_LABEL[a]}</MenuItem>
+      ))}
+      <MenuItem selected={value?.kind === "music"} disabled={!has("music")} onSelect={() => onChange({ kind: "music" })}>
+        Music{using("music") ? ` · ${using("music")}` : ""}
+      </MenuItem>
+      {info && !has("image") && !has("video") && !has("music") && (
+        <MenuItem disabled hint="Settings → AI → Media">No media models on your providers</MenuItem>
+      )}
+    </Menu>
+  );
+}
+
 type ResearchNext = "off" | "on" | "plan";
 
 /** Research the next message: a full report from live sources, optionally with a plan to check first. */
@@ -512,9 +605,9 @@ function ResearchToggle({ value, onChange }: { value: ResearchNext; onChange: (v
     <Menu
       side="top"
       trigger={
-        <button className={cx("flex h-8 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", on ? "bg-accent/10 text-accent" : "text-ink3")} aria-label="Research" aria-pressed={on}>
+        <button className={cx("flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", on ? "bg-accent/10 text-accent" : "text-ink3")} aria-label="Research" title={value === "plan" ? "Research · plan first" : "Research"} aria-pressed={on}>
           <Telescope size={14} />
-          {on ? (value === "plan" ? "Research · plan first" : "Research") : "Research"}
+          <span className="chip-label">{value === "plan" ? "Research · plan" : "Research"}</span>
         </button>
       }
     >
@@ -534,9 +627,9 @@ function ModePicker() {
     <Menu
       side="top"
       trigger={
-        <button className={cx("flex h-8 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", allowAll ? "text-accent" : "text-amber")} aria-label="Approval mode">
+        <button className={cx("flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", allowAll ? "text-accent" : "text-amber")} aria-label="Approval mode" title={allowAll ? "Allow All" : "Ask Me"}>
           {allowAll ? <ShieldCheck size={13} /> : <Shield size={13} />}
-          {mode !== null ? (allowAll ? "Allow All" : "Ask Me") : "…"}
+          <span className="chip-label">{mode !== null ? (allowAll ? "Allow All" : "Ask Me") : "…"}</span>
         </button>
       }
     >

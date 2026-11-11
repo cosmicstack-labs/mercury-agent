@@ -4,7 +4,7 @@ import { apiUrl, authHeaders, http } from "./client";
 export type ArtifactKind = "image" | "video" | "audio" | "pdf" | "document" | "text" | "file";
 
 /** What a chat message carries about its artifacts. */
-export interface ArtifactRef { id: string; name: string; kind: ArtifactKind; mime: string; size: number; path: string }
+export interface ArtifactRef { id: string; name: string; kind: ArtifactKind; mime: string; size: number; path: string; tool?: string }
 
 export interface ArtifactItem {
   id: string;

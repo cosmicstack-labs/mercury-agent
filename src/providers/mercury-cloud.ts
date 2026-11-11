@@ -1,6 +1,6 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateText, streamText } from 'ai';
-import { BaseProvider } from './base.js';
+import { BaseProvider, type MediaEndpoint } from './base.js';
 import type { ProviderConfig } from '../utils/config.js';
 import type { LLMResponse, LLMStreamChunk } from './base.js';
 import { logger } from '../utils/logger.js';
@@ -166,6 +166,17 @@ export class MercuryCloudProvider extends BaseProvider {
     } catch (err: any) {
       logger.warn({ err: err.message }, 'Mercury Cloud token refresh failed');
     }
+  }
+
+  async mediaEndpoint(): Promise<MediaEndpoint | undefined> {
+    await this.ensureFreshToken().catch(() => {});
+    const baseUrl = this.config.baseUrl || '';
+    const jwt = this.usesAccessKey ? this.config.apiKey : this.tokenStore?.getJwt() ?? this.config.apiKey;
+    if (!baseUrl || !jwt) return undefined;
+    return {
+      baseUrl: baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`,
+      headers: { Authorization: `Bearer ${jwt}`, ...(this.cloudHeaders() ?? {}) },
+    };
   }
 
   async getModelInstanceAsync(): Promise<any> {

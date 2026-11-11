@@ -1,4 +1,5 @@
 import { Activity, Info, MessagesSquare, Palette, Server, Sparkles, UserRound } from "lucide-react";
+import { ImageSettings } from "./Images";
 import { UpdatesSettings } from "~/updates/UpdatesSettings";
 import { useEffect, useState } from "react";
 import { cx } from "~/lib/cx";
@@ -29,13 +30,13 @@ import { NotificationsSettings } from "./Notifications";
  * page shows them as tabs across the top. Everything about the models
  * (which ones, voice, what they may spend) sits together under AI.
  */
-type Section = "profile" | "models" | "voice" | "budgets" | "concurrency" | "channels" | "notifications" | "appearance" | "statusbar" | "startup" | "connections" | "devices" | "analytics" | "about";
+type Section = "profile" | "models" | "images" | "voice" | "budgets" | "concurrency" | "channels" | "notifications" | "appearance" | "statusbar" | "startup" | "connections" | "devices" | "analytics" | "about";
 
 type GroupId = "profile" | "ai" | "messaging" | "app" | "connections" | "analytics" | "about";
 
 const GROUPS: Array<{ id: GroupId; label: string; icon: typeof Palette; tabs: Array<{ id: Section; label: string }> }> = [
   { id: "profile", label: "Profile", icon: UserRound, tabs: [{ id: "profile", label: "Profile" }] },
-  { id: "ai", label: "AI", icon: Sparkles, tabs: [{ id: "models", label: "Models" }, { id: "voice", label: "Voice" }, { id: "budgets", label: "Budgets" }, { id: "concurrency", label: "Chats at once" }] },
+  { id: "ai", label: "AI", icon: Sparkles, tabs: [{ id: "models", label: "Models" }, { id: "images", label: "Media" }, { id: "voice", label: "Voice" }, { id: "budgets", label: "Budgets" }, { id: "concurrency", label: "Chats at once" }] },
   { id: "messaging", label: "Messaging", icon: MessagesSquare, tabs: [{ id: "channels", label: "Channels" }, { id: "notifications", label: "Notifications" }] },
   { id: "app", label: "App", icon: Palette, tabs: [{ id: "appearance", label: "Appearance" }, { id: "statusbar", label: "Status bar" }, { id: "startup", label: "Start-up" }] },
   { id: "connections", label: "Connections", icon: Server, tabs: [{ id: "connections", label: "Runtimes" }, { id: "devices", label: "Paired devices" }] },
@@ -105,6 +106,7 @@ export function SettingsView({ connection, health, onSwitchConnection }: { conne
             {section === "voice" && <VoiceSettings onOpenModels={() => go("models")} />}
             {section === "budgets" && <BudgetsSettings />}
             {section === "concurrency" && <ConcurrencySettings />}
+            {section === "images" && <ImageSettings />}
             {section === "notifications" && <NotificationsSettings />}
             {section === "channels" && <ChannelsSettings />}
             {section === "appearance" && <Appearance />}

@@ -42,4 +42,17 @@ describe('web channel live tool events', () => {
     expect(sent.some((e) => e.type === 'text_done')).toBe(false);
     expect(sent[2].data).toMatchObject({ name: 'anthropic', provider: 'anthropic' });
   });
+
+  it('a media tool says what it is making, so a screen can hold its place', () => {
+    const ch = new WebChannel('Mercury');
+    const sent = capture(ch);
+    ch.sendToolStarted('c', 'generate_image', { prompt: 'a fox', aspect: 'landscape', count: 9 }, 's1');
+    ch.sendToolStarted('d', 'read_file', { path: 'x' }, 's1');
+    expect(sent[0].data?.media).toEqual({ kind: 'image', aspect: 'landscape', count: 4, prompt: 'a fox' });
+    expect(sent[1].data).not.toHaveProperty('media');
+    ch.sendMediaPending({ id: 'j1', kind: 'video', prompt: 'surf', createdAt: 5, aspect: 'portrait' }, 's1');
+    ch.sendMediaReady('ready', [], 's1', 'j1');
+    expect(sent[2]).toEqual({ type: 'media_pending', data: { jobId: 'j1', kind: 'video', prompt: 'surf', startedAt: 5, aspect: 'portrait', targetId: 's1' } });
+    expect(sent[3].data).toMatchObject({ jobId: 'j1' });
+  });
 });

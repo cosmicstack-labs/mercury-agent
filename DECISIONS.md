@@ -511,3 +511,93 @@
   - **Rejected:**
     - A probe request on every startup (cost, and side effects on metered gateways).
     - Treating every OpenAI-compatible model as effort-capable (a wrong guess would cost a 400 on the first request of every chat).
+
+## ADR-042: Media generation is a tool the chat model calls, with models discovered per provider (phase 1: images)
+
+- **Context**:
+  - **Mercury could not make an image.** Asked for one, the chat model's only option was `create_file`, so it wrote an SVG. The artifact classifier then filed the SVG as an "image".
+  - **The pieces existed but were unused.** Text-to-speech existed only for read-aloud. The AI SDK's image, speech and video functions were installed and unused. Provider model listings already saw image and video models, and filtered them out.
+  - **Prior art:**
+    - Open WebUI, LibreChat, Hermes and OpenClaw expose generation as tools the chat model calls, with a default model per modality. Image models never enter the chat-model picker.
+    - ChatGPT and Gemini use the same pattern, with a composer entry point as an intent hint.
+    - OpenClaw resolves models in this order: per-call → primary → fallbacks → auto-detected from configured auth.
+  - **Model ids churn.** In 2026 alone, OpenAI's Sora API, Imagen and the Gemini API's Veo preview were retired. Ids cannot be hard-coded.
+- **Decision** (phase 1: images; speech and video follow the same shape):
+  - **One tool, `generate_image`.** It takes a prompt, aspect (square/landscape/portrait), quality, count (≤4) and `reference_images` (paths, for edits), plus an optional explicit model.
+    - It is registered whenever filesystem tools are.
+    - With no model available it returns a clear "no image model is set up" error, so the model reports the problem instead of drawing code.
+    - A system-prompt line routes picture requests to it, and keeps SVG for SVG, diagrams and charts.
+  - **Discovery** (`media/catalog.ts`) lists image models per configured provider, cached for a day; a provider that can't be reached keeps its last answer:
+    - OpenRouter: `?output_modalities=image`, generated through chat with `modalities: ["image","text"]`.
+    - LiteLLM: `mode: image_generation`.
+    - Any `/models`: `output_modalities` ∋ image, `type` ∋ image-generation, or a known image-model name.
+    - Ollama: `/api/tags` names.
+
+    Dated snapshots are hidden when the plain id exists.
+  - **Two wire formats** (`media/image.ts`) cover every provider Mercury has:
+    - **OpenAI Images API:** `/images/generations`, and `/images/edits` as multipart. Results come back as `b64_json` or a URL.
+    - **OpenRouter chat:** images come back as data URLs in `message.images`.
+
+    Providers expose `mediaEndpoint()` (base URL + auth): OpenAI-compatible providers from their config; Mercury Cloud with a fresh JWT and its agent header.
+  - **Resolution** (`media/service.ts`), at most three tried, each failure handing over to the next:
+    1. the requested model;
+    2. the owner's default, then its fallbacks (`media-prefs.json`, not `mercury.yaml`, which the agent rewrites);
+    3. automatic: the chat provider first, then better-known families.
+  - **Results are files.** They are saved to the chat's artifacts folder, or `<artifacts>/Images` for the terminal. The tool result names the path (for later edits).
+    - The artifact collector treats them as delivered.
+    - Chat channels receive them through their own `sendFile`.
+    - Apps show them through the existing artifacts event.
+  - **Explicit requests:**
+    - `/image [--landscape|--portrait] [--model ref] <prompt>`, and the desktop composer's Image switch (`POST /api/chat/send { media }`), keep the chat model in the turn but tell it to call `generate_image` first. Attached images are passed as reference candidates.
+    - `/media` shows and sets the default (by number, ref, or `auto`).
+    - `GET /api/media/models` and `PUT /api/media/default` serve Settings → AI → Images.
+- **Consequences**:
+  - Image requests produce images on any setup with an image-capable provider (verified live: OpenAI `gpt-image-1-mini`, 11 s). Without one, the user is told how to add one instead of getting SVG.
+  - **Mercury Cloud** needs two backend changes, outside this repo, before its image models appear:
+    - its `/v1/models` must carry `output_modalities` (or a `type`);
+    - it must serve `/v1/images/generations` and `/v1/images/edits`.
+  - **Not in phase 1:**
+    - ChatGPT sign-in image generation (Codex backend `image_generation` tool).
+    - A Google/Gemini provider.
+    - Speech and voice notes (phase 2).
+    - Video as background jobs, then music (phase 3).
+    - Per-channel size limits and transcoding (WhatsApp 5 MB images).
+- **Phase 2 (speech and voice notes):**
+  - **What speaks: one choice for everything.** That covers `generate_speech`, `/say`, voice-note replies and read-aloud (`/api/speak`).
+    - The owner's pick (`media-prefs.json` `speech.choice`) is either a direct service with a key (OpenAI, Gemini, Deepgram, ElevenLabs) or a text-to-speech model found on a provider: LiteLLM `mode: audio_speech`, `/models` with `output_modalities` ∋ speech, `type` text-to-speech, or a TTS name.
+    - With no pick, the Settings → Voice service applies, as read-aloud always did.
+    - Provider models are called through OpenAI `/audio/speech` with the provider's `mediaEndpoint()` auth, so Mercury Cloud works once it serves the route.
+  - **Synthesis** (`plugins/speak.ts`) gains a voice, a style (OpenAI's instructable models; Gemini as words in front; never sent to `tts-1`) and an Ogg/Opus format.
+    - Ogg/Opus is native from OpenAI (`opus`) and Deepgram (`container=ogg`).
+    - Gemini WAV and ElevenLabs MP3 are converted with ffmpeg when present, and otherwise left as they are (then sent as audio).
+  - **`generate_speech`** speaks given text into the chat folder: Ogg/Opus in chat apps, MP3 elsewhere. Delivery and artifacts work as for images. `/say [--style …] <text>` routes to it with the exact words.
+  - **Voice notes:**
+    - Telegram transcribes incoming voice and audio messages (the Settings → Voice listener, files up to 20 MB) and marks them `voiceNote`, as the WhatsApp bridge already did.
+    - Telegram sends `.ogg/.oga/.opus` with `sendVoice`, falling back to `sendAudio`.
+    - After a chat-app reply is delivered, `speech.replies` decides whether a spoken version follows: `mirror` (default: when they sent a voice note), `always` or `off`.
+      - The spoken text is the reply without markdown or code, cut at a sentence near 1500 characters with "The rest is in the message".
+      - It is best effort and never fails the turn.
+  - **Surfaces:** `/media speech|voice|replies`; Settings → AI → Media (Images + Speech); `GET /api/media/models` `speech`; `PUT /api/media/speech`.
+  - **Still open:** realtime voice is unchanged (Optimus); ElevenLabs voices are entered by id, not listed.
+- **Phase 3 (video and music as background jobs):**
+  - **Sources:**
+    - A Gemini key (Settings → Voice) is a media source of its own (`media/key-sources.ts`). Its `models.list` gives images (generateContent with `responseModalities: ["TEXT","IMAGE"]`, `imageConfig.aspectRatio`), Omni video, and Lyria music. Lyria RealTime is a live stream, not a file, and is left out.
+    - Omni and Lyria are called through the Interactions API (`POST /v1beta/interactions`). Omni takes `response_format {type: "video", aspect_ratio, resolution, duration}`. Lyria takes length and "instrumental" in the prompt, with header `Api-Revision: 2026-05-20`. Both return their output inline in `steps[type=model_output].content`.
+    - An ElevenLabs key gives ElevenLabs Music: `POST /v1/music` with `music_length_ms`, `force_instrumental` and `model_id`.
+    - Gateways serve video through the OpenAI Videos API shape: create, poll `/videos/{id}`, then `/videos/{id}/content`. Discovery uses LiteLLM `mode: video_generation`, `output_modalities` ∋ video, or a video-model name.
+  - **Jobs** (`media/jobs.ts`): `generate_video` and `generate_music` check that a model exists, start a job and end the turn ("do not wait").
+    - The job runs the fallback chain (at most three models) with a 15-minute (video) or 10-minute (music) bound, saves the file into the chat's folder, and is delivered exactly once by `Agent.deliverMediaJob`:
+      - **Apps:** artifact, a stored assistant message, and an SSE `media_ready` event. This is a message of its own, so a turn running in that chat is untouched.
+      - **Chat apps:** a note, then `sendFile`.
+      - **Terminal:** a notice with the path.
+    - Jobs persist in `media-jobs.json`. On start, the process that owns the runtime (never a terminal attached to the daemon) marks still-running jobs as failed and tells their chats, because the HTTP call died with the old process.
+    - `/stop` in a chat aborts its jobs; `/halt` aborts all of them.
+  - **No-quota models:** a provider answer such as "limit: 0 … Free Tier", "insufficient_quota" or "billing required" marks the model unusable for 24 h. Automatic picks and the shown automatic choice skip it; a model named explicitly is still tried.
+    - Found live: a free-tier Gemini key lists Omni, Lyria and image models, but each answers 429 with limit 0. Without this rule, every automatic request would fail first.
+  - **Surfaces:**
+    - `/video`, `/music` (`/song`), `/media video|music <n|auto>`, `/media jobs`.
+    - The desktop composer's Create menu (image, video or music; `POST /api/chat/send { media: {kind} }`).
+    - Settings → AI → Media sections for video and music, backed by `GET /api/media/models` `video`/`music` and `PUT /api/media/default { kind }`.
+  - **Verified live:** ElevenLabs Music (5 s, 4.2 s).
+  - **Shapes taken from the current docs, not confirmed live:** the Gemini Omni and Lyria request shapes (the test key is on the free tier, with no quota for them).
+  - **Implemented to the OpenAI shape, not exercised live:** the gateway Videos API.

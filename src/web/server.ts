@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import mediaRoutes from './api/media.js';
 import { isBunVirtualPath } from '../utils/bun-path.js';
 import { createAdaptorServer } from '@hono/node-server';
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
@@ -119,6 +120,7 @@ app.route('/', providerRoutes);
 app.route('/', cloudRoutes);
 app.route('/', transcribeRoutes);
 app.route('/', speakRoutes);
+app.route('/', mediaRoutes);
 app.route('/', budgetRoutes);
 app.route('/', channelRoutes);
 app.route('/', artifactRoutes);

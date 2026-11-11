@@ -435,7 +435,15 @@ export function humanizeModelName(model: string): string {
   const extras: string[] = [];
 
   // Hyphens separate words; underscores belong to quant tags like Q4_K_M.
-  const parts = name.split(/[-\s]+/).filter(Boolean);
+  // A dated snapshot ("…-20251001") reads as the model; a version split into
+  // numbers ("haiku-4-5", "llama-3-1-8b") reads as one: 4.5, 3.1.
+  const raw = name.split(/[-\s]+/).filter(Boolean).filter((p, i, all) => !(i > 0 && /^(19|20)\d{6}$/.test(p) && all.length > 1));
+  const parts: string[] = [];
+  for (const p of raw) {
+    const prev = parts[parts.length - 1];
+    if (/^\d{1,2}$/.test(p) && prev && /^\d{1,2}$/.test(prev) && parts.length >= 2 && !/^\d/.test(parts[parts.length - 2])) parts[parts.length - 1] = `${prev}.${p}`;
+    else parts.push(p);
+  }
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     // Keep GPT-style "GPT-6" / "GPT-5.6" joined.

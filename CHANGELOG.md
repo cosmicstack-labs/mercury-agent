@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Video and music
+- **Mercury makes videos and music.** Ask in your own words, use the desktop chat box's **Create** menu (it replaces the Image button; image, video or music), or type `/video <the shot>` (`--portrait`, `--seconds 6`) or `/music <style, mood, lyrics>` (`--instrumental`, `--seconds 60`).
+  - They take a minute or a few. Mercury says it has started and posts the clip or song into the same chat when it's ready, even if you've moved on. The desktop app shows it as a new message with a player, Telegram and WhatsApp receive the file, and the terminal shows where it was saved.
+  - `/media jobs` lists what's being made. Stop also stops the video or song that chat is making.
+- **Where they come from:**
+  - **Video:** Gemini Omni (3–15 s with sound, from a Gemini key in Settings → Voice), or video models on gateways that serve the OpenAI Videos API (LiteLLM, Mercury Cloud once it adds it).
+  - **Music:** Gemini Lyria (clips and full songs), or ElevenLabs Music (from an ElevenLabs key).
+  - **Images too:** a Gemini key also brings Gemini's image models (Nano Banana).
+  - **Choosing:** pick defaults in Settings → AI → Media or with `/media video <n>` and `/media music <n>`.
+- **No dead ends.** When a provider says your account has no quota for a model (a free tier, no billing), Mercury skips that model in automatic picks for a day and uses the next one. `/media` marks it as skipped.
+- If Mercury restarts while a video or song is being made, that chat is told to ask again, instead of waiting forever.
+
+### Speech and voice notes
+- **Voice notes both ways in Telegram.** Send Mercury a voice note and it's transcribed and answered, as WhatsApp already did. Replies come back as a voice note too, as Telegram's real voice-note bubble, not an audio file. By default this happens when you sent a voice note; `/media replies always` speaks every reply, `/media replies off` never does. The text reply always comes as well. WhatsApp follows the same setting.
+- **`/say <text>`** speaks it, as a voice note in chat apps and as audio in the apps (add `--style "calm"`). Or just ask: "send me a voice note", "read this out loud", "narrate this".
+- **Choose what speaks and in which voice** in Settings → AI → **Media** (the Images page, renamed), or with `/media speech <number>` and `/media voice <name>`.
+  - The choices are OpenAI, Gemini, Deepgram, ElevenLabs, or a text-to-speech model found on your providers (OpenAI's `tts-1`/`gpt-4o-mini-tts`, LiteLLM, Mercury Cloud).
+  - A style ("warm", "excited") is followed by OpenAI's newer voices and Gemini.
+  - Reading replies aloud in the apps uses the same choice. With none set, everything follows Settings → Voice, as before.
+- Gemini and ElevenLabs audio is turned into a voice note with ffmpeg when it is installed. Without ffmpeg it is sent as an audio file.
+
+### Images
+- **Mercury makes real images.** Ask for a picture in your own words, use the new **Image** button in the Mercury Desktop chat box (square, landscape or portrait), or type `/image <what to draw>` in the terminal, Telegram, WhatsApp, Discord, Slack or Signal. An image model draws it; Mercury no longer writes an SVG when you asked for a picture (it still does when you ask for SVG, a diagram or a chart).
+- **Edit what you made.** "Make it blue", or send a photo with `/image make this a watercolor`: the earlier image (or yours) goes to the model as a reference.
+- **Found on your providers, automatically.**
+  - OpenAI (gpt-image, DALL·E), OpenRouter (Gemini image, FLUX, Seedream…), LiteLLM, AI/ML API, Atlas Cloud, Runcrate and Ollama image models are listed without any setup.
+  - Mercury Cloud models appear once its model list says which ones make images.
+  - Pick the default in Settings → AI → **Images**, or with `/media` (`/media image 2`, `/media image auto`). Automatic prefers the provider you chat with.
+  - If a model fails, the next one is tried.
+- **Delivered where you asked.**
+  - The desktop app shows the image in the reply and keeps it in Artifacts.
+  - Telegram, WhatsApp, Discord, Slack and Signal receive it as a photo.
+  - The terminal prints where it was saved: the chat's artifacts folder, or `~/mercury-artifacts/Images`.
+- Telegram no longer tries to send SVG or BMP files, or photos over 10 MB, as photos (Telegram rejects them); they go as files, and GIFs as animations.
+
 ### Seeing Mercury work
 - **A reply reads top to bottom as it happens.** In Mercury Desktop the thinking, each tool it runs, the answer and any notes appear in order at the bottom of the chat, where you already are. Before, the activity sat above the answer and scrolled out of view as the answer grew.
 - **Tools show while they run.** Each tool appears when it starts, with a live timer, and gets a tick or an error with the real duration when it ends. Before, a tool appeared only after it had finished, so a long command showed nothing. Failures show their reason, and long runs fold earlier steps away.

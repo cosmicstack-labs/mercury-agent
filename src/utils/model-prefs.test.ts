@@ -28,6 +28,10 @@ describe('humanizeModelName', () => {
     ['hf.co/mradermacher/qwen3.5-9b-nsfw-captioning-v5-GGUF:Q8_0', 'Qwen 3.5 9B NSFW Captioning V5 (Q8_0)'],
     ['mistral-small-24b-huihui-ablit-q4ks:latest', 'Mistral Small 24B Huihui Abliterated (Q4KS)'],
     ['codex-auto-review', 'Codex Auto Review'],
+    ['claude-haiku-4-5-20251001', 'Claude Haiku 4.5'],
+    ['claude-opus-5-5', 'Claude Opus 5.5'],
+    ['claude-sonnet-4-20250514', 'Claude Sonnet 4'],
+    ['llama-3-1-8b-instruct', 'Llama 3.1 8B Instruct'],
     ['hf.co/BennyDaBall/Qwopus3.8-27B-Flash-NVFP4:NVFP4', 'Qwopus 3.8 27B Flash (NVFP4)'],
   ])('%s → %s', (raw, expected) => {
     expect(humanizeModelName(raw)).toBe(expected);

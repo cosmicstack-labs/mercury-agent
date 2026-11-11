@@ -8,6 +8,9 @@ import { createListDirTool } from './filesystem/list-dir.js';
 import { createDeleteFileTool } from './filesystem/delete-file.js';
 import { createEditFileTool } from './filesystem/edit-file.js';
 import { createSendFileTool } from './filesystem/send-file.js';
+import { createGenerateImageTool, type GenerateImageDeps } from './media/generate-image.js';
+import { createGenerateSpeechTool, type GenerateSpeechDeps } from './media/generate-speech.js';
+import { createGenerateMusicTool, createGenerateVideoTool, type MediaJobDeps } from './media/generate-video.js';
 import { createSendMessageTool } from './messaging/send-message.js';
 import { createApproveScopeTool } from './filesystem/approve-scope.js';
 import { createRunCommandTool } from './shell/run-command.js';
@@ -106,6 +109,9 @@ export class CapabilityRegistry {
   private spotifyClient?: SpotifyClient;
   private userMemory?: UserMemoryStore;
   private sendFileHandler?: (filePath: string, channel?: string) => Promise<void>;
+  private imageGeneration?: Omit<GenerateImageDeps, 'permissions' | 'getCwd'>;
+  private speechGeneration?: GenerateSpeechDeps;
+  private mediaJobDeps?: Omit<MediaJobDeps, 'permissions' | 'getCwd'>;
   private sendMessageHandler?: (content: string) => Promise<void>;
   private chatCommandContext?: ChatCommandContext;
   /** Per turn while a turn claims it (ADR-037); the registry-wide cwd otherwise. */
@@ -259,6 +265,21 @@ export class CapabilityRegistry {
     this.sendFileHandler = handler;
   }
 
+  /** Video and music as background jobs (ADR-042 phase 3): registers generate_video, generate_music. */
+  setMediaJobs(deps: Omit<MediaJobDeps, 'permissions' | 'getCwd'>): void {
+    this.mediaJobDeps = deps;
+  }
+
+  /** Text to speech as a deliverable (ADR-042 phase 2): registers generate_speech. */
+  setSpeechGeneration(deps: GenerateSpeechDeps): void {
+    this.speechGeneration = deps;
+  }
+
+  /** Real image generation (ADR-042): registers generate_image. */
+  setImageGeneration(deps: Omit<GenerateImageDeps, 'permissions' | 'getCwd'>): void {
+    this.imageGeneration = deps;
+  }
+
   setSendMessageHandler(handler: (content: string) => Promise<void>): void {
     this.sendMessageHandler = handler;
   }
@@ -310,6 +331,18 @@ export class CapabilityRegistry {
       }
 
       this.tools.approve_scope = createApproveScopeTool(this.permissions, this.cwdSource);
+
+      if (this.imageGeneration) {
+        this.tools.generate_image = createGenerateImageTool({ ...this.imageGeneration, permissions: this.permissions, getCwd: this.cwdSource });
+      }
+      if (this.speechGeneration) {
+        this.tools.generate_speech = createGenerateSpeechTool(this.speechGeneration);
+      }
+      if (this.mediaJobDeps) {
+        const deps = { ...this.mediaJobDeps, permissions: this.permissions, getCwd: this.cwdSource };
+        this.tools.generate_video = createGenerateVideoTool(deps);
+        this.tools.generate_music = createGenerateMusicTool(deps);
+      }
 
       logger.info('Filesystem tools registered');
     }

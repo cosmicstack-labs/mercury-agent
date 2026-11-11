@@ -1,6 +1,6 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateText, streamText } from 'ai';
-import { BaseProvider } from './base.js';
+import { BaseProvider, type MediaEndpoint } from './base.js';
 import type { ProviderConfig } from '../utils/config.js';
 import type { LLMResponse, LLMStreamChunk } from './base.js';
 import { logger } from '../utils/logger.js';
@@ -86,6 +86,16 @@ export class OpenAICompatProvider extends BaseProvider {
     this.modelInstance = useChatApi
       ? withThinkTagReasoning(this.client.chat(config.model))
       : this.client(config.model);
+  }
+
+  async mediaEndpoint(): Promise<MediaEndpoint | undefined> {
+    if (!this.config.baseUrl) return undefined;
+    const basic = basicAuthHeaders(this.config);
+    const attribution = aimlapiHeaders(this.config.baseUrl) ?? {};
+    return {
+      baseUrl: this.config.baseUrl.replace(/\/+$/, ''),
+      headers: { ...attribution, ...(basic ?? (this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {})) },
+    };
   }
 
   private formatApiError(err: unknown): Error {

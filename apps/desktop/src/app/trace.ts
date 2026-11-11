@@ -49,7 +49,7 @@ export function endReasoning(t: ThoughtTrace, now = Date.now()): ThoughtTrace {
   return { ...t, items: [...items.slice(0, -1), { ...last, endedAt: now }], reasoning: t.reasoning ? `${t.reasoning}\n\n` : t.reasoning, lastEventAt: now };
 }
 
-export function startTool(t: ThoughtTrace, ev: { key?: string; tool: string; title?: string; label?: string; step?: number }, now = Date.now()): ThoughtTrace {
+export function startTool(t: ThoughtTrace, ev: { key?: string; tool: string; title?: string; label?: string; step?: number; media?: ThoughtStep["media"] }, now = Date.now()): ThoughtTrace {
   const closed = endReasoning(t, now);
   const key = ev.key || `${ev.tool}:${now}:${closed.steps.length}`;
   if (closed.steps.some((s) => s.key === key)) return closed;
@@ -59,6 +59,7 @@ export function startTool(t: ThoughtTrace, ev: { key?: string; tool: string; tit
     tool: ev.tool,
     label: ev.label || ev.tool,
     ...(ev.title ? { title: ev.title } : {}),
+    ...(ev.media ? { media: ev.media } : {}),
     status: "running",
     startedAt: now,
   };
@@ -155,7 +156,7 @@ const num = (v: unknown): number | undefined => (typeof v === "number" && Number
  * A reply's trace as the runtime keeps it ({startedAt, endedAt, items}) →
  * the screen's shape. A trace already in that shape passes through.
  */
-export function fromStored(raw: unknown): ThoughtTrace | undefined {
+export function fromStored(raw: unknown, opts: { live?: boolean } = {}): ThoughtTrace | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const r = raw as { startedAt?: unknown; endedAt?: unknown; items?: unknown; reasoning?: unknown; steps?: unknown };
   if (typeof r.reasoning === "string" && Array.isArray(r.steps)) return raw as ThoughtTrace;
@@ -165,7 +166,9 @@ export function fromStored(raw: unknown): ThoughtTrace | undefined {
   const parts: string[] = [];
   for (const it of r.items as StoredItem[]) {
     if (it?.kind === "reasoning" && typeof it.text === "string" && it.text.trim()) {
-      trace.items!.push({ kind: "reasoning", text: it.text, startedAt: num(it.startedAt) ?? startedAt, endedAt: num(it.endedAt) ?? startedAt });
+      // A snapshot of a running reply may have thinking still streaming (no end yet).
+      const endedAt = num(it.endedAt) ?? (opts.live ? undefined : startedAt);
+      trace.items!.push({ kind: "reasoning", text: it.text, startedAt: num(it.startedAt) ?? startedAt, ...(endedAt !== undefined ? { endedAt } : {}) });
       parts.push(it.text.trim());
     } else if (it?.kind === "tool" && typeof it.id === "string") {
       const title = typeof it.title === "string" ? it.title : "";
@@ -177,7 +180,7 @@ export function fromStored(raw: unknown): ThoughtTrace | undefined {
         tool: title.split(" ")[0] || "tool",
         label: title,
         title,
-        status: it.status === "error" ? "error" : "done",
+        status: it.status === "error" ? "error" : it.status === "running" && opts.live ? "running" : "done",
         startedAt: at,
         ...(durationMs !== undefined ? { durationMs, endedAt: at + durationMs } : {}),
         ...(typeof it.summary === "string" ? { summary: it.summary } : {}),
@@ -187,6 +190,25 @@ export function fromStored(raw: unknown): ThoughtTrace | undefined {
   }
   trace.reasoning = parts.join("\n\n");
   return trace.items!.length ? trace : undefined;
+}
+
+/**
+ * A reply still being worked on, from the runtime's snapshot
+ * (GET /api/chat/threads/:id/live): its thinking and steps so far, then the
+ * text written so far, ready for live events to carry on from.
+ */
+export function liveFromSnapshot(raw: unknown, text: string, startedAt: number, activity?: string, now = Date.now()): ThoughtTrace {
+  const base = fromStored(raw, { live: true }) ?? { ...newTrace(startedAt), startedAt };
+  const items = [...(base.items ?? [])];
+  if (text) items.push({ kind: "text", text });
+  return {
+    ...base,
+    startedAt,
+    endedAt: undefined,
+    items,
+    lastEventAt: now,
+    ...(activity ? { phase: activity.replace(/^[^\p{L}\p{N}]+/u, "").trim() || undefined } : {}),
+  };
 }
 
 /**

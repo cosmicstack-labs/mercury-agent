@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { currentSpeechEngine, NO_SPEECH_SERVICE } from '../../plugins/speech-choice.js';
 import { SPEAK_MAX_CHARS, speechMime, synthesizeSpeech } from '../../plugins/speak.js';
+import { getSpeechService } from '../../media/speech.js';
 
 /**
  * Read aloud for every client: text in, speech out.
@@ -19,19 +20,30 @@ let doFetch: Fetch | undefined;
 /** Test seam. */
 export function setSpeakFetch(f: Fetch | undefined): void { doFetch = f; }
 
-function engine() {
-  return currentSpeechEngine('speak');
+/**
+ * What reads aloud: the speech choice in Settings → AI → Media (with its
+ * voice) when the runtime has one, else the voice in Settings → Voice.
+ */
+async function target(): Promise<{ engine: NonNullable<ReturnType<typeof currentSpeechEngine>>; voice?: string } | null> {
+  const service = getSpeechService();
+  if (service) {
+    const t = await service.target();
+    return t ? { engine: t.engine, ...(t.voice ? { voice: t.voice } : {}) } : null;
+  }
+  const engine = currentSpeechEngine('speak');
+  return engine ? { engine } : null;
 }
 
 const speak = new Hono();
 
-speak.get('/api/speak', (c) => {
-  const e = engine();
-  return c.json({ available: !!e, engine: e?.label ?? null, maxChars: SPEAK_MAX_CHARS });
+speak.get('/api/speak', async (c) => {
+  const t = await target();
+  return c.json({ available: !!t, engine: t?.engine.label ?? null, maxChars: SPEAK_MAX_CHARS });
 });
 
 speak.post('/api/speak', async (c) => {
-  const e = engine();
+  const t = await target();
+  const e = t?.engine;
   if (!e) {
     return c.json({ error: `Reading aloud needs ${NO_SPEECH_SERVICE}`, needs: 'speech' }, 412);
   }
@@ -40,7 +52,7 @@ speak.post('/api/speak', async (c) => {
   if (!text) return c.json({ error: 'Nothing to read.' }, 400);
   if (text.length > SPEAK_MAX_CHARS) return c.json({ error: `Send at most ${SPEAK_MAX_CHARS} characters at a time.`, maxChars: SPEAK_MAX_CHARS }, 413);
   try {
-    const audio = await synthesizeSpeech(text, e, { fetch: doFetch, signal: c.req.raw.signal });
+    const audio = await synthesizeSpeech(text, e, { fetch: doFetch, signal: c.req.raw.signal, ...(t?.voice ? { voice: t.voice } : {}) });
     return new Response(audio, { headers: { 'Content-Type': speechMime(e), 'Cache-Control': 'no-store', 'X-Speech-Engine': e.label } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

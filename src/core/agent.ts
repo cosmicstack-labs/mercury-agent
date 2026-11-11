@@ -1,7 +1,7 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import path from 'node:path';
-import { homedir } from 'node:os';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
@@ -138,6 +138,10 @@ import { runReflection } from '../learning/reflection.js';
 import { createOwnerSectionsMemo } from '../learning/owner-brief.js';
 import type { ApplyResult } from '../memory/beliefs.js';
 import { TurnTrace, toolSummary } from './turn-trace.js';
+import { applyMediaIntent } from '../media/intent.js';
+import { getSpeechService, speakableText, voiceReplyWanted } from '../media/speech.js';
+import { loadMediaPrefs } from '../media/prefs.js';
+import { mediaJobs, type MediaJob } from '../media/jobs.js';
 import { claimEffortChat } from '../utils/model-prefs.js';
 import { TurnUsage, billingEntries, type SourceUsageTotals, type StepUsageLike, type TurnUsageTotals } from './turn-usage.js';
 
@@ -1477,6 +1481,18 @@ export class Agent {
   }
 
   /** Every running turn, oldest first: what each chat is doing (for /progress, status screens). */
+  /**
+   * The reply a chat is working on right now, as far as it got: thinking and
+   * tool steps (with what still runs), and what it is doing. Undefined when
+   * the chat is idle. Lets a screen that left the chat and came back show
+   * the turn again instead of a blank.
+   */
+  liveTurn(id: string): { startedAt: number; activity: string; trace: import('./turn-trace.js').StoredTrace } | undefined {
+    const turn = this.turnForSession(id) ?? this.turnForChannel(id);
+    if (!turn || turn.done) return undefined;
+    return { startedAt: turn.startedAt, activity: turn.activity, trace: turn.trace.peek(turn.startedAt) };
+  }
+
   runningTurns(): Array<{ laneKey: string; channelType: string; channelId: string; sessionId?: string; content: string; activity: string; startedAt: number; completedSteps: number; narrative: import('../utils/tool-label.js').NarrativeStep[] }> {
     return [...this.activeTurns.values()]
       .sort((a, b) => a.startedAt - b.startedAt)
@@ -1804,6 +1820,8 @@ export class Agent {
         || (turn !== undefined && laneKeyFor(m) === turn.laneKey), label);
       const channelId = turn?.message.channelId ?? target.channelId;
       const halted = this.supervisor && channelId ? await this.supervisor.haltForChannel(channelId) : [];
+      // Videos and songs this chat is still making stop too (ADR-042).
+      const jobsStopped = channelId ? mediaJobs()?.stop({ channelId }) ?? 0 : 0;
       const others = [...this.activeTurns.values()]
         .filter((t) => t !== turn && t.id !== caller?.id && !t.abort?.signal.aborted).length;
       // Nothing else running anywhere: the full stop it always was (locks
@@ -1816,18 +1834,20 @@ export class Agent {
       }
       const tail = cleared ? ' Locks released, task board cleared.' : '';
       const elsewhere = others > 0 ? ` ${others} task${others === 1 ? '' : 's'} in other chats keep${others === 1 ? 's' : ''} running — /halt stops everything.` : '';
-      if (!turn && halted.length === 0 && dropped === 0) {
+      if (!turn && halted.length === 0 && dropped === 0 && jobsStopped === 0) {
         return cleared ? `Nothing was running.${tail}` : `Nothing is running in this chat.${elsewhere}`;
       }
       const parts = [
         turn ? 'Stopped this chat\'s task' : null,
         halted.length ? `halted ${halted.length} sub-agent${halted.length === 1 ? '' : 's'} it started` : null,
         dropped ? `dropped ${dropped} waiting message${dropped === 1 ? '' : 's'}` : null,
+        jobsStopped ? `stopped ${jobsStopped} video or song being made` : null,
       ].filter(Boolean) as string[];
       parts[0] = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
       return `${parts.join(', ')}.${tail}${elsewhere}`;
     }
     this.dropWaiting(() => true, label);
+    mediaJobs()?.stop();
     let stoppedTurns = 0;
     for (const turn of this.activeTurns.values()) {
       if (caller && turn.id === caller.id) continue;
@@ -2398,6 +2418,72 @@ export class Agent {
   }
 
   /**
+   * A video or song finished (or failed) after its turn ended (media/jobs.ts):
+   * post it to the chat that asked. The apps get it as a new message with
+   * the file attached (kept with the conversation, so a reopened chat shows
+   * it); chat apps get a note and the file; the terminal a notice with the path.
+   */
+  async deliverMediaJob(job: MediaJob, note?: string): Promise<void> {
+    const channel = this.channels.get(job.chat.channelType as Parameters<ChannelRegistry['get']>[0]);
+    const what = job.kind === 'video' ? 'video' : 'music';
+    const icon = job.kind === 'video' ? '🎬' : '🎵';
+    const text = job.status === 'done' && job.file
+      ? `${icon} Your ${what} is ready${job.madeWith ? ` (${job.madeWith})` : ''}.${note ? `\n\n${note.trim().slice(0, 500)}` : ''}`
+      : `⚠ I couldn't make the ${what}: ${job.error ?? 'it failed'}`;
+    const file = job.status === 'done' && job.file && existsSync(job.file) ? job.file : undefined;
+    if (job.chat.channelType === 'web') {
+      const sessionId = job.chat.sessionId ?? job.chat.channelId;
+      let refs: ReturnType<typeof artifactRef>[] = [];
+      if (file) {
+        try {
+          const kind = /\.(mp4|webm|mov|m4v)$/i.test(file) ? 'video' : 'audio';
+          refs = [artifactRef(artifactStore().add({ threadId: sessionId, path: file, kind, tool: `generate_${job.kind}` }))];
+        } catch (err) { logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Keeping a media job artifact failed'); }
+      }
+      try {
+        this.sessions.appendMessage(sessionId, {
+          role: 'assistant',
+          content: text,
+          externalMessageId: `media-job:${job.id}`,
+          metadata: { channelType: 'web', channelId: job.chat.channelId, ...(refs.length ? { artifacts: refs } : {}) },
+        });
+      } catch { /* the chat was deleted meanwhile */ }
+      if (channel instanceof WebChannel) channel.sendMediaReady(text, refs, job.chat.channelId, job.id);
+      return;
+    }
+    if (!channel) return;
+    if (channel instanceof CLIChannel) {
+      channel.sendSystemNotice(`${text}${file ? `\n  ${file}` : ''}`);
+      return;
+    }
+    await channel.send(text, job.chat.channelId).catch(() => {});
+    if (file) await channel.sendFile(file, job.chat.channelId);
+  }
+
+  /**
+   * Say the reply as a voice note in a chat app: when the owner sent a voice
+   * note ("mirror", the default), on every reply ("always"), or never
+   * ("off"); /media replies. The text was already sent: this is extra and
+   * never fails the turn.
+   */
+  private async maybeVoiceReply(channel: { sendFile(path: string, targetId?: string): Promise<void> }, msg: ChannelMessage, text: string): Promise<void> {
+    if (this.turnCancelled() || !voiceReplyWanted(msg.channelType, msg.metadata?.voiceNote === true, loadMediaPrefs().speech?.replies)) return;
+    const spoken = speakableText(text);
+    if (!spoken || /^\s*⏹/.test(text)) return;
+    const speech = getSpeechService();
+    if (!speech) return;
+    const dir = mkdtempSync(path.join(tmpdir(), 'mercury-voice-reply-'));
+    try {
+      const { file } = await speech.speakToFile(spoken, dir, { format: 'ogg' });
+      await channel.sendFile(file, msg.channelId);
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err), channel: msg.channelType }, 'Voice reply failed (the text reply was sent)');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
    * A note while the turn keeps working ("Checking my work…"). On the web
    * channel a plain send is a finished reply, which would end the turn on
    * screen while work goes on; there it is a progress event instead.
@@ -2777,6 +2863,9 @@ export class Agent {
         await this.runQueuedItem(item);
       } finally {
         this.rememberLaneCwd(laneKey, this.capabilities.getCwd());
+        // However the turn ended (reply, error, stop), its streamed text is no longer "live".
+        const ch = this.channels.getChannelForMessage(msg);
+        if (ch instanceof WebChannel) ch.clearLiveText(msg.channelId);
       }
     }))).catch((err) => {
       logger.error({ err, turn: turn.id }, 'Turn failed outside its handler');
@@ -3788,6 +3877,8 @@ export class Agent {
       // `#skill-name` is the user's explicit pick; any other skill choice is
       // the model's (ADR-040).
       this.applyExplicitSkillPick(msg, trimmed, messages);
+      // `/image …` or the desktop's Image switch: an image model makes it (ADR-042).
+      applyMediaIntent(msg, trimmed, messages);
 
       this.lifecycle.transition('responding');
 
@@ -5483,6 +5574,8 @@ export class Agent {
         // Progress, without the typing refresh: a "thinking" event after the
         // reply would make a screen think a new turn started.
         this.lastProgressAt = Date.now();
+        // A chat-app reply can follow as a voice note (ADR-042 phase 2).
+        if (channel) void this.maybeVoiceReply(channel, msg, finalText);
       } else {
         replyDelivered();
         logger.debug('Internal prompt processed, no channel response needed');

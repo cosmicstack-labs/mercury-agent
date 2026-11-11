@@ -1,4 +1,7 @@
 import fs from 'node:fs';
+import os from 'node:os';
+import { currentSpeechEngine, NO_SPEECH_SERVICE } from '../plugins/speech-choice.js';
+import { transcribeFile } from '../plugins/transcribe.js';
 import path from 'node:path';
 import { Bot, InputFile, InlineKeyboard } from 'grammy';
 import { autoRetry } from '@grammyjs/auto-retry';
@@ -248,6 +251,65 @@ export class TelegramChannel extends BaseChannel {
       this.emit(msg);
     });
 
+    // Voice notes and audio messages: heard (transcribed), then handled like text.
+    bot.on(['message:voice', 'message:audio'], async (ctx) => {
+      const chatId = ctx.chat.id;
+      const userId = ctx.from?.id;
+      if (!userId || ctx.chat.type !== 'private') return;
+      const dedupKey = `${chatId}:${ctx.message.message_id}`;
+      if (this.processedMessages.has(dedupKey)) return;
+      this.processedMessages.set(dedupKey, Date.now());
+      if (!findTelegramApprovedUser(this.config, userId)) {
+        await this.sendDirectMessage(chatId, 'This bot is not available to you. Send /start to request access.');
+        return;
+      }
+      const media = ctx.message.voice ?? ctx.message.audio;
+      if (!media) return;
+      if ((media.file_size ?? 0) > 20 * 1024 * 1024) {
+        await this.sendDirectMessage(chatId, '🎤 That recording is too long for me to fetch (Telegram lets bots download up to 20 MB). Could you send a shorter one, or type it?');
+        return;
+      }
+      const engine = currentSpeechEngine('listen');
+      if (!engine) {
+        await this.sendDirectMessage(chatId, `🎤 I can't listen to voice notes yet: that needs ${NO_SPEECH_SERVICE} Meanwhile, please type it.`);
+        return;
+      }
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mercury-tg-voice-'));
+      let said = '';
+      try {
+        const file = await ctx.api.getFile(media.file_id);
+        if (!file.file_path) throw new Error('Telegram gave no file');
+        const res = await fetch(`https://api.telegram.org/file/bot${bot.token}/${file.file_path}`);
+        if (!res.ok) throw new Error(`download failed (${res.status})`);
+        const local = path.join(dir, `voice${path.extname(file.file_path) || '.ogg'}`);
+        fs.writeFileSync(local, Buffer.from(await res.arrayBuffer()));
+        said = (await transcribeFile(local, engine)).trim();
+      } catch (err) {
+        await this.sendDirectMessage(chatId, `🎤 I couldn't understand that voice note (${(err as Error).message.slice(0, 160)}). Could you type it?`);
+        return;
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+      if (!said) {
+        await this.sendDirectMessage(chatId, "🎤 I couldn't hear any words in that. Could you try again, or type it?");
+        return;
+      }
+      this.lastActiveChatId = chatId;
+      const caption = ctx.message.caption?.trim();
+      this.emit({
+        id: ctx.message.message_id.toString(),
+        channelId: `telegram:${chatId}`,
+        channelType: 'telegram',
+        senderId: userId.toString(),
+        senderName: ctx.from?.first_name,
+        senderRole: this.isAdminUser(userId) ? 'admin' : 'member',
+        content: caption ? `${caption}\n${said}` : said,
+        timestamp: ctx.message.date * 1000,
+        // voiceNote: a reply can come back as a voice note (/media replies).
+        metadata: { chatId, messageId: ctx.message.message_id, voiceNote: true },
+      });
+    });
+
     bot.on('callback_query:data', (ctx) => this.handleCallbackQuery(ctx));
 
     bot.catch((err) => {
@@ -297,6 +359,11 @@ export class TelegramChannel extends BaseChannel {
       { command: 'memory', description: 'View and manage second brain memory' },
       { command: 'permissions', description: 'Change permission mode (Ask Me / Allow All)' },
       { command: 'models', description: 'List providers or switch AI model' },
+      { command: 'image', description: 'Make an image: /image <what to draw>' },
+      { command: 'media', description: 'Image and speech models, voice replies' },
+      { command: 'say', description: 'Say it as a voice note: /say <text>' },
+      { command: 'video', description: 'Make a short video: /video <the shot>' },
+      { command: 'music', description: 'Make a song: /music <style, mood, lyrics>' },
       { command: 'code', description: 'Programming mode (plan / execute / off)' },
       { command: 'agents', description: 'List and manage sub-agents' },
       { command: 'bots', description: 'Your bots: roster with controls, cost, outputs, stop/start' },
@@ -411,8 +478,18 @@ export class TelegramChannel extends BaseChannel {
       const inputFile = new InputFile(resolved);
 
       try {
-        if (this.isImageFile(ext)) {
+        // Telegram takes photos up to 10 MB as JPEG/PNG/WebP; anything else goes as a file.
+        if (this.isImageFile(ext) && fs.statSync(resolved).size <= 10 * 1024 * 1024) {
           await this.bot.api.sendPhoto(chatId, inputFile, { caption: filename });
+        } else if (ext === '.gif') {
+          await this.bot.api.sendAnimation(chatId, inputFile, { caption: filename });
+        } else if (['.ogg', '.oga', '.opus'].includes(ext)) {
+          // Ogg/Opus plays as a voice note; anything Telegram won't take as one goes as audio.
+          try {
+            await this.bot.api.sendVoice(chatId, inputFile);
+          } catch {
+            await this.bot.api.sendAudio(chatId, new InputFile(resolved), { title: filename });
+          }
         } else if (this.isAudioFile(ext)) {
           await this.bot.api.sendAudio(chatId, inputFile, { title: filename });
         } else if (this.isVideoFile(ext)) {
@@ -1737,7 +1814,7 @@ export class TelegramChannel extends BaseChannel {
   }
 
   private isImageFile(ext: string): boolean {
-    return ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'].includes(ext);
+    return ['.jpg', '.jpeg', '.png', '.webp'].includes(ext);
   }
 
   private isAudioFile(ext: string): boolean {

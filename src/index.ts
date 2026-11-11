@@ -1,4 +1,10 @@
 import { readFileSync, writeFileSync, existsSync, statSync, chmodSync } from 'node:fs';
+import { MediaJobs, setMediaJobs } from './media/jobs.js';
+import { mediaKeySources } from './media/key-sources.js';
+import { SpeechService, setSpeechService } from './media/speech.js';
+import { MediaService } from './media/service.js';
+import { setMediaService } from './media/runtime.js';
+import { outputRoot } from './artifacts/output-dir.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
@@ -2722,6 +2728,65 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     setGitHubToken(process.env.GITHUB_TOKEN);
   }
 
+  // Image generation (ADR-042): image models on the configured providers.
+  const media = new MediaService({
+    sources: () => [
+      ...providers.listAvailable().flatMap((name) => {
+        const p = providers.get(name);
+        return p ? [{ name, baseUrl: p.getBaseUrl(), endpoint: () => p.mediaEndpoint() }] : [];
+      }),
+      // Keys saved for voice (Settings → Voice) make media too: Gemini (images, Omni video, Lyria music), ElevenLabs (music).
+      ...mediaKeySources(),
+    ],
+    currentProvider: () => providers.getDefault()?.name,
+  });
+  setMediaService(media);
+  const mediaOutputDir = () => {
+    // A chat works in its own artifacts folder; the terminal's media go to Images/ there, not into a project.
+    const root = outputRoot(config.artifacts?.outputDir);
+    const cwd = capabilities.getCwd();
+    return cwd.startsWith(root) ? cwd : join(root, 'Images');
+  };
+  const deliverMedia = async (files: string[]): Promise<string> => {
+    const { channelId, channelType } = capabilities.getChannelContext();
+    if (channelType === 'web') return 'It is shown in the app.';
+    if (channelType === 'cli') return 'The terminal shows its path; it is also in Mercury Desktop → Artifacts.';
+    if (channelType === 'internal') return 'Saved.';
+    const channel = channels.get(channelType as Parameters<typeof channels.get>[0]);
+    if (!channel) return 'Saved (this chat can\'t receive files).';
+    for (const file of files) await channel.sendFile(file, channelId);
+    return 'Sent to this chat.';
+  };
+  const speech = new SpeechService(media.sourcesForSpeech());
+  setSpeechService(speech);
+  capabilities.setSpeechGeneration({
+    speech,
+    outputDir: mediaOutputDir,
+    inChatApp: () => !['web', 'cli', 'internal'].includes(capabilities.getChannelContext().channelType),
+    deliver: deliverMedia,
+  });
+  capabilities.setImageGeneration({ media, outputDir: mediaOutputDir, deliver: deliverMedia });
+  // Videos and songs take minutes: background jobs, posted to the chat when ready (phase 3).
+  // `agent` is created below; jobs only finish after it exists.
+  const jobs = new MediaJobs(
+    (job, note) => agentRef.current ? agentRef.current.deliverMediaJob(job, note) : Promise.resolve(),
+    undefined,
+    // The apps hold a placeholder for it until it arrives.
+    (job) => { if (job.chat.channelType === 'web') (channels.get('web') as WebChannel | undefined)?.sendMediaPending(job, job.chat.channelId); },
+  );
+  setMediaJobs(jobs);
+  const agentRef: { current: Agent | null } = { current: null };
+  capabilities.setMediaJobs({
+    media,
+    jobs,
+    outputDir: mediaOutputDir,
+    chat: () => {
+      const { channelId, channelType } = capabilities.getChannelContext();
+      const sessionId = agentRef.current?.currentChatKey();
+      return { channelType, channelId, ...(channelType === 'web' && sessionId ? { sessionId } : {}) };
+    },
+  });
+
   capabilities.registerAll();
 
   const mcpConfig = validateMcpConfig(config.mcp);
@@ -2739,7 +2804,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     void mcpManager.connectAll();
   }
 
-  const agent = new Agent(
+  const agent = agentRef.current = new Agent(
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler, sessions,
     async ({ userMessage, assistantMessage, providerName }) => {
       const provider = providers.get(providerName) ?? providers.getDefault();
@@ -2748,6 +2813,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     },
   );
 
+  // Videos or songs cut off by the last restart: tell their chats (once the channels are up).
+  // Only the process that runs them: a terminal attached to the daemon must not touch the daemon's jobs.
+  if (!daemonOwnsRuntime) setTimeout(() => { void jobs.recover().catch(() => {}); }, 10_000).unref?.();
   agent.setSkillLoader(skillLoader);
   agent.terminalOnly = daemonOwnsRuntime;
 
@@ -3572,6 +3640,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       channelType: t.channelType, channelId: t.channelId, startedAt: t.startedAt, activity: t.activity, steps: t.completedSteps,
     })),
     waiting: () => agent.waitingChats(),
+    live: (id) => agent.liveTurn(id),
     limit: () => ({ limit: agent.governor.limit(), configured: config.concurrency?.maxTurns ?? 0, auto: autoTurnLimit(machineFacts()) }),
     setLimit: (configured) => {
       config.concurrency = { ...(config.concurrency ?? {}), maxTurns: configured };

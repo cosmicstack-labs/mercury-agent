@@ -13,6 +13,24 @@ function safeJson(value: unknown): string {
   try { return JSON.stringify(value) ?? ''; } catch { return String(value); }
 }
 
+/**
+ * What a media tool is making, so a screen can hold a placeholder of the
+ * right shape while it works (ADR-042): kind, aspect, how many, the prompt.
+ */
+function mediaShape(toolName: string, args: Record<string, unknown>): { media?: Record<string, unknown> } {
+  const kind = toolName === 'generate_image' ? 'image' : toolName === 'generate_speech' ? 'speech' : toolName === 'generate_video' ? 'video' : toolName === 'generate_music' ? 'music' : null;
+  if (!kind) return {};
+  const prompt = typeof args.prompt === 'string' ? args.prompt : typeof args.text === 'string' ? args.text : '';
+  return {
+    media: {
+      kind,
+      ...(typeof args.aspect === 'string' ? { aspect: args.aspect } : {}),
+      ...(typeof args.count === 'number' ? { count: Math.min(Math.max(args.count, 1), 4) } : {}),
+      ...(prompt ? { prompt: prompt.slice(0, 200) } : {}),
+    },
+  };
+}
+
 /** "Read src/x.ts", "Run npm test": the tool's label without its icon. */
 function toolTitle(toolName: string, args: Record<string, unknown>): string {
   return formatToolStep(toolName, args).replace(/^[^\p{L}\p{N}]+/u, '').trim() || toolName;
@@ -32,7 +50,7 @@ interface PendingInteraction {
 }
 
 export interface ChatEvent {
-  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'progress' | 'phase' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'queue_dropped' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
+  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'progress' | 'phase' | 'media_ready' | 'media_pending' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'queue_dropped' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
   data?: Record<string, unknown>;
 }
 
@@ -406,6 +424,7 @@ export class WebChannel extends BaseChannel {
   }
 
   async send(content: string, targetId?: string, elapsedMs?: number, usage?: Record<string, unknown>): Promise<void> {
+    if (targetId) this.liveText.delete(targetId);
     const delivered = this.broadcast({
       type: 'text_done',
       data: { fullText: content, elapsedMs, targetId, ...(usage ? { usage } : {}) },
@@ -417,11 +436,26 @@ export class WebChannel extends BaseChannel {
     // Not needed for web — files are referenced in text
   }
 
+  /** The reply text streamed so far per chat, for a screen that comes back mid-turn. */
+  private liveText = new Map<string, string>();
+
+  clearLiveText(targetId: string): void {
+    this.liveText.delete(targetId);
+  }
+
+  /** What this chat's running reply has written so far ('' when none). */
+  liveTextFor(targetId: string): string {
+    return this.liveText.get(targetId) ?? '';
+  }
+
   async stream(content: AsyncIterable<string>, targetId?: string): Promise<string> {
     let fullText = '';
+    // A later round of the same turn writes on after the earlier text.
+    const before = targetId ? this.liveText.get(targetId) ?? '' : '';
     for await (const chunk of content) {
       fullText += chunk;
       if (!chunk) continue;
+      if (targetId) this.liveText.set(targetId, before + fullText);
       this.broadcast({
         type: 'text_delta',
         data: { text: chunk, targetId },
@@ -511,7 +545,7 @@ export class WebChannel extends BaseChannel {
       : toolName;
     this.broadcast({
       type: 'step_start',
-      data: { id, step, tool: toolName, label: String(label), title: toolTitle(toolName, args), targetId },
+      data: { id, step, tool: toolName, label: String(label), title: toolTitle(toolName, args), ...mediaShape(toolName, args), targetId },
     });
   }
 
@@ -586,6 +620,20 @@ export class WebChannel extends BaseChannel {
     this.broadcast({ type: 'plan', data: { steps: plan.steps, updatedAt: plan.updatedAt, targetId } });
   }
 
+  /**
+   * A video or song made in the background is ready (or failed), after its
+   * turn ended: a message of its own, so a turn running in the chat now is
+   * left alone.
+   */
+  sendMediaReady(text: string, artifacts: unknown[], targetId?: string, jobId?: string): void {
+    this.broadcast({ type: 'media_ready', data: { text, artifacts, targetId, ...(jobId ? { jobId } : {}) } });
+  }
+
+  /** A video or song started in the background: a screen holds a placeholder for it until media_ready. */
+  sendMediaPending(job: { id: string; kind: string; prompt: string; createdAt: number; aspect?: string }, targetId: string): void {
+    this.broadcast({ type: 'media_pending', data: { jobId: job.id, kind: job.kind, prompt: job.prompt.slice(0, 200), startedAt: job.createdAt, ...(job.aspect ? { aspect: job.aspect } : {}), targetId } });
+  }
+
   /** Artifacts this turn made (images, PDFs, reports…), for the conversation's live view. */
   sendArtifacts(items: unknown[], targetId?: string): void {
     if (!items.length) return;
@@ -645,7 +693,7 @@ export class WebChannel extends BaseChannel {
    * `attachments` are files already on disk (see `web/api/uploads.ts`); them being
    * present is what lets the runtime hand a photo to a vision model instead of a path.
    */
-  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[], scope?: { programming?: string; cwd?: string; thisComputer?: boolean }): void {
+  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[], scope?: { programming?: string; cwd?: string; thisComputer?: boolean; media?: { kind: 'image' | 'video' | 'music'; aspect?: string } }): void {
     if (this.restrictUser) {
       throw new Error('Web user is restricted. Disable restrict mode to continue.');
     }
@@ -670,6 +718,8 @@ export class WebChannel extends BaseChannel {
         ...(scope?.cwd ? { programmingCwd: scope.cwd } : {}),
         // Sent from this computer (Mercury Desktop or an attached terminal here): /server is allowed.
         ...(scope?.thisComputer ? { thisComputer: true } : {}),
+        // The desktop's Image switch: this message asks for an image (media/intent.ts).
+        ...(scope?.media ? { media: scope.media } : {}),
       },
     };
     this.emit(msg);

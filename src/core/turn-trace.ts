@@ -97,6 +97,15 @@ export class TurnTrace {
     return this.items.length;
   }
 
+  /**
+   * The trace so far, without ending anything: running tools stay running,
+   * thinking still streaming stays open. For a screen that comes back to a
+   * chat whose reply is still being worked on.
+   */
+  peek(startedAt: number): StoredTrace {
+    return { startedAt, endedAt: this.now(), items: this.items.map((item) => ({ ...item })) };
+  }
+
   /** The trace to keep with the reply; undefined when the turn neither thought nor ran anything. */
   snapshot(startedAt: number): StoredTrace | undefined {
     this.reasoningEnded();

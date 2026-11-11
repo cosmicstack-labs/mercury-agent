@@ -181,6 +181,17 @@ export interface ThoughtStep {
   endedAt?: number;
   /** How long the tool ran (the runtime's own measure where it sent one). */
   durationMs?: number;
+  /** A media tool: what it is making, for a placeholder of the right shape. */
+  media?: { kind: "image" | "video" | "music" | "speech"; aspect?: string; count?: number; prompt?: string };
+}
+
+/** A video or song being made in the background for this chat (arrives with media_ready). */
+export interface PendingMedia {
+  jobId: string;
+  kind: "video" | "music";
+  aspect?: string;
+  prompt: string;
+  startedAt: number;
 }
 
 /** One entry of a turn's timeline, in the order it happened. */
@@ -235,6 +246,8 @@ export interface ChatEffort {
 }
 
 export interface ModelsResponse {
+  /** Lookups that failed, in words ("Mercury Cloud sign-in expired…"). */
+  notices?: string[];
   current: { name: string; model: string; effort?: ChatEffort } & ModelDescription;
   providers: ({ name: string; model: string; available: boolean; isCurrent?: boolean } & ModelDescription)[];
 }
@@ -541,4 +554,58 @@ export interface TurnsInfo {
   auto: number;
   running: Array<TurnChat & { startedAt: number; activity: string; steps: number }>;
   waiting: Array<TurnChat & { waiting: number; position: number }>;
+}
+
+/* ── Media generation (ADR-042) ── */
+
+export type ImageAspect = "square" | "landscape" | "portrait";
+
+/** The composer's Create menu: this message asks for an image, a video or music. */
+export interface ImageIntent {
+  kind: "image" | "video" | "music";
+  aspect?: ImageAspect;
+}
+
+/** Models of one kind on the configured providers, the default and the automatic pick. */
+export interface MediaKindInfo {
+  models: MediaModelInfo[];
+  default: { ref: string; available: boolean } | null;
+  auto: { ref: string; label: string; group: string } | null;
+}
+
+export interface MediaModelInfo {
+  /** "provider::model" */
+  ref: string;
+  provider: string;
+  model: string;
+  label: string;
+  group: string;
+  canEdit: boolean;
+}
+
+export interface SpeechOptionInfo {
+  /** "openai" | "gemini" | "deepgram" | "elevenlabs", or "provider::model". */
+  id: string;
+  label: string;
+  group: string;
+  voices: string[];
+}
+
+export type VoiceReplies = "off" | "mirror" | "always";
+
+export interface SpeechInfo {
+  options: SpeechOptionInfo[];
+  current: { id: string; label: string; voice: string | null } | null;
+  /** The owner's pick; null follows Settings → Voice. */
+  choice: string | null;
+  voice: string | null;
+  replies: VoiceReplies;
+}
+
+export interface MediaModelsResponse {
+  /** Runtimes before phase 2 send no speech part, before phase 3 no video or music. */
+  speech?: SpeechInfo | null;
+  image: MediaKindInfo;
+  video?: MediaKindInfo;
+  music?: MediaKindInfo;
 }
