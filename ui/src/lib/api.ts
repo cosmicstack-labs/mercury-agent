@@ -686,7 +686,7 @@ export interface ToolStep {
   result?: string;
 }
 
-export type ReasoningLevel = "off" | "low" | "medium" | "high";
+export type ReasoningLevel = "off" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningChoice = ReasoningLevel | "auto";
 
 /** Plain-language view of a model (see src/utils/model-prefs.ts). */

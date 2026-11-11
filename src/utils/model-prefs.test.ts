@@ -88,6 +88,21 @@ describe('reasoning', () => {
     expect(body.reasoning_effort).toBe('none');
   });
 
+  it('asks the Responses API for a reasoning summary where wanted, never with Off', () => {
+    const body: Record<string, unknown> = { input: [] };
+    applyReasoningToBody(body, undefined, { summary: true });
+    expect(body.reasoning).toEqual({ summary: 'auto' });
+    const withLevel: Record<string, unknown> = { input: [], reasoning: { summary: 'detailed' } };
+    applyReasoningToBody(withLevel, 'low', { summary: true });
+    expect(withLevel.reasoning).toEqual({ summary: 'detailed', effort: 'low' });
+    const off: Record<string, unknown> = { input: [] };
+    applyReasoningToBody(off, 'off', { summary: true });
+    expect(off.reasoning).toEqual({ effort: 'none' });
+    const chat: Record<string, unknown> = { messages: [] };
+    applyReasoningToBody(chat, undefined, { summary: true });
+    expect(chat).toEqual({ messages: [] });
+  });
+
   it('leaves the body alone on auto', () => {
     const body: Record<string, unknown> = { messages: [] };
     applyReasoningToBody(body, undefined);

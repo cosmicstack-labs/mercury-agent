@@ -98,6 +98,10 @@ export const CHAT_COMMAND_HELP: ReadonlyArray<readonly [string, string]> = [
   ['/permissions', 'Change permission mode (Ask Me / Allow All)'],
   ['/models', 'List configured providers and their models'],
   ['/models use <provider>', 'Switch the default model (saved across restarts)'],
+  ['/effort', 'Show the thinking effort in this chat and the levels the model takes'],
+  ['/effort <auto|low|medium|high|xhigh|max>', 'Set the thinking effort for this chat only'],
+  ['/effort default', "Go back to the model's default effort in this chat"],
+  ['/effort global <level>', "Change the model's default effort (every chat without its own)"],
   ['/cloud models', 'List Mercury Cloud models for your tier'],
   ['/cloud use <model-id>', 'Switch to a Mercury Cloud model'],
   ['/view', 'Toggle progress view (balanced/detailed)'],
@@ -396,6 +400,7 @@ export function getTelegramHelp(): string {
   lines.push('/update ignore — Silence the offered update notice');
   lines.push('/permissions — Switch Ask Me / Allow All mode');
   lines.push('/models — List providers or switch AI model (saved across restarts)');
+  lines.push('/effort — Show or set how hard the current model thinks');
   lines.push('/cloud models — List Mercury Cloud models and switch');
   lines.push('/stream — Toggle text streaming on/off');
   lines.push("/stop — Stop this chat's task, its agents and waiting messages now (other chats keep going)");
@@ -514,6 +519,7 @@ export function getDiscordHelp(): string {
   lines.push('/update ignore \u2014 Silence the offered update notice');
   lines.push('/permissions \u2014 Switch Ask Me / Allow All mode');
   lines.push('/models \u2014 List providers or switch AI model (saved across restarts)');
+  lines.push('/effort \u2014 Show or set how hard the current model thinks');
   lines.push('/cloud models \u2014 List Mercury Cloud models and switch');
   lines.push('/stop \u2014 Stop the current task and its agents now');
   lines.push('/halt \u2014 Emergency: stop all agents and clear the queue');

@@ -111,7 +111,7 @@ export function useFollowBottom(scroller: RefObject<HTMLDivElement | null>, cont
 /** What the jump pill says while the reader is up the page. */
 export function jumpLabel({ busy, unseen, finished }: { busy: boolean; unseen: number; finished: boolean }): string {
   if (unseen > 0) return `${unseen} new message${unseen === 1 ? "" : "s"}`;
-  if (busy) return "Mercury is writing";
+  if (busy) return "New activity";
   if (finished) return "Reply finished";
   return "Jump to latest";
 }

@@ -5,6 +5,7 @@ import { jumpLabel, useFollowBottom } from "./follow";
 import { cx } from "~/lib/cx";
 import { useConversation, useConversationStore } from "~/app/conversation";
 import { answerPrompt } from "~/app/events";
+import { runningStep } from "~/app/trace";
 import { StateLabel } from "~/components/indicators/StateOrb";
 import { Approval } from "~/components/indicators/Approval";
 import { ThinkingDots } from "~/components/indicators/Thinking";
@@ -41,6 +42,7 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
   const [visible, setVisible] = useState(PAGE);
   const prepend = useRef<{ height: number; top: number } | null>(null);
   const follow = useFollowBottom(scroller, content, activeId);
+  const liveStep = live ? runningStep(live) : undefined;
   const busy = !!streaming || stopping || agent === "thinking" || agent === "working" || agent === "streaming";
 
   // While the reader is up the page: count what arrived, and notice the reply ending.
@@ -80,7 +82,7 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
     <section className="flex min-w-0 flex-1 flex-col">
       <header className="flex h-[52px] shrink-0 items-center gap-2 border-b border-line px-4" data-tauri-drag-region>
         <div className="flex min-w-0 flex-1 items-center gap-3">{header}</div>
-        <StateLabel state={agent} detail={step?.tool ? `${step.tool}${step.total ? ` ${step.current}/${step.total}` : ""}` : undefined} />
+        <StateLabel state={agent} detail={liveStep ? (liveStep.title || liveStep.tool) : step?.tool || undefined} />
       </header>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -107,7 +109,7 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
             )}
             {shown.map((m) => <Message key={m.id} message={m} undoable={m.id === lastYours} />)}
             {(streaming || (live && (agent === "thinking" || agent === "working" || agent === "streaming" || agent === "needs-you"))) && (
-              <StreamingMessage text={streaming} live={live} stopping={stopping} />
+              <StreamingMessage text={streaming} live={live} agent={agent} stopping={stopping} />
             )}
             {waiting && !streaming ? (
               <WaitingNotice threadId={activeId} waiting={waiting} />

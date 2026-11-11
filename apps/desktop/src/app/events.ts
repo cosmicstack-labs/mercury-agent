@@ -14,6 +14,7 @@ import { useBots, useChat, useRuntimeState, type AgentState } from "./store";
 import { conversations, useCodeSessions, type ConversationStore, type Surface } from "./conversation";
 import type { ArtifactRef } from "~/api/artifacts";
 import { useNotify } from "./notify/store";
+import { addNote, addReasoning, addText, endReasoning, finishTool, finishTrace, hasProcess, markStopped, newTrace, normalizeMessages, setPhase, startTool } from "./trace";
 
 export function useRuntimeEvents(enabled: boolean): void {
   const chatId = conversations.chat((s) => s.activeId);
@@ -100,6 +101,9 @@ function safeJson<T>(raw: string): T | null {
   }
 }
 
+/** When each surface's last reply landed: a late "thinking" right after it is not a new turn. */
+const lastReplyAt = new WeakMap<ConversationStore, number>();
+
 /** Artifacts that arrived before their reply did: attached when it lands. */
 const pendingArtifacts = new WeakMap<ConversationStore, ArtifactRef[]>();
 
@@ -143,7 +147,8 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
   switch (event) {
     case "connected":
     case "provider":
-      useRuntimeState.getState().setProvider(String(data.provider ?? ""), String(data.model ?? ""));
+      // `connected` names it `provider`; older `provider` events only `name`.
+      useRuntimeState.getState().setProvider(String(data.provider ?? data.name ?? ""), String(data.model ?? ""));
       break;
     case "status":
       // The runtime's live status: a permission change made anywhere (a toggle here, /permissions
@@ -165,10 +170,26 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       conv.setNotice({ message: `Stopped before it started: ${n === 1 ? "your waiting message wasn't sent" : `${n} waiting messages weren't sent`}.`, level: "info", at: Date.now() });
       break;
     }
-    case "thinking":
+    case "thinking": {
+      // Sent every few seconds while a turn makes progress (it keeps a
+      // Telegram typing dot alive). It starts a turn on screen only when none
+      // is showing, and never turns "Working"/"Answering" back to "Thinking".
       conv.setWaiting(null);
-      conv.setAgent("thinking");
+      const quiet = conv.agent === "idle" || conv.agent === "offline";
+      if (quiet && !conv.live && Date.now() - (lastReplyAt.get(store) ?? 0) < 2500) break;
+      if (quiet) conv.setAgent("thinking");
       conv.setLive((l) => l);
+      break;
+    }
+    case "phase":
+      if (typeof data.phase === "string" && data.phase) {
+        const label = typeof data.detail === "string" && data.detail && !/^(stall|step budget|verification gate|execute guard|completion contract)$/i.test(data.detail) ? `${data.phase} · ${data.detail}` : data.phase;
+        if (conv.live || conv.agent !== "idle") conv.setLive((l) => setPhase(l, label));
+      }
+      break;
+    case "progress":
+      // "Checking my work…": a note inside the running turn, not its reply.
+      if (typeof data.text === "string" && data.text.trim()) conv.setLive((l) => addNote(l, data.text as string));
       break;
     case "research":
       onResearch(store, data);
@@ -201,15 +222,21 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
     }
     case "reasoning":
       conv.setWaiting(null);
-      if (data.done === true) break;
-      if (typeof data.text === "string" && data.text) conv.setLive((l) => ({ ...l, reasoning: (l.reasoning + data.text).slice(-20_000) }));
+      if (data.done === true) { if (conv.live) conv.setLive((l) => endReasoning(l)); break; }
+      if (typeof data.text === "string" && data.text) conv.setLive((l) => addReasoning(l, data.text as string));
       break;
     case "step_start": {
       conv.setWaiting(null);
       const tool = String(data.tool ?? "");
       conv.setStep({ total: Number(data.totalSteps ?? 0), current: Number(data.step ?? data.stepNumber ?? 0), tool });
       conv.setAgent("working");
-      conv.setLive((l) => ({ ...l, steps: [...l.steps, { id: Number(data.step ?? l.steps.length + 1), tool, label: String(data.label ?? tool), status: "running" as const, startedAt: Date.now() }].slice(-100) }));
+      conv.setLive((l) => startTool(l, {
+        key: typeof data.id === "string" ? data.id : undefined,
+        tool,
+        title: typeof data.title === "string" ? data.title : undefined,
+        label: String(data.label ?? tool),
+        step: Number(data.step) || undefined,
+      }));
       break;
     }
     case "step_done": {
@@ -219,19 +246,20 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       const failed = stepFailed(data, summary);
       const shown = failed && typeof data.reason === "string" && data.reason ? data.reason : summary;
       conv.setStep({ total: Number(data.totalSteps ?? 0), current: Number(data.stepNumber ?? 0), tool });
-      conv.setLive((l) => {
-        const steps = [...l.steps];
-        for (let i = steps.length - 1; i >= 0; i--) {
-          if (steps[i].status === "running" && steps[i].tool === tool) { steps[i] = { ...steps[i], status: failed ? "error" : "done", summary: shown, endedAt: Date.now() }; break; }
-        }
-        return { ...l, steps };
-      });
+      conv.setLive((l) => finishTool(l, {
+        key: typeof data.id === "string" ? data.id : undefined,
+        tool,
+        failed,
+        summary: shown,
+        durationMs: typeof data.durationMs === "number" ? data.durationMs : undefined,
+      }));
       break;
     }
     case "text_delta":
       conv.setWaiting(null);
       conv.setAgent("streaming");
       conv.appendStreaming(String(data.text ?? ""));
+      conv.setLive((l) => addText(l, String(data.text ?? "")));
       break;
     case "text_done": {
       conv.setWaiting(null);
@@ -240,7 +268,8 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       // The runtime's reply to a stop is its "⏹ Task stopped" note: end the turn as stopped.
       if (isStopNote(text) || (store.getState().stopping && !text.trim())) { finishStopped(store); void refreshThreads(); break; }
       const live = store.getState().live;
-      const trace = live && (live.reasoning || live.steps.length) ? { ...live, endedAt: Date.now(), steps: live.steps.map((st) => st.status === "running" ? { ...st, status: "done" as const, endedAt: Date.now() } : st) } : undefined;
+      const trace = hasProcess(live) ? finishTrace(live) : undefined;
+      lastReplyAt.set(store, Date.now());
       conv.clearStreaming();
       conv.clearLive();
       const artifacts = pendingArtifacts.get(store);
@@ -413,7 +442,7 @@ export async function openThread(surface: Surface, id: string | null): Promise<v
     .catch(() => { /* older Mercury: no plans */ });
   try {
     const thread = await api.chat.thread(id);
-    store.getState().setMessages(thread.messages ?? []);
+    store.getState().setMessages(normalizeMessages(thread.messages ?? []));
   } catch {
     store.getState().setMessages([]);
   } finally {
@@ -432,7 +461,13 @@ export async function sendMessage(surface: Surface, content: string, attachments
   if (!id) {
     const thread = await api.chat.createThread(surface === "code" ? `Code · ${content.slice(0, 40)}` : undefined);
     id = thread.id;
+    // An effort picked before the chat existed belongs to it.
+    const pendingEffort = store.getState().pendingEffort;
     store.getState().setActive(id);
+    if (pendingEffort) {
+      store.getState().setPendingEffort(undefined);
+      await api.chat.setEffort(id, pendingEffort).catch(() => undefined);
+    }
     store.getState().setMessages([]);
     if (surface === "code") useCodeSessions.getState().upsert({ id, folder: code?.folder ?? null, createdAt: new Date().toISOString() });
   }
@@ -448,7 +483,7 @@ export async function sendMessage(surface: Surface, content: string, attachments
   };
   store.getState().addMessage(optimistic);
   store.getState().setAgent("thinking");
-  store.getState().setLive(() => ({ reasoning: "", steps: [], startedAt: Date.now() }));
+  store.getState().setLive(() => newTrace());
   await api.chat.send(content, id, attachments.map(({ name, data }) => ({ name, data })), code ? { programming: code.mode, cwd: code.folder ?? undefined } : undefined);
   void refreshThreads();
 }
@@ -468,7 +503,7 @@ export async function stopTurn(store: ConversationStore): Promise<void> {
   const s = store.getState();
   if (s.stopping) return;
   s.setStopping(true);
-  if (s.live) s.setLive((l) => ({ ...l, steps: l.steps.map((st) => (st.status === "running" ? { ...st, status: "stopped" as const, endedAt: Date.now() } : st)) }));
+  if (s.live) s.setLive((l) => markStopped(l));
   try {
     await api.chat.stop(s.activeId);
   } catch (err) {
@@ -530,9 +565,7 @@ function finishStopped(store: ConversationStore): void {
   s.setStopping(false);
   // Nothing was running any more (the answer finished first): nothing to mark.
   if (!busy && !partial && !live) return;
-  const trace = live && (live.reasoning || live.steps.length)
-    ? { ...live, stopped: true, endedAt: now, steps: live.steps.map((st) => (st.status === "running" ? { ...st, status: "stopped" as const, endedAt: now } : st)) }
-    : undefined;
+  const trace = hasProcess(live) ? finishTrace(live, { stopped: true }, now) : undefined;
   s.addMessage({ id: crypto.randomUUID(), role: "assistant", content: partial, stopped: true, timestamp: new Date().toISOString(), ...(trace ? { trace } : {}) });
   s.setAgent(s.prompts.length ? "needs-you" : "idle");
 }

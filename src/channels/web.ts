@@ -5,8 +5,18 @@ import { logger } from '../utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import { userFacingAiError } from '../utils/redact.js';
 import { stepFailure, type ResearchSnapshot } from '../core/research-run.js';
+import { formatToolStep } from '../utils/tool-label.js';
 
 type CloudEventHandler = (event: ChatEvent) => boolean;
+
+function safeJson(value: unknown): string {
+  try { return JSON.stringify(value) ?? ''; } catch { return String(value); }
+}
+
+/** "Read src/x.ts", "Run npm test": the tool's label without its icon. */
+function toolTitle(toolName: string, args: Record<string, unknown>): string {
+  return formatToolStep(toolName, args).replace(/^[^\p{L}\p{N}]+/u, '').trim() || toolName;
+}
 
 type PendingInteractionKind = 'permission' | 'continue' | 'mode' | 'choice';
 
@@ -22,7 +32,7 @@ interface PendingInteraction {
 }
 
 export interface ChatEvent {
-  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'queue_dropped' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
+  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'progress' | 'phase' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'queue_dropped' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
   data?: Record<string, unknown>;
 }
 
@@ -488,6 +498,54 @@ export class WebChannel extends BaseChannel {
   }
 
   /**
+   * A tool started running, sent the moment it starts (not when the step
+   * ends), so a screen shows what is running during a long command. `id` is
+   * the tool call id: the matching tool_done carries it.
+   */
+  sendToolStarted(id: string, toolName: string, args: Record<string, unknown>, targetId?: string): void {
+    const channelId = targetId || 'default';
+    const step = (this.stepCounter.get(channelId) || 0) + 1;
+    this.stepCounter.set(channelId, step);
+    const label = Object.keys(args).length > 0
+      ? `${toolName}(${Object.entries(args).slice(0, 3).map(([k, v]) => `${k}=${typeof v === 'string' && v.length > 50 ? v.slice(0, 50) + '...' : v}`).join(', ')})`
+      : toolName;
+    this.broadcast({
+      type: 'step_start',
+      data: { id, step, tool: toolName, label: String(label), title: toolTitle(toolName, args), targetId },
+    });
+  }
+
+  /** The tool with this call id finished (or failed), with how long it ran. */
+  sendToolFinished(id: string, toolName: string, result: unknown, failed: boolean, durationMs: number | undefined, targetId?: string): void {
+    const text = result == null ? '' : typeof result === 'string' ? result : safeJson(result);
+    const summary = text.slice(0, 200);
+    // "HTTP 403 …" and "timed out" come back as text, not errors.
+    const reason = failed ? (stepFailure(toolName, text) ?? (summary.split('\n')[0] || 'failed')) : stepFailure(toolName, text);
+    this.broadcast({
+      type: 'step_done',
+      data: {
+        id, tool: toolName, summary, failed: reason !== null,
+        ...(reason ? { reason } : {}),
+        ...(typeof durationMs === 'number' && Number.isFinite(durationMs) ? { durationMs: Math.max(0, Math.round(durationMs)) } : {}),
+        targetId,
+      },
+    });
+  }
+
+  /** What the turn is doing between tools ("Calling anthropic", "Retrying after a stall"…). */
+  sendPhase(phase: string, detail: string | undefined, targetId?: string): void {
+    this.broadcast({ type: 'phase', data: { phase, ...(detail ? { detail } : {}), targetId } });
+  }
+
+  /**
+   * A note while the turn keeps working ("Checking my work…"). Not a reply:
+   * a screen shows it inside the running turn instead of ending the turn.
+   */
+  sendProgressNote(text: string, targetId?: string): void {
+    this.broadcast({ type: 'progress', data: { text, targetId } });
+  }
+
+  /**
    * The model's reasoning as it streams, for clients that show the thought
    * process live. Deltas are batched (≤ 8 events/s per target); null closes
    * the reasoning block when the answer starts.
@@ -548,7 +606,8 @@ export class WebChannel extends BaseChannel {
   sendProviderInfo(name: string, model: string, targetId?: string): void {
     this.broadcast({
       type: 'provider',
-      data: { name, model, targetId },
+      // `provider` too: screens read the same field as on `connected`.
+      data: { name, provider: name, model, targetId },
     });
   }
 

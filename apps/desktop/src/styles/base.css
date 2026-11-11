@@ -119,4 +119,13 @@ button, input, textarea, a, [role="button"], [data-no-drag] { -webkit-app-region
 .md-alert-caution { --alert: rgb(var(--red)); }
 
 /* ── Live thought process ── */
+/* Text that is "in progress": a soft light passing over it. */
+.shimmer-text {
+  background: linear-gradient(90deg, rgb(var(--ink-3)) 0%, rgb(var(--ink-3)) 40%, rgb(var(--ink)) 50%, rgb(var(--ink-3)) 60%, rgb(var(--ink-3)) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: shimmer-text 2.4s linear infinite;
+}
+@keyframes shimmer-text { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) { .shimmer-text { animation: none; color: rgb(var(--ink-3)); background: none; } }
 .thought-stream { mask-image: linear-gradient(to bottom, transparent 0, #000 18px); -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px); }

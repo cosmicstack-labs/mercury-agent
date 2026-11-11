@@ -35,6 +35,8 @@ import {
   clearSlackAccess,
 } from '../../utils/config.js';
 import { MAX_STEPS } from '../agent.js';
+import { displayModelName, effortFor, effortLabel, setChatEffort, setModelPref, type ReasoningLevel } from '../../utils/model-prefs.js';
+import { discoverReasoningCaps } from '../../providers/reasoning-discovery.js';
 import path from 'node:path';
 import type { ChannelType } from '../../types/channel.js';
 import { createProvider, ProviderRegistry as ProviderRegistryImpl } from '../../providers/registry.js';
@@ -280,9 +282,15 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
       `Slack access: ${getSlackAccessSummary(config)}`,
       `Budget: ${budget.getStatusText()}`,
       saverLine,
+      effortStatusLine(agent),
       `Skills: ${ctx.skillNames().length > 0 ? ctx.skillNames().join(', ') : 'none'}`,
     ];
     await channel.send(lines.join('\n'), channelId);
+    return true;
+  }
+
+  if (cmd === '/effort' || cmd.startsWith('/effort ')) {
+    await channel.send(await effortCommand(agent, trimmed.slice('/effort'.length).trim().toLowerCase()), channelId);
     return true;
   }
 
@@ -1790,3 +1798,73 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
 
   return false;
 }
+
+/**
+ * /effort (issue #188): how hard the current model thinks in this chat.
+ *   /effort                 what applies here, and the levels this model takes
+ *   /effort <level>         this chat only
+ *   /effort default         this chat back to the model's default
+ *   /effort global <level>  the model's default (every chat without its own)
+ */
+export async function effortCommand(agent: Agent, arg: string): Promise<string> {
+  const current = agent.providers.getDefault();
+  const provider = current.name;
+  const model = current.getModel();
+  const pc = (agent.config.providers as unknown as Record<string, import('../../utils/config.js').ProviderConfig | undefined>)[provider];
+  // An OpenAI-compatible server may say which models take an effort.
+  if (pc) await discoverReasoningCaps({ ...pc, model }, model).catch(() => undefined);
+  const chatKey = (agent as { currentChatKey?: () => string | undefined }).currentChatKey?.();
+  const name = displayModelName(provider, model);
+  const state = effortFor(provider, model, chatKey);
+  if (!state.levels.length) {
+    return `${name} has no effort setting Mercury can apply — it decides how much to think on its own.`;
+  }
+  const choices = ['auto', ...state.levels];
+  const usage = 'Use `/effort <level>` for this chat, `/effort default` to go back to the model\'s default, `/effort global <level>` to change that default.';
+  const [verb, value] = arg.split(/\s+/, 2);
+
+  if (!arg) {
+    const applied = effortLabel(state.effective ?? 'auto');
+    const why = state.source === 'chat' ? 'set for this chat'
+      : state.source === 'model' ? 'this model\'s default'
+      : 'the model decides';
+    return [
+      `**Effort** · ${name}: **${applied}** (${why})`,
+      `Model default: ${effortLabel(state.modelDefault)}${state.chat ? ` · This chat: ${effortLabel(state.chat)}` : ''}`,
+      ...(state.chatUnsupported ? [`This chat asked for ${effortLabel(state.chat!)}, which ${name} doesn't take, so its default applies.`] : []),
+      `Levels: ${choices.join(' · ')}`,
+      usage,
+    ].join('\n');
+  }
+  if (verb === 'default' || verb === 'reset' || verb === 'clear') {
+    if (chatKey) setChatEffort(chatKey, null);
+    return `This chat now uses ${name}'s default: **${effortLabel(state.modelDefault)}**.`;
+  }
+  if (verb === 'global') {
+    if (!value || !choices.includes(value)) return `\`/effort global <level>\` — ${name} takes: ${choices.join(', ')}.`;
+    setModelPref(provider, model, { reasoning: value === 'auto' ? null : (value as ReasoningLevel) });
+    return `Default effort for ${name}: **${effortLabel(value)}**${state.chat ? ` (this chat keeps its own: ${effortLabel(state.chat)})` : ''}.`;
+  }
+  if (!choices.includes(verb)) return `${name} takes: ${choices.join(', ')}. ${usage}`;
+  if (!chatKey) {
+    setModelPref(provider, model, { reasoning: verb === 'auto' ? null : (verb as ReasoningLevel) });
+    return `Default effort for ${name}: **${effortLabel(verb)}**.`;
+  }
+  setChatEffort(chatKey, verb as ReasoningLevel | 'auto');
+  return `Effort for this chat: **${effortLabel(verb)}** (${name}). Applies from the next message; \`/effort default\` goes back to ${effortLabel(state.modelDefault)}.`;
+}
+
+/** "Effort: High (this chat)" for /status (#188: the effective setting and where it comes from). */
+function effortStatusLine(agent: Agent): string {
+  try {
+    const current = agent.providers.getDefault();
+    const chatKey = (agent as { currentChatKey?: () => string | undefined }).currentChatKey?.();
+    const state = effortFor(current.name, current.getModel(), chatKey);
+    if (!state.levels.length) return 'Effort: not adjustable for this model';
+    const where = state.source === 'chat' ? 'this chat' : state.source === 'model' ? 'model default' : 'model decides';
+    return `Effort: ${effortLabel(state.effective ?? 'auto')} (${where})`;
+  } catch {
+    return 'Effort: —';
+  }
+}
+

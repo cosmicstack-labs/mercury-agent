@@ -168,22 +168,41 @@ export interface ResearchPlanPrompt {
 
 export interface ThoughtStep {
   id: number;
+  /** The tool call id (runtimes that send tool events live); matches its step_done. */
+  key?: string;
   tool: string;
   label: string;
+  /** "Read src/x.ts", "Run npm test": what the step did, in words. */
+  title?: string;
   /** "stopped": cut off by the stop button before it finished. */
   status: "running" | "done" | "error" | "stopped";
   summary?: string;
   startedAt: number;
   endedAt?: number;
+  /** How long the tool ran (the runtime's own measure where it sent one). */
+  durationMs?: number;
 }
+
+/** One entry of a turn's timeline, in the order it happened. */
+export type TraceItem =
+  | { kind: "reasoning"; text: string; startedAt: number; endedAt?: number }
+  | { kind: "step"; key: string }
+  | { kind: "text"; text: string }
+  | { kind: "note"; text: string; at: number };
 
 export interface ThoughtTrace {
   reasoning: string;
   steps: ThoughtStep[];
+  /** The order things happened in (newer runtimes and live turns). */
+  items?: TraceItem[];
   startedAt: number;
   endedAt?: number;
   /** The turn was stopped by you, not finished. */
   stopped?: boolean;
+  /** Live only: what the runtime says it is doing between tools ("Calling anthropic"). */
+  phase?: string;
+  /** Live only: when the runtime last sent anything for this turn. */
+  lastEventAt?: number;
 }
 
 export interface MessageAttachment {
@@ -194,7 +213,7 @@ export interface MessageAttachment {
   src?: string;
 }
 
-export type ReasoningLevel = "off" | "low" | "medium" | "high";
+export type ReasoningLevel = "off" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningChoice = ReasoningLevel | "auto";
 
 export interface ModelDescription {
@@ -206,8 +225,17 @@ export interface ModelDescription {
   reasoningLevels: ReasoningLevel[];
 }
 
+/** The effort a chat's requests carry, and where it comes from (#188). */
+export interface ChatEffort {
+  effective: ReasoningChoice;
+  source: "chat" | "model" | "auto";
+  modelDefault: ReasoningChoice;
+  chat: ReasoningChoice | null;
+  chatUnsupported?: boolean;
+}
+
 export interface ModelsResponse {
-  current: { name: string; model: string } & ModelDescription;
+  current: { name: string; model: string; effort?: ChatEffort } & ModelDescription;
   providers: ({ name: string; model: string; available: boolean; isCurrent?: boolean } & ModelDescription)[];
 }
 

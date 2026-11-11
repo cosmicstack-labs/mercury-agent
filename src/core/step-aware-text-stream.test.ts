@@ -68,4 +68,20 @@ describe('stepAwareTextStream', () => {
     expect(previews.length).toBeGreaterThan(0);
     expect(previews.at(-1)).toBeNull(); // cleared once text starts
   });
+
+  it('every step gets its own thinking block: a tool call or a new step closes it', async () => {
+    const events: Array<string | null> = [];
+    const fullStream = [
+      { type: 'start-step' },
+      { type: 'reasoning-delta', id: 'r1', text: 'plan A' },
+      { type: 'tool-call', toolCallId: 'c1', toolName: 'read_file', input: {} },
+      { type: 'start-step' },
+      { type: 'reasoning-delta', id: 'r2', text: 'plan B' },
+      { type: 'start-step' },
+      { type: 'text-delta', id: 't1', text: 'done' },
+    ];
+    await collect(stepAwareTextStream(fullStream as any, (preview, delta) => events.push(preview === null ? null : delta ?? '')));
+    expect(events).toEqual(['plan A', null, 'plan B', null, null]);
+  });
 });
+

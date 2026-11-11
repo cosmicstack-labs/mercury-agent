@@ -59,6 +59,8 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'chat.running',      // GET /api/chat/running (running + waiting chats, limit), PUT /api/chat/concurrency { maxTurns } — ADR-037; SSE 'queue_dropped' (ADR-038)
   'budget.split',      // GET /api/budget daily.split + daily.cachedWeight, PUT { cachedWeight }; /api/usage split + counted breakdowns — #296
   'chat.usage',        // message.usage on assistant replies; text_done { usage } — what each reply cost
+  'chat.effort',       // POST /api/chat/effort, GET /api/chat/models?sessionId= current.effort — per-chat effort (#188)
+  'chat.trace',        // live step ids/durations, progress/phase events, message.trace on replies (ADR-041)
   'chat.research',     // SSE 'research' / 'research_plan' / 'research_plan_resolved' / 'notice'; GET /api/chat/threads/:id/research, POST …/research/finish, …/research/off, POST /api/chat/research/plan/:id; message.research; step_done { failed, reason }
 ]);
 

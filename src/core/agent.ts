@@ -137,6 +137,8 @@ const NOTE_COOLDOWN_MS = 3 * 60 * 1000;
 import { runReflection } from '../learning/reflection.js';
 import { createOwnerSectionsMemo } from '../learning/owner-brief.js';
 import type { ApplyResult } from '../memory/beliefs.js';
+import { TurnTrace, toolSummary } from './turn-trace.js';
+import { claimEffortChat } from '../utils/model-prefs.js';
 import { TurnUsage, billingEntries, type SourceUsageTotals, type StepUsageLike, type TurnUsageTotals } from './turn-usage.js';
 
 /**
@@ -162,9 +164,19 @@ export function stepAwareTextStream(
       // fired — every step's narration ran into the next as word salad
       // ("…in this project.Found the situation…") in the live tail.
       if (part.type === 'start-step' || part.type === 'step-start') {
+        // A new step's thinking is its own block on screen.
+        if (reasoningBuf) {
+          reasoningBuf = '';
+          onReasoning?.(null);
+        }
         if (!firstStep && sawTextInStep) yield '\n\n';
         firstStep = false;
         sawTextInStep = false;
+        continue;
+      }
+      if ((part.type === 'tool-call' || part.type === 'tool-input-start') && reasoningBuf) {
+        reasoningBuf = '';
+        onReasoning?.(null);
         continue;
       }
       if (part.type === 'reasoning-delta' && part.text) {
@@ -617,6 +629,8 @@ interface TurnState {
   programming: ProgrammingMode | null;
   /** Set once the turn has fully ended (late timers check it). */
   done: boolean;
+  /** What the turn thought and ran, in order: kept with the reply (turn-trace.ts). */
+  readonly trace: TurnTrace;
 }
 
 /** The canonical session a message names, if any. */
@@ -668,6 +682,15 @@ export class Agent {
   /** The calling turn, if the calling code runs inside one. */
   private turn(): TurnState | undefined {
     return this.turnStore.getStore();
+  }
+
+  /**
+   * The chat the calling code runs in (the turn's lane: a desktop thread
+   * id, "cli", or a channel conversation); undefined outside a turn. Keys a
+   * chat's own settings, such as its effort override.
+   */
+  currentChatKey(): string | undefined {
+    return this.turn()?.laneKey;
   }
 
   /** Is any turn running? (Use isLaneBusy / turnForChannel for one chat.) */
@@ -2357,6 +2380,8 @@ export class Agent {
    */
   private pushLiveActivity(phase: string, detail?: string): void {
     this.cliFeed()?.setLiveActivity(phase, detail);
+    const web = this.currentMessage ? this.channels.getChannelForMessage(this.currentMessage) : undefined;
+    if (web instanceof WebChannel) web.sendPhase(phase, detail, this.currentMessage!.channelId);
   }
 
   /**
@@ -2370,6 +2395,40 @@ export class Agent {
     const t = this.turn();
     if (t && t.laneKey !== 'cli' && this.activeTurns.has('cli')) return undefined;
     return ch;
+  }
+
+  /**
+   * A note while the turn keeps working ("Checking my work…"). On the web
+   * channel a plain send is a finished reply, which would end the turn on
+   * screen while work goes on; there it is a progress event instead.
+   */
+  private async sendProgressNote(channel: { send(text: string, targetId?: string): Promise<void> }, text: string, channelId: string): Promise<void> {
+    if (channel instanceof WebChannel) {
+      channel.sendProgressNote(text, channelId);
+      return;
+    }
+    await channel.send(text, channelId);
+  }
+
+  /**
+   * Where a stream's reasoning goes: the terminal's thinking preview, the
+   * desktop's live thought process, and the turn's trace (kept with the
+   * reply). `null` ends the current thinking block.
+   */
+  private reasoningSink(channel: unknown, channelId: string): (preview: string | null, delta?: string) => void {
+    const cli = channel instanceof CLIChannel ? channel : null;
+    const web = channel instanceof WebChannel ? channel : null;
+    const trace = this.turn()?.trace;
+    return (preview, delta) => {
+      cli?.showThinkingPreview(preview);
+      if (preview === null) {
+        trace?.reasoningEnded();
+        web?.sendReasoning(null, channelId);
+        return;
+      }
+      if (delta) trace?.reasoning(delta);
+      web?.sendReasoning(delta ?? '', channelId);
+    };
   }
 
   /**
@@ -2391,6 +2450,17 @@ export class Agent {
       if (typeof current?.toolStarted === 'function') {
         try { current.toolStarted(this.currentMessage.channelId, toolName); } catch { /* best effort */ }
       }
+    }
+    const turn = this.turn();
+    if (status === 'running') turn?.trace.toolStarted(callId, formatToolStep(toolName, (argsOrResult as Record<string, unknown>) || {}));
+    else turn?.trace.toolFinished(callId, status === 'error', durationMs, toolSummary(argsOrResult));
+    // Mercury Desktop and the web dashboard see each tool as it starts and
+    // ends, not only after the whole step.
+    const web = this.currentMessage ? this.channels.getChannelForMessage(this.currentMessage) : undefined;
+    if (web instanceof WebChannel) {
+      const target = this.currentMessage!.channelId;
+      if (status === 'running') web.sendToolStarted(callId, toolName, (argsOrResult as Record<string, unknown>) || {}, target);
+      else web.sendToolFinished(callId, toolName, argsOrResult, status === 'error', durationMs, target);
     }
     const ch = this.cliFeed();
     if (!ch) return;
@@ -2691,6 +2761,7 @@ export class Agent {
       lifecycle: new Lifecycle('idle'),
       programming: null,
       done: false,
+      trace: new TurnTrace(),
     };
     this.activeTurns.set(laneKey, turn);
     logger.info({ turn: turn.id, lane: laneKey, running: this.activeTurns.size, limit: this.governor.limit() }, 'Turn started');
@@ -2700,6 +2771,8 @@ export class Agent {
       // This turn's working directory, tools switch and image switch are its own.
       this.capabilities.claimTurnState(startCwd);
       claimToolImagesForTurn();
+      // Its requests carry this chat's effort override, if it has one (#188).
+      claimEffortChat(laneKey);
       try {
         await this.runQueuedItem(item);
       } finally {
@@ -2873,7 +2946,7 @@ export class Agent {
     });
     const text = (opts.channel
       ? await this.withProviderDeadline(
-        opts.channel.stream(stepAwareTextStream(stream.fullStream), opts.channelId),
+        opts.channel.stream(stepAwareTextStream(stream.fullStream, this.reasoningSink(opts.channel, opts.channelId)), opts.channelId),
         opts.abortController,
         deadlineAt,
       )
@@ -4139,7 +4212,7 @@ export class Agent {
                         // Not yet at check limit — let it continue with a note
                         loopDetector.reset();
                         loopWarningSent = false;
-                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                        await this.sendProgressNote(channel, `☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                       } else {
                         loopWarningSent = true;
                         const shouldContinue = await channel.askToContinue(
@@ -4218,19 +4291,7 @@ export class Agent {
                         }
                       }
                     } else if (channel instanceof WebChannel) {
-                      const webCh = channel as WebChannel;
-                      for (const tc of toolCalls) {
-                        webCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = resultFor(toolCalls, toolResults, i) as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            webCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId);
-                          }
-                        }
-                      }
+                      // Sent live, as each tool starts and ends (pushLiveToolEvent).
                     } else if (channel instanceof DiscordChannel) {
                       const dcCh = channel as DiscordChannel;
                       for (const tc of toolCalls) {
@@ -4275,7 +4336,7 @@ export class Agent {
                     logger.warn('Reasoning loop detected — model keeps thinking without acting, aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send('⚠ I\'m stuck in a reasoning loop (thinking without taking action). Stopping.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await this.sendProgressNote(channel, '⚠ I\'m stuck in a reasoning loop (thinking without taking action). Stopping.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                     }
                     loopAbortController.abort();
                     return;
@@ -4420,13 +4481,9 @@ export class Agent {
 
             const cliChThinking = channel instanceof CLIChannel ? channel : null;
             // Clients that show the thought process live (Mercury Desktop) get the reasoning text.
-            const webChThinking = channel instanceof WebChannel ? channel : null;
-            const reasoningTarget = msg.channelId;
+            const reasoningSink = this.reasoningSink(channel, msg.channelId);
             const trackedStream = this.withProgressStream((async function* () {
-              for await (const chunk of (stepAwareTextStream(streamResult.fullStream, (preview, delta) => {
-                cliChThinking?.showThinkingPreview(preview);
-                if (webChThinking) webChThinking.sendReasoning(preview === null ? null : delta ?? '', reasoningTarget);
-              }))) {
+              for await (const chunk of (stepAwareTextStream(streamResult.fullStream, reasoningSink))) {
                 if (chunk) hasStreamedOutput = true;
                 cliChThinking?.showThinkingPreview(null);
                 yield chunk;
@@ -4520,7 +4577,7 @@ export class Agent {
                   providerDeadlineAt,
                 );
                 const chunk: string[] = [];
-                for await (const c of stepAwareTextStream(continueResult.fullStream)) chunk.push(c);
+                for await (const c of stepAwareTextStream(continueResult.fullStream, this.reasoningSink(channel, msg.channelId))) chunk.push(c);
                 const piece = chunk.join('');
                 const cFinish: string = await continueResult.finishReason;
                 if (cFinish === 'error') throw new Error('Continuation stream ended with an error');
@@ -4870,7 +4927,7 @@ export class Agent {
         const isDuplicateWarning = lastGuardMsg?.role === 'agent'
           && lastGuardMsg.content.startsWith('Getting started on the real build now');
         if (channel && msg.channelType !== 'internal' && !isDuplicateWarning) {
-          await channel.send(
+          await this.sendProgressNote(channel, 
             `Alright — getting started on the real build now (attempt ${executeGuardRounds} of ${MAX_EXECUTE_CONTINUATIONS})...`,
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -4973,7 +5030,7 @@ export class Agent {
           });
           const guardText = channel
             ? await this.withProviderDeadline(
-              channel.stream(stepAwareTextStream(guardStream.fullStream), msg.channelId),
+              channel.stream(stepAwareTextStream(guardStream.fullStream, this.reasoningSink(channel, msg.channelId)), msg.channelId),
               loopAbortController,
               guardDeadlineAt,
             )
@@ -5057,7 +5114,7 @@ export class Agent {
         this.markProgress('Step budget reached — continuing...');
         this.pushLiveActivity('Resuming with a fresh step budget', 'step budget');
         if (channel && msg.channelType !== 'internal') {
-          await channel.send(
+          await this.sendProgressNote(channel, 
             `This one's a bigger build than a single pass — picking up right where I left off...`,
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -5120,7 +5177,7 @@ export class Agent {
         this.markProgress('Verifying changes...');
         this.pushLiveActivity('Verifying the work', 'verification gate');
         if (channel && msg.channelType !== 'internal') {
-          await channel.send(
+          await this.sendProgressNote(channel, 
             'Checking my work before I call it done — running the build/tests now...',
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -5346,6 +5403,8 @@ export class Agent {
             channelId: msg.channelId,
             ...(typeof msg.metadata?.requestId === 'string' ? { requestId: msg.metadata.requestId } : {}),
             ...(billedProvider ? { provider: billedProvider.name, model: billedProvider.model } : {}),
+            // The thought process as shown live, for the reopened chat.
+            ...(() => { const t = this.turn(); const trace = t?.trace.snapshot(t.startedAt); return trace ? { trace } : {}; })(),
             // Per-turn trace, shown by /trace <id>.
             traceId,
             elapsedMs: Date.now() - startTime,
@@ -5421,7 +5480,9 @@ export class Agent {
           forceBanner: isMercuryCodeExecution,
         });
         replyDelivered();
-        this.markProgress();
+        // Progress, without the typing refresh: a "thinking" event after the
+        // reply would make a screen think a new turn started.
+        this.lastProgressAt = Date.now();
       } else {
         replyDelivered();
         logger.debug('Internal prompt processed, no channel response needed');

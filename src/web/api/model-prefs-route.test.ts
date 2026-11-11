@@ -100,3 +100,31 @@ describe('GET /api/chat/models', () => {
     }
   });
 });
+
+describe('POST /api/chat/effort (#188)', () => {
+  const effort = (body: unknown) => chat.request('http://127.0.0.1/api/chat/effort', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+  it("sets one chat's effort, reports it with the model's, and clears it", async () => {
+    const { setCurrentProviderCallback } = await import('./chat.js');
+    const prefs = await import('../../utils/model-prefs.js');
+    prefs.resetChatEffortCache();
+    setCurrentProviderCallback(() => ({ name: 'ollamaLocal', model: 'qwen3.8:27b' }));
+
+    const set = await effort({ sessionId: 'thread-1', level: 'high' });
+    expect(set.status).toBe(200);
+    expect(((await set.json()) as { effort: unknown }).effort).toMatchObject({ effective: 'high', source: 'chat', chat: 'high' });
+
+    const models = await (await chat.request('http://127.0.0.1/api/chat/models?sessionId=thread-1')).json() as { current: { effort: unknown } };
+    expect(models.current.effort).toMatchObject({ effective: 'high', source: 'chat' });
+    const other = await (await chat.request('http://127.0.0.1/api/chat/models?sessionId=thread-2')).json() as { current: { effort: unknown } };
+    expect(other.current.effort).toMatchObject({ source: 'auto', chat: null });
+
+    expect((await effort({ sessionId: 'thread-1', level: 'max' })).status).toBe(400);
+    expect((await effort({ level: 'high' })).status).toBe(400);
+
+    const cleared = await (await effort({ sessionId: 'thread-1', level: null })).json() as { effort: unknown };
+    expect(cleared.effort).toMatchObject({ source: 'auto', chat: null });
+  });
+});

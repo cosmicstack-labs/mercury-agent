@@ -451,3 +451,63 @@
   - Fresh installs carry six general-purpose skills, and nothing reinstalls a skill the owner removed.
   - No default skill can make shell commands prompt-free.
   - A skill gets used when its description fits or when the user names it. Skill authors should write descriptions that say plainly when to use the skill.
+
+## ADR-041: A turn is shown as it happens: live tool events, readable thinking, effort per model
+
+- **Context**:
+  - **Activity was drawn above the answer.** Mercury Desktop rendered a running turn as its thought process (thinking and tool steps), then the streamed text. With the view pinned to the bottom, the activity scrolled off the top as the answer grew.
+  - **Tool events arrived late.** The web channel sent `step_start` and `step_done` back to back from `onStepFinish`, after the step and all its tools had finished. A long command showed nothing, and every duration was about 0s. The real-time `experimental_onToolCallStart`/`Finish` hooks fed only the terminal.
+  - **The status flickered.** The progress path re-sent a typing signal every ~4s for Telegram. On web this was a `thinking` event, and the desktop treated it as "set state to Thinking". A `markProgress()` after the reply could start a phantom turn.
+  - **Progress notes ended the turn on screen.** Mid-turn notes went through `channel.send`, which on web is `text_done`: "Checking my work…", "picking up where I left off", "getting started on the real build", Autopilot notes and the reasoning-loop warning.
+  - **Reasoning never reached the screen:**
+    - Claude 5-era models think by default but return empty thinking blocks unless the request sets `display: "summarized"`, and Mercury sent no thinking options at all.
+    - The AI SDK's OpenAI chat parser ignores the non-standard `reasoning_content` / `reasoning` field used by Ollama, LM Studio, vLLM and LiteLLM.
+    - ChatGPT requests asked for no summary.
+    - Continuation and guard rounds dropped reasoning entirely.
+  - **The effort control was incomplete.** Per-model reasoning levels existed in the API (`model-prefs.ts`) but only for ChatGPT, OpenAI reasoning models and Ollama. The desktop never showed them, and there was no terminal command.
+  - **Prior art agrees.** ChatGPT, Claude, Cursor, Codex, Copilot, Zed and Perplexity show activity inline and in time order inside the current reply. Thinking is open while it streams and collapsed after ("Thought for Ns"). Tool rows carry status and duration. There is never a bare spinner: a step and a timer are always shown. Effort is a pill beside the model picker, hidden where unsupported.
+- **Decision**:
+  - **Tool events are live and paired.**
+    - `pushLiveToolEvent` sends `step_start`/`step_done` to the web channel when each tool starts and ends, in every round (main, continuation, guard, fallback).
+    - Events carry the tool call `id`, a readable `title` (from `formatToolStep`) and the SDK's `durationMs`.
+    - The `onStepFinish` web branch is removed.
+    - `pushLiveActivity` phases go to web as a `phase` event.
+  - **Mid-turn notes are `progress` events on web** (`sendProgressNote`). Other channels still get a message.
+  - **Thinking events cannot regress state.** The desktop treats `thinking` as "a turn is alive": it starts a turn only when none is showing, never downgrades Working/Answering, and ignores one within 2.5s of a reply. The runtime no longer refreshes typing after delivering the reply.
+  - **One reasoning sink.** `reasoningSink()` feeds the terminal preview, the web `reasoning` event and the turn trace from every streaming round. `stepAwareTextStream` closes a thinking block at each step boundary and tool call, so interleaved thinking shows as separate blocks.
+  - **Reasoning on the wire** (`providers/reasoning-wire.ts`):
+    - **Anthropic** goes through a per-call middleware.
+      - Models that think by default (Opus/Sonnet/Haiku 5+, Fable, Mythos) always get `thinking: {type: "adaptive", display: "summarized"}`. Display changes visibility only; the thinking happens and is billed either way.
+      - Opt-in models (Opus/Sonnet 4.6, Opus 4.7/4.8) get adaptive thinking only when the owner picks an effort. Auto leaves their requests unchanged, so no new thinking blocks appear in their tool loops.
+      - The effort goes to `output_config.effort`, limited to the levels the model accepts: 4.6 has no `xhigh`, and pre-4.6 models get nothing.
+    - **Chat Completions** responses (streamed and not) have `reasoning_content`/`reasoning` folded into `<think>` tags by a fetch wrapper. `extractReasoningMiddleware` turns them back into reasoning parts, which also handles models that write `<think>` themselves.
+    - **ChatGPT (Codex backend)** requests ask for `reasoning.summary: "auto"`.
+    - **The OpenAI API is deliberately not changed.** Its summaries need a verified organization, and an unverified one would answer 400.
+  - **The trace is kept.** `TurnTrace` (per turn, bounded to 150 items and 24k characters of thinking) records thinking blocks and tool calls with durations. It is saved as the reply's `metadata.trace` and returned by the threads API. The desktop drops the separate "Used N tools" entry when the reply carries the same calls.
+  - **The desktop draws a timeline** (`app/trace.ts`, `TurnTimeline.tsx`): thinking, tool groups, streamed text and notes in order, newest at the bottom. A status line shows the current activity and the turn's elapsed time. It warns after 20s and again after 120s with no event while no tool is running. A finished reply folds it into "Thought for…" / "Worked for… · N steps". The jump pill says "New activity" while a turn runs.
+  - **Effort is per model**, as before, with levels extended to `xhigh` and `max`. It is shown as a composer pill beside the model picker only when the current model has levels, and set in chat with `/effort [level]`. A per-chat effort was rejected for now: on Anthropic a top-level effort change invalidates the message cache, and a per-model setting keeps it stable.
+- **Consequences**:
+  - Long tool calls are visible while they run, with true durations. A silent model reads as "waiting on the model", not as a frozen screen.
+  - Claude 5 users see thinking summaries at no extra token cost.
+  - Choosing an effort on Claude 4.6–4.8 turns on thinking, and with it thinking-block handling in tool loops. This happens only when chosen.
+  - Older desktops still work: `step_start`/`step_done` keep their fields, and `progress`/`phase` are ignored. Older runtimes still work with the new desktop, which matches steps by tool name when no id is sent.
+  - The web dashboard shows `progress` notes as messages and offers the new levels.
+- **Amendment (issue #188): effort per chat, detected per server.**
+  - **Two layers.** The model's saved level (`model-prefs.json`) is the global default. A chat can override it (`chat-effort.json`, keyed by the turn's lane: a desktop thread id, `cli`, or a channel conversation; at most 1000).
+    - Each turn claims its chat in a turn-scoped value (`claimEffortChat`), so every request it makes reads that chat's override through `effortFor()`, with no plumbing through call sites. That covers Anthropic middleware, the OpenAI-style fetch hook and ChatGPT.
+    - A chat's "auto" sends nothing even when the model has a default.
+    - A chat pick the current model can't take falls back to the model's default and is reported (`chatUnsupported`).
+    - `/effort <level>`, `/effort default` and `/effort global <level>`. `/status` shows the effective level and its source.
+    - `POST /api/chat/effort` and `GET /api/chat/models?sessionId=` (`current.effort`). The desktop picker sets the chat; a pick made before a new chat exists is applied when its thread is created.
+  - **Levels for OpenAI-compatible servers are learned, in order of trust** (`reasoning-caps.ts`, `reasoning-discovery.ts`):
+    1. **A 400 to an effort.** The fetch hook resends the request without the effort and records the model as taking none, for 7 days. A later discovery can't overrule it.
+    2. **What the server says**, cached for a day:
+       - Ollama `/api/show` capabilities. gpt-oss gets low/medium/high; other thinking models get off/high. Non-thinking models get none, which stops the "does not support thinking" errors the old fixed list could cause.
+       - LiteLLM `/model/info` `supports_reasoning`.
+       - OpenRouter `supported_parameters`. Its effort is sent as `reasoning: {effort}`.
+    3. **Known reasoning families by name**: o-series, GPT-5, gpt-oss, Gemini 2.5+, Claude 4.6+ and Grok 3 mini.
+
+    Discovery runs when a screen lists models (the current model, bounded at 2.5s) and on `/effort`.
+  - **Rejected:**
+    - A probe request on every startup (cost, and side effects on metered gateways).
+    - Treating every OpenAI-compatible model as effort-capable (a wrong guess would cost a 400 on the first request of every chat).

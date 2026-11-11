@@ -10,6 +10,8 @@ import { StreamCaret } from "~/components/indicators/Thinking";
 import { ActionResult } from "~/components/indicators/Activity";
 import { Attachments } from "~/components/Attachments";
 import { ThoughtProcess } from "~/components/ThoughtProcess";
+import { LiveStatus, TraceTimeline, useNow } from "~/components/TurnTimeline";
+import type { AgentState } from "~/app/store";
 import { cx } from "~/lib/cx";
 import { isStopNote } from "~/app/events";
 import { UserAvatar, useDisplayName } from "~/components/UserAvatar";
@@ -206,16 +208,24 @@ function ToolActivity({ content }: { content: string }) {
   );
 }
 
-/** The answer being written, with its thought process above it (open while it runs). */
-export function StreamingMessage({ text, live, stopping = false }: { text: string; live: ThoughtTrace | null; stopping?: boolean }) {
+/**
+ * The turn being worked on, as a timeline in the order things happen
+ * (thinking, tools, the answer as it streams, notes), with a status line
+ * at the bottom: what is running now and for how long.
+ */
+export function StreamingMessage({ text, live, agent, stopping = false }: { text: string; live: ThoughtTrace | null; agent: AgentState; stopping?: boolean }) {
+  const now = useNow(true);
+  const trace = live ?? null;
+  // Older runtimes may stream text without a trace of it: show it as written.
+  const textInTrace = !!trace?.items?.some((i) => i.kind === "text");
   return (
     <div className="flex gap-4">
       <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center" aria-hidden="true"><Mark size={22} /></span>
-      <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col gap-2.5">
         <Speaker who="mercury" />
-        {live && <ThoughtProcess trace={live} live={!text} stopping={stopping} />}
-        {stopping && text && <div className="mb-2 text-sm text-ink3">Stopping…</div>}
-        {text && <><Markdown text={text} streaming /><StreamCaret /></>}
+        {trace && <TraceTimeline trace={trace} live now={now} />}
+        {text && !textInTrace && <div className="min-w-0"><Markdown text={text} streaming /><StreamCaret /></div>}
+        {trace && <LiveStatus trace={trace} agent={agent} stopping={stopping} now={now} />}
       </div>
     </div>
   );

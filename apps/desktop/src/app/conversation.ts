@@ -9,6 +9,7 @@ import { createContext, useContext } from "react";
 import { create, type StoreApi, type UseBoundStore } from "zustand";
 import type { ChatMessage, PendingPrompt, ResearchPlanPrompt, ResearchSnapshot, ThoughtTrace } from "~/api/types";
 import type { AgentState } from "./store";
+import { newTrace } from "./trace";
 
 export type Surface = "chat" | "code";
 
@@ -32,6 +33,9 @@ export interface ConversationState {
   waiting: { position: number; busyWith?: string; busySessionId?: string } | null;
   setWaiting(waiting: ConversationState["waiting"]): void;
   setStopping(stopping: boolean): void;
+  /** An effort picked before this chat existed: applied when its thread is created. */
+  pendingEffort?: import("~/api/types").ReasoningChoice;
+  setPendingEffort(level: import("~/api/types").ReasoningChoice | undefined): void;
   /** Text to put in the box (an undone message); the composer takes it once. */
   draft: string | null;
   setDraft(draft: string | null): void;
@@ -83,6 +87,8 @@ function makeConversation(surface: Surface): ConversationStore {
     setStopping: (stopping) => set({ stopping }),
     draft: null,
     setDraft: (draft) => set({ draft }),
+    pendingEffort: undefined,
+    setPendingEffort: (pendingEffort) => set({ pendingEffort }),
     plan: null,
     setPlan: (plan) => set({ plan }),
     research: null,
@@ -91,9 +97,9 @@ function makeConversation(surface: Surface): ConversationStore {
     setResearchPlan: (researchPlan) => set({ researchPlan }),
     notice: null,
     setNotice: (notice) => set({ notice }),
-    setLive: (update) => set((s) => ({ live: update(s.live ?? { reasoning: "", steps: [], startedAt: Date.now() }) })),
+    setLive: (update) => set((s) => ({ live: update(s.live ?? newTrace()) })),
     clearLive: () => set({ live: null }),
-    setActive: (activeId) => set({ activeId, prompts: [], step: null, agent: "idle", live: null, stopping: false, plan: null, research: null, researchPlan: null, notice: null }),
+    setActive: (activeId) => set({ activeId, prompts: [], step: null, agent: "idle", live: null, stopping: false, plan: null, research: null, researchPlan: null, notice: null, pendingEffort: undefined }),
     setMessages: (messages) => set({ messages }),
     addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
     appendStreaming: (text) => set((s) => ({ streaming: s.streaming + text })),

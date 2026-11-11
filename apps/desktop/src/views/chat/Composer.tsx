@@ -1,8 +1,8 @@
-import { ArrowUp, AudioLines, ChevronDown, Paperclip, Shield, ShieldCheck, Square, Telescope, X } from "lucide-react";
+import { ArrowUp, AudioLines, ChevronDown, Gauge, Paperclip, Shield, ShieldCheck, Square, Telescope, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
-import type { ModelsResponse } from "~/api/types";
+import type { ChatEffort, ModelsResponse, ReasoningChoice, ReasoningLevel } from "~/api/types";
 import { usePermissionMode } from "~/app/permission";
 import { useBots, useRuntimeState } from "~/app/store";
 import { CommandPicker } from "./CommandPicker";
@@ -371,11 +371,14 @@ function ModelPicker() {
   const [models, setModels] = useState<ModelsResponse | null>(null);
   const provider = useRuntimeState((s) => s.provider);
   const model = useRuntimeState((s) => s.model);
+  const store = useConversationStore();
+  const threadId = useConversation((s) => s.activeId);
+  const pendingEffort = useConversation((s) => s.pendingEffort);
 
   async function load() {
-    try { setModels(await api.chat.models()); } catch { setModels(null); }
+    try { setModels(await api.chat.models(threadId)); } catch { setModels(null); }
   }
-  useEffect(() => { void load(); }, [provider, model]);
+  useEffect(() => { void load(); }, [provider, model, threadId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const label = models?.current?.label || model || provider || "Model";
   const groups = new Map<string, ModelsResponse["providers"]>();
@@ -385,7 +388,9 @@ function ModelPicker() {
     groups.set(p.group, list);
   }
 
+  const current = models?.current;
   return (
+    <>
     <Menu
       side="top"
       trigger={
@@ -407,6 +412,93 @@ function ModelPicker() {
         </div>
       ))}
       {groups.size === 0 && <MenuItem disabled>No providers configured</MenuItem>}
+    </Menu>
+    {current && current.reasoningLevels?.length > 0 && (
+      <EffortPicker
+        effort={withPending(current.effort ?? fallbackEffort(current.reasoning), pendingEffort)}
+        levels={current.reasoningLevels}
+        modelLabel={current.label}
+        onChat={(level) => {
+          // A new chat has no thread yet: the pick waits for the first message (sendMessage).
+          if (!threadId) { store.getState().setPendingEffort(level ?? undefined); return; }
+          void api.chat.setEffort(threadId, level).catch(() => undefined).then(load);
+        }}
+        onDefault={(level) => {
+          void api.chat.setReasoning(current.name, current.model, level === "auto" ? null : level).catch(() => undefined).then(load);
+        }}
+      />
+    )}
+    </>
+  );
+}
+
+const EFFORT_LABEL: Record<ReasoningChoice, string> = { auto: "Auto", off: "Off", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+const EFFORT_HINT: Partial<Record<ReasoningChoice, string>> = {
+  auto: "the model decides",
+  off: "answer straight away",
+  low: "quick, light thinking",
+  high: "thinks it through",
+  xhigh: "for hard coding and agent work",
+  max: "slowest, most thorough",
+};
+
+/** Older runtimes report only the model's level. */
+function fallbackEffort(reasoning: ReasoningChoice | undefined): ChatEffort {
+  const r = reasoning ?? "auto";
+  return { effective: r, source: r === "auto" ? "auto" : "model", modelDefault: r, chat: null };
+}
+
+/** A pick made before the chat existed shows as this chat's. */
+function withPending(effort: ChatEffort, pending: ReasoningChoice | undefined): ChatEffort {
+  return pending ? { ...effort, chat: pending, effective: pending, source: "chat" } : effort;
+}
+
+/**
+ * How hard the model thinks in this chat (#188). Picks apply to this chat
+ * only; "Default" follows the model's own setting, which the last item
+ * changes for every chat without a pick of its own. Shown only for models
+ * that take an effort.
+ */
+function EffortPicker({ effort, levels, modelLabel, onChat, onDefault }: {
+  effort: ChatEffort;
+  levels: ReasoningLevel[];
+  modelLabel: string;
+  onChat: (level: ReasoningChoice | null) => void;
+  onDefault: (level: ReasoningChoice) => void;
+}) {
+  const choices: ReasoningChoice[] = ["auto", ...levels];
+  const own = effort.source === "chat" && effort.chat !== null;
+  const shown = effort.effective === "auto" ? "Effort" : EFFORT_LABEL[effort.effective];
+  return (
+    <Menu
+      side="top"
+      trigger={
+        <button
+          className={cx("flex h-8 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", effort.effective === "auto" ? "text-ink3" : "text-ink2")}
+          aria-label="Thinking effort"
+          title={`${EFFORT_LABEL[effort.effective]} · ${own ? "this chat" : effort.source === "model" ? `${modelLabel} default` : "the model decides"}`}
+        >
+          <Gauge size={14} />
+          {shown}
+          {own && <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-label="set for this chat" />}
+          <ChevronDown size={12} className="text-ink4" />
+        </button>
+      }
+    >
+      <MenuLabel>Thinking effort · this chat</MenuLabel>
+      <MenuItem selected={!effort.chat} hint={EFFORT_LABEL[effort.modelDefault]} onSelect={() => onChat(null)}>Model default</MenuItem>
+      {choices.map((level) => (
+        <MenuItem key={level} selected={effort.chat === level} hint={EFFORT_HINT[level]} onSelect={() => onChat(level)}>
+          {EFFORT_LABEL[level]}
+        </MenuItem>
+      ))}
+      {effort.chatUnsupported && <MenuItem disabled>This model can't use the chat's pick; its default applies</MenuItem>}
+      {own && effort.chat && effort.chat !== effort.modelDefault && (
+        <>
+          <MenuSeparator />
+          <MenuItem onSelect={() => onDefault(effort.chat!)}>Make {EFFORT_LABEL[effort.chat]} the default for {modelLabel}</MenuItem>
+        </>
+      )}
     </Menu>
   );
 }

@@ -131,3 +131,51 @@ describe('/model on the attached terminal (web channel)', () => {
     expect(switched).not.toHaveBeenCalled();
   });
 });
+
+describe('/effort (#188)', () => {
+  function effortAgent(channel: WebChannel, model: string, chatKey?: string): Agent {
+    return {
+      config: { providers: {} },
+      providers: { getDefault: () => ({ name: 'anthropic', model, getModel: () => model }) },
+      channels: { get: () => channel },
+      currentChatKey: () => chatKey,
+      capabilities: { getChatCommandContext: () => ({ config: () => ({ providers: {} }) }) },
+    } as unknown as Agent;
+  }
+
+  it('sets this chat only, resets to the default, and changes the default with global', async () => {
+    const prefs = await import('../../utils/model-prefs.js');
+    prefs.resetModelPrefsCache();
+    prefs.resetChatEffortCache();
+    const { channel, sent } = sseChannel('sess-1');
+    const agent = effortAgent(channel, 'claude-opus-5-5', 'sess-1');
+    const state = () => prefs.effortFor('anthropic', 'claude-opus-5-5', 'sess-1');
+
+    await handleChatCommand(agent, '/effort', 'web', 'sess-1');
+    expect(sent.at(-1)).toContain('**Auto** (the model decides)');
+    expect(sent.at(-1)).toContain('xhigh');
+
+    await handleChatCommand(agent, '/effort xhigh', 'web', 'sess-1');
+    expect(state()).toMatchObject({ effective: 'xhigh', source: 'chat' });
+    expect(prefs.effortFor('anthropic', 'claude-opus-5-5', 'other-chat').effective).toBeUndefined();
+    expect(sent.at(-1)).toContain('this chat');
+
+    await handleChatCommand(agent, '/effort global medium', 'web', 'sess-1');
+    expect(prefs.effortFor('anthropic', 'claude-opus-5-5', 'other-chat').effective).toBe('medium');
+    expect(state().effective).toBe('xhigh');
+
+    await handleChatCommand(agent, '/effort default', 'web', 'sess-1');
+    expect(state()).toMatchObject({ effective: 'medium', source: 'model' });
+
+    await handleChatCommand(agent, '/effort turbo', 'web', 'sess-1');
+    expect(sent.at(-1)).toContain('takes: auto, low, medium, high, xhigh, max');
+    prefs.resetModelPrefsCache();
+    prefs.resetChatEffortCache();
+  });
+
+  it('says so for a model without an effort setting', async () => {
+    const { channel, sent } = sseChannel('sess-1');
+    await handleChatCommand(effortAgent(channel, 'claude-haiku-4-5', 'sess-1'), '/effort high', 'web', 'sess-1');
+    expect(sent.at(-1)).toContain('has no effort setting');
+  });
+});

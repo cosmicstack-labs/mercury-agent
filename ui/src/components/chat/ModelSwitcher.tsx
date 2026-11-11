@@ -24,7 +24,9 @@ const REASONING_COPY: Record<ReasoningChoice, { title: string; hint: string }> =
   off: { title: "Off", hint: "Fastest: answers without thinking first" },
   low: { title: "Light", hint: "A quick think: good for simple tasks" },
   medium: { title: "Balanced", hint: "A good mix of speed and depth" },
-  high: { title: "Deep", hint: "Thinks hardest: slower, best for tricky work" },
+  high: { title: "Deep", hint: "Thinks it through: slower, best for tricky work" },
+  xhigh: { title: "Extra deep", hint: "For hard coding and long agent work" },
+  max: { title: "Max", hint: "Thinks hardest: slowest and most thorough" },
 };
 
 const keyOf = (p: { name: string; model: string }) => `${p.name}::${p.model}`;

@@ -16,6 +16,10 @@ Type these during a conversation with Mercury. Most work in both CLI and Telegra
 | `/permissions` | Change permission mode (Ask Me / Allow All) |
 | `/models` | List configured models/providers for this session |
 | `/models use <provider>` | Switch the current session model/provider |
+| `/effort` | Show the thinking effort in this chat, where it comes from (this chat or the model's default) and the levels the model takes |
+| `/effort <level>` | Set the effort for this chat only: `auto`, `low`, `medium`, `high`, and `off`/`xhigh`/`max` where the model takes them |
+| `/effort default` | Clear this chat's effort and use the model's default again |
+| `/effort global <level>` | Change the model's default effort, used by every chat without its own (Mercury Desktop: the Effort picker's last item) |
 | `/tools` | List all currently loaded tools |
 | `/mcp` | Show [MCP servers](../integrations/mcp) and whether they are connected |
 | `/mcp tools <server>` | List an MCP server's tools and which ones the agent may use |

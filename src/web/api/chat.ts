@@ -19,9 +19,11 @@ import { basicAuthHeaders } from '../../providers/basic-auth.js';
 import type { SessionRepository } from '../../sessions/index.js';
 import { SessionTitleError } from '../../sessions/repository.js';
 import { loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
+import { discoverReasoningCaps } from '../../providers/reasoning-discovery.js';
 import {
   getModelPref, setModelPref, humanizeModelName, modelGroupLabel,
   reasoningLevelsFor, effectiveReasoning, isReasoningLevel, isValidModelRef, type ReasoningLevel,
+  effortFor, setChatEffort,
 } from '../../utils/model-prefs.js';
 
 let webChannel: WebChannel | null = null;
@@ -83,6 +85,7 @@ function toThread(session: ReturnType<SessionRepository['get']>, includeMessages
       ...(Array.isArray(message.metadata?.artifacts) && message.metadata.artifacts.length ? { artifacts: message.metadata.artifacts } : {}),
       ...(message.metadata?.research && typeof message.metadata.research === 'object' ? { research: message.metadata.research } : {}),
       ...(message.role === 'assistant' ? usageOf(message.metadata) : {}),
+      ...(message.role === 'assistant' && message.metadata?.trace && typeof message.metadata.trace === 'object' ? { trace: message.metadata.trace } : {}),
       ...(Array.isArray(message.metadata?.attachments) && message.metadata.attachments.length > 0
         ? { attachments: (message.metadata.attachments as Array<{ name: string; kind: string; mime?: string; ref: string }>).map((a) => ({ name: a.name, kind: a.kind, mime: a.mime, url: `/api/chat/uploads/${a.ref}` })) }
         : {}),
@@ -554,6 +557,10 @@ chat.get('/api/chat/models', async (c) => {
   const config = loadConfig();
   const active = getActiveProviders(config);
   const current = currentProviderFn ? currentProviderFn() : { name: config.providers.default || '', model: '' };
+  // An OpenAI-compatible server may say which models take an effort: ask
+  // about the current one before answering (bounded; cached for a day).
+  const currentPc = active.find((p) => p.name === current.name);
+  if (currentPc && current.model) await discoverReasoningCaps(currentPc, current.model).catch(() => undefined);
   const entries: ({ name: string; model: string; available: boolean; isCurrent: boolean } & ReturnType<typeof describeModel>)[] = [];
   const perProvider = await Promise.all(active.map((p) => listProviderModels(p)));
   for (const [i, p] of active.entries()) {
@@ -569,7 +576,46 @@ chat.get('/api/chat/models', async (c) => {
       });
     }
   }
-  return c.json({ current: { ...current, ...describeModel(current.name, current.model) }, providers: entries });
+  // The chat's own effort (#188), when the screen says which chat it shows.
+  const sessionId = c.req.query('sessionId');
+  const chatKey = sessionId && isValidModelRef(sessionId) ? sessionId : undefined;
+  const effort = effortFor(current.name, current.model, chatKey);
+  return c.json({
+    current: {
+      ...current,
+      ...describeModel(current.name, current.model),
+      effort: {
+        effective: effort.effective ?? 'auto',
+        source: effort.source,
+        modelDefault: effort.modelDefault,
+        chat: effort.chat ?? null,
+        ...(effort.chatUnsupported ? { chatUnsupported: true } : {}),
+      },
+    },
+    providers: entries,
+  });
+});
+
+/**
+ * One chat's effort override (#188): a level this model takes, "auto" (let
+ * the model decide, whatever the default), or null to use the model's
+ * default again.
+ */
+chat.post('/api/chat/effort', async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+  if (!body || !isValidModelRef(body.sessionId)) return c.json({ error: 'sessionId is required' }, 400);
+  const level = body.level;
+  if (level !== null && level !== undefined && typeof level !== 'string') return c.json({ error: 'level must be a string or null' }, 400);
+  const config = loadConfig();
+  const current = currentProviderFn ? currentProviderFn() : { name: config.providers.default || '', model: '' };
+  if (typeof level === 'string' && level !== 'auto' && level !== 'default') {
+    if (!isReasoningLevel(level) || !reasoningLevelsFor(current.name, current.model).includes(level)) {
+      return c.json({ error: `${humanizeModelName(current.model)} doesn't take the effort '${level}'` }, 400);
+    }
+  }
+  setChatEffort(body.sessionId, level === null || level === undefined || level === 'default' ? null : (level as ReasoningLevel | 'auto'));
+  const effort = effortFor(current.name, current.model, body.sessionId);
+  return c.json({ ok: true, effort: { effective: effort.effective ?? 'auto', source: effort.source, modelDefault: effort.modelDefault, chat: effort.chat ?? null } });
 });
 
 /** Rename a model (label) and/or set its reasoning level. null / '' / 'auto' resets. */

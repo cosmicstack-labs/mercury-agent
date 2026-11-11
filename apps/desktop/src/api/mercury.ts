@@ -4,7 +4,7 @@
    ═══════════════════════════════════════════════════════════════ */
 
 import { http, ApiError } from "./client";
-import type { TurnsInfo } from "./types";
+import type { ChatEffort, TurnsInfo } from "./types";
 import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
   BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
@@ -106,7 +106,9 @@ export const chat = {
   commands: () => http.get<{ commands: CommandEntry[] }>("/api/chat/commands").then((r) => r.commands),
   settings: () => http.get<ChatSettings>("/api/chat/settings"),
   updateSettings: (patch: Partial<ChatSettings>) => http.put<ChatSettings>("/api/chat/settings", patch),
-  models: () => http.get<ModelsResponse>("/api/chat/models"),
+  models: (sessionId?: string | null) => http.get<ModelsResponse>(`/api/chat/models${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`),
+  /** This chat's effort: a level, "auto", or null for the model's default (#188). */
+  setEffort: (sessionId: string, level: ReasoningChoice | null) => http.post<{ ok: boolean; effort: ChatEffort }>("/api/chat/effort", { sessionId, level }),
   switchModel: (provider: string, model?: string) => http.post<{ ok: boolean; message: string }>("/api/chat/models/switch", { provider, model }),
   setReasoning: (provider: string, model: string, reasoning: ReasoningChoice | null) => http.post<{ ok: boolean }>("/api/chat/models/prefs", { provider, model, reasoning }),
 };

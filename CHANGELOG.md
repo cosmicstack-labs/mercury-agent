@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Seeing Mercury work
+- **A reply reads top to bottom as it happens.** In Mercury Desktop the thinking, each tool it runs, the answer and any notes appear in order at the bottom of the chat, where you already are. Before, the activity sat above the answer and scrolled out of view as the answer grew.
+- **Tools show while they run.** Each tool appears when it starts, with a live timer, and gets a tick or an error with the real duration when it ends. Before, a tool appeared only after it had finished, so a long command showed nothing. Failures show their reason, and long runs fold earlier steps away.
+- **A status line under the running reply** always says what's happening ("Running npm test", "Thinking", "Calling anthropic") and how long the reply has taken. If the model sends nothing for 20 seconds it says it's waiting on the model, and after two minutes it suggests stopping and trying again.
+- **No more flicker.** The status no longer flips back to "Thinking" every few seconds. A reply no longer appears to end while Mercury keeps working, and notes like "Checking my work…" stay inside the reply.
+- **Thinking you can read.**
+  - **Claude:** Claude 5 models (Opus, Sonnet and Haiku 5.x, Fable) already think, but showed nothing; Mercury now asks for a readable summary.
+  - **ChatGPT:** ChatGPT sign-in models now send a reasoning summary.
+  - **Other servers:** Ollama, LM Studio, vLLM, LiteLLM and other OpenAI-compatible servers had their thinking dropped. It now shows.
+  - **While and after:** thinking stays open while it streams and folds to "Thought for 12s" when the model moves on. Reopened chats keep their thinking and steps.
+- **Choose how hard the model thinks, per chat** (#188). An Effort picker next to the model in the composer (Auto, Low, Medium, High, plus Off, Extra high and Max where the model takes them) sets the effort for that chat. "Model default" goes back to the model's own setting, which the picker's last item (or `/effort global <level>`) changes for every chat without its own. In the terminal and chat apps: `/effort`, `/effort high`, `/effort default`. `/status` shows the effort in use and where it comes from. On Claude 4.6–4.8, thinking turns on when a level is picked and stays off on Auto, as before.
+- **Effort on OpenAI-compatible servers.**
+  - **Ollama** is asked which models can think, and only those get a picker. gpt-oss gets Low/Medium/High; other thinking models get Off/High.
+  - **LiteLLM** reports each model's `supports_reasoning`.
+  - **OpenRouter** lists each model's supported parameters, and the effort is sent in its own `reasoning` field.
+  - **Other servers** (LM Studio, vLLM, custom endpoints) get a picker for known reasoning models: o-series, GPT-5, gpt-oss, Gemini 2.5+, Claude 4.6+ and Grok 3 mini.
+  - **If a server rejects the effort,** the request is resent without it and Mercury stops sending it to that model, instead of the reply failing.
+
 ### Mercury Desktop
 - **See which chats are working.** A spinner in the sidebar marks a chat Mercury is working on, and a clock marks one waiting for a free slot. The status bar shows how many chats are running (for example 2/4), and clicking it lists them so you can open one.
 - **Choose how many chats run at once** in Settings → AI → Chats at once. Automatic picks a number from your computer's memory. A change applies right away.
