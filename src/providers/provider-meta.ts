@@ -39,6 +39,7 @@ export const PROVIDER_META: Record<ProviderName, ProviderMeta> = {
   ollamaLocal: { label: 'Ollama (this computer)', kind: 'local', blurb: 'Models you run yourself with Ollama. Free and private.', needsKey: false, needsBaseUrl: false },
   lmStudio: { label: 'LM Studio', kind: 'local', blurb: 'Models served by LM Studio on this computer.', needsKey: false, needsBaseUrl: false },
   atomicChat: { label: 'Atomic Chat', kind: 'local', blurb: 'Models served by Atomic Chat on this computer.', needsKey: false, needsBaseUrl: false },
+  bedrock: { label: 'Amazon Bedrock', kind: 'cloud', blurb: 'Claude, Nova, Llama and more in your AWS account. Uses your AWS credentials (profile, SSO or role); no key needed.', needsKey: false, needsBaseUrl: false },
   litellm: { label: 'LiteLLM proxy', kind: 'gateway', blurb: 'Your own LiteLLM gateway in front of any vendors.', needsKey: false, needsBaseUrl: true },
   openaiCompat: { label: 'OpenAI-compatible', kind: 'gateway', blurb: 'Any endpoint that speaks the OpenAI API (OpenRouter, Together, Groq, vLLM…).', needsKey: false, needsBaseUrl: true },
   mimo: { label: 'MiMo (Xiaomi)', kind: 'cloud', blurb: 'Xiaomi MiMo models.', needsKey: true, needsBaseUrl: false, keyHint: 'sk-…' },

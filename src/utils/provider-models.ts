@@ -3,6 +3,7 @@ import type { ProviderConfig, ProviderName } from './config.js';
 import { fetchChatGPTModels } from '../auth/chatgpt-models.js';
 import { fetchGitHubModels } from '../auth/github-models.js';
 import { MERCURY_CLOUD_API_URL } from '../cloud/endpoints.js';
+import { bedrockCredentialProvider, bedrockRegion } from '../providers/bedrock-auth.js';
 import { basicAuthHeaders } from '../providers/basic-auth.js';
 
 export interface ProviderModelCatalog {
@@ -32,6 +33,15 @@ const OPENAI_PREFERRED_MODELS = [
   'gpt-4.1-mini',
   'gpt-oss-120b',
   'gpt-oss-20b',
+] as const;
+
+// Bedrock cross-region inference profile IDs: the `us.` prefix is what lets
+// on-demand use of current Claude models without provisioned throughput.
+const BEDROCK_PREFERRED_MODELS = [
+  'us.anthropic.claude-sonnet-4-6',
+  'us.anthropic.claude-opus-4-6-v1',
+  'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+  'us.amazon.nova-pro-v1:0',
 ] as const;
 
 const ANTHROPIC_PREFERRED_MODELS = [
@@ -156,6 +166,7 @@ export function getPreferredModelsForProvider(provider: ProviderName): string[] 
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
+    bedrock: BEDROCK_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
@@ -283,6 +294,7 @@ function chooseRecommendedModel(
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
+    bedrock: BEDROCK_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
@@ -335,6 +347,7 @@ export function buildModelCatalog(
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
+    bedrock: BEDROCK_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
@@ -442,6 +455,60 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
     .map(({ id }) => id);
 
   return buildModelCatalog(provider, ids, config.model);
+}
+
+interface BedrockInferenceProfiles {
+  inferenceProfileSummaries?: Array<{ inferenceProfileId?: string; status?: string }>;
+}
+
+interface BedrockFoundationModels {
+  modelSummaries?: Array<{ modelId?: string; modelLifecycle?: { status?: string } }>;
+}
+
+/**
+ * List the region's system inference profiles and on-demand text models.
+ * Listing and invoking models require separate IAM permissions.
+ */
+async function fetchBedrockModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
+  const region = bedrockRegion(config);
+  const root = `https://bedrock.${region}.amazonaws.com`;
+  const invalid = `Mercury could not list Bedrock models in ${region}. Check your AWS region, credentials, and IAM permissions for bedrock:ListInferenceProfiles and bedrock:ListFoundationModels.`;
+
+  let request: (url: string) => Promise<RequestInit>;
+  const apiKey = config.apiKey.trim();
+  if (apiKey) {
+    request = async () => ({ headers: { Authorization: `Bearer ${apiKey}` }, redirect: 'error' });
+  } else {
+    let creds;
+    try {
+      creds = await bedrockCredentialProvider(config)();
+    } catch {
+      throw new ProviderModelFetchError('Mercury could not load AWS credentials for Bedrock. For IAM Identity Center, run `aws sso login` for the configured profile.');
+    }
+    const { AwsClient } = await import('aws4fetch');
+    const aws = new AwsClient({ ...creds, region, service: 'bedrock' });
+    request = async (url) => {
+      const signed = await aws.sign(url, { method: 'GET' });
+      return { headers: signed.headers, redirect: 'error' };
+    };
+  }
+
+  const profilesUrl = `${root}/inference-profiles?typeEquals=SYSTEM_DEFINED&maxResults=1000`;
+  const modelsUrl = `${root}/foundation-models?byInferenceType=ON_DEMAND&byOutputModality=TEXT`;
+  const [profiles, models] = await Promise.all([
+    fetchJson<BedrockInferenceProfiles>(profilesUrl, await request(profilesUrl), invalid),
+    fetchJson<BedrockFoundationModels>(modelsUrl, await request(modelsUrl), invalid),
+  ]);
+
+  const ids = [
+    ...(profiles.inferenceProfileSummaries ?? [])
+      .filter((p) => !p.status || p.status === 'ACTIVE')
+      .map((p) => p.inferenceProfileId?.trim() ?? ''),
+    ...(models.modelSummaries ?? [])
+      .filter((m) => !m.modelLifecycle?.status || m.modelLifecycle.status === 'ACTIVE')
+      .map((m) => m.modelId?.trim() ?? ''),
+  ];
+  return buildModelCatalog('bedrock', ids, config.model);
 }
 
 async function fetchAnthropicModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
@@ -639,6 +706,10 @@ async function fetchCatalog(provider: ProviderName, config: ProviderConfig): Pro
 
   if (provider === 'anthropic') {
     return fetchAnthropicModels(config);
+  }
+
+  if (provider === 'bedrock') {
+    return fetchBedrockModels(config);
   }
 
   if (provider === 'grok') {
