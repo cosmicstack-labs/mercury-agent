@@ -420,7 +420,7 @@ function isProviderConfiguredSafe(p: import('../utils/config.js').ProviderConfig
   // here, or disconnecting Cloud reports that no offline provider exists.
   if (p.name === 'openaiCompat' || p.name === 'litellm' || p.name === 'lmStudio')
     return p.baseUrl.length > 0 && p.model.length > 0;
-  if (p.name === 'chatgptWeb' || p.name === 'githubCopilot' || p.name === 'mercuryCloud')
+  if (p.name === 'chatgptWeb' || p.name === 'githubCopilot' || p.name === 'mercuryCloud' || p.name === 'bedrock')
     return p.model.length > 0;
   return p.apiKey.length > 0;
 }
