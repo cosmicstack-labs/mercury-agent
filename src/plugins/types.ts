@@ -79,6 +79,11 @@ const toolDecl = z.object({
   readOnly: z.boolean().default(false),
   /** Per-call timeout; capped by Mercury at 300s. */
   timeoutMs: z.number().int().min(1000).max(300_000).default(60_000),
+  /**
+   * The tool returns screenshots: Mercury passes `mercury_screenshot`
+   * ({ include, max_width, max_height }) sized for the model in use (ADR-043).
+   */
+  screenshots: z.boolean().optional(),
 }).strict();
 
 const commandDecl = z.object({

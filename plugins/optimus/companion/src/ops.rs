@@ -18,9 +18,47 @@ use serde_json::{Value, json};
 use xcap::image::{DynamicImage, RgbaImage, codecs::jpeg::JpegEncoder, imageops::FilterType};
 use xcap::{Monitor, Window};
 
-/// Screenshots fit in this box (what computer-use models are tuned for).
+/// Screenshots fit in this box unless Mercury asks for another
+/// (`mercury_screenshot`, sized for the model in use: ADR-043).
 const MAX_W: u32 = 1280;
 const MAX_H: u32 = 800;
+/// Bounds on a box Mercury asks for.
+const MIN_BOX: u32 = 320;
+const MAX_BOX: u32 = 2560;
+
+/// What Mercury asked for this call: the box to fit screenshots in, and
+/// whether to take one at all (a model that can't see images gets none).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShotRequest {
+    include: bool,
+    max_w: u32,
+    max_h: u32,
+}
+
+impl ShotRequest {
+    fn from_args(args: &Value) -> Self {
+        let r = args.get("mercury_screenshot");
+        let dim = |k: &str, d: u32| {
+            r.and_then(|v| v.get(k)).and_then(Value::as_u64).map(|n| (n as u32).clamp(MIN_BOX, MAX_BOX)).unwrap_or(d)
+        };
+        ShotRequest {
+            include: r.and_then(|v| v.get("include")).and_then(Value::as_bool) != Some(false),
+            max_w: dim("max_width", MAX_W),
+            max_h: dim("max_height", MAX_H),
+        }
+    }
+
+    fn as_json(self) -> Value {
+        json!({ "include": self.include, "max_width": self.max_w, "max_height": self.max_h })
+    }
+}
+
+/// The size a w×h picture has once fitted in the box (never enlarged).
+fn fitted_size(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    let (w, h) = (w.max(1), h.max(1));
+    let scale = (max_w as f64 / w as f64).min(max_h as f64 / h as f64).min(1.0);
+    (((w as f64 * scale).round() as u32).max(1), ((h as f64 * scale).round() as u32).max(1))
+}
 const JPEG_QUALITY: u8 = 80;
 /// The user moving the mouse this far during a batch stops Optimus.
 const TAKEOVER_PX: i32 = 12;
@@ -151,6 +189,21 @@ impl Ops {
             mon.width().map_err(err)?,
             mon.height().map_err(err)?,
         );
+        let req = ShotRequest::from_args(args);
+
+        // A model that can't see images: no capture, but the frame (for
+        // coordinates) and what's in front, in words.
+        if !req.include {
+            let (iw, ih) = fitted_size(w, h, req.max_w, req.max_h);
+            let shot = Shot { monitor: idx, x, y, w, h, img_w: iw, img_h: ih };
+            self.shot = Some(shot);
+            let mut text = format!("Display {} of {count} ({iw}×{ih}); no screenshot taken (this model can't see images).", idx + 1);
+            if let Some(f) = focused_window() {
+                text.push_str(&format!(" Active window: {f}."));
+            }
+            return Ok(json!({ "text": text }));
+        }
+
         let full = {
             let _hidden = crate::overlay::capture_guard();
             mon.capture_image().map_err(|e| capture_error(&e.to_string()))?
@@ -170,7 +223,7 @@ impl Ops {
             let cw = (((n[2] - n[0]) * fx) as u32).clamp(1, full.width().saturating_sub(cx).max(1));
             let ch = (((n[3] - n[1]) * fy) as u32).clamp(1, full.height().saturating_sub(cy).max(1));
             let crop = xcap::image::imageops::crop_imm(&full, cx, cy, cw, ch).to_image();
-            let (img, iw, ih) = fit(crop);
+            let (img, iw, ih) = fit(crop, req.max_w, req.max_h);
             return Ok(json!({
                 "text": format!(
                     "Zoom on [{}, {}, {}, {}] of the last screenshot, shown at {iw}×{ih}. Coordinates for actions still refer to the full screenshot.",
@@ -180,7 +233,7 @@ impl Ops {
             }));
         }
 
-        let (img, iw, ih) = fit(full);
+        let (img, iw, ih) = fit(full, req.max_w, req.max_h);
         let shot = Shot { monitor: idx, x, y, w, h, img_w: iw, img_h: ih };
         self.shot = Some(shot);
         let cursor = self.cursor().and_then(|(cx, cy)| shot.to_image(cx, cy));
@@ -252,13 +305,17 @@ impl Ops {
             text = format!("FAILED: {s} {text}");
         }
         text.push_str(" This only means the input was sent: check the screenshot below to see whether it actually worked before saying so.");
+        let req = ShotRequest::from_args(args);
         if args.get("screenshot").and_then(Value::as_bool) != Some(false) {
             std::thread::sleep(Duration::from_millis(args.get("settle_ms").and_then(Value::as_u64).unwrap_or(500).min(5000)));
-            match self.look(&json!({})) {
+            // The same size (or none) Mercury asked for on this call.
+            match self.look(&json!({ "mercury_screenshot": req.as_json() })) {
                 Ok(v) => {
                     text.push_str("\nScreen now: ");
                     text.push_str(v["text"].as_str().unwrap_or(""));
-                    out["image"] = v["image"].clone();
+                    if !v["image"].is_null() {
+                        out["image"] = v["image"].clone();
+                    }
                 }
                 Err(e) => text.push_str(&format!("\n(No screenshot: {e})")),
             }
@@ -497,10 +554,8 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 /// Shrink to the model's box and encode as JPEG.
-fn fit(img: RgbaImage) -> (Value, u32, u32) {
-    let (w, h) = (img.width().max(1), img.height().max(1));
-    let scale = (MAX_W as f64 / w as f64).min(MAX_H as f64 / h as f64).min(1.0);
-    let (nw, nh) = (((w as f64 * scale).round() as u32).max(1), ((h as f64 * scale).round() as u32).max(1));
+fn fit(img: RgbaImage, max_w: u32, max_h: u32) -> (Value, u32, u32) {
+    let (nw, nh) = fitted_size(img.width(), img.height(), max_w, max_h);
     let rgb = DynamicImage::ImageRgba8(img).resize_exact(nw, nh, FilterType::Triangle).to_rgb8();
     let mut buf = Vec::new();
     let _ = JpegEncoder::new_with_quality(&mut buf, JPEG_QUALITY).encode_image(&DynamicImage::ImageRgb8(rgb));
@@ -828,12 +883,29 @@ mod tests {
 
     #[test]
     fn fit_keeps_aspect() {
-        let (_, w, h) = fit(RgbaImage::new(2880, 1800));
+        let (_, w, h) = fit(RgbaImage::new(2880, 1800), MAX_W, MAX_H);
         assert_eq!((w, h), (1280, 800));
-        let (_, w, h) = fit(RgbaImage::new(3840, 2160));
+        let (_, w, h) = fit(RgbaImage::new(3840, 2160), MAX_W, MAX_H);
         assert_eq!((w, h), (1280, 720));
-        let (_, w, h) = fit(RgbaImage::new(800, 600));
+        let (_, w, h) = fit(RgbaImage::new(800, 600), MAX_W, MAX_H);
         assert_eq!((w, h), (800, 600));
+        // A smaller box from Mercury (a Gemini model): 768×480.
+        let (_, w, h) = fit(RgbaImage::new(2880, 1800), 768, 480);
+        assert_eq!((w, h), (768, 480));
+    }
+
+    #[test]
+    fn shot_request_from_mercury() {
+        // No hint (an older Mercury): the old box, with a screenshot.
+        assert_eq!(ShotRequest::from_args(&json!({})), ShotRequest { include: true, max_w: MAX_W, max_h: MAX_H });
+        let r = ShotRequest::from_args(&json!({ "mercury_screenshot": { "include": true, "max_width": 1024, "max_height": 640 } }));
+        assert_eq!(r, ShotRequest { include: true, max_w: 1024, max_h: 640 });
+        // Bounded either way, and "include: false" means no capture.
+        let r = ShotRequest::from_args(&json!({ "mercury_screenshot": { "include": false, "max_width": 10, "max_height": 99999 } }));
+        assert_eq!(r, ShotRequest { include: false, max_w: MIN_BOX, max_h: MAX_BOX });
+        // What the model saw keeps its aspect: a 2880×1800 display in a 1024×640 box.
+        assert_eq!(fitted_size(2880, 1800, 1024, 640), (1024, 640));
+        assert_eq!(fitted_size(3840, 2160, 1024, 640), (1024, 576));
     }
 }
 

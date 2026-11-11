@@ -115,7 +115,8 @@ import { handleBotsCommand as handleBotsCommandImpl } from './commands/bots-comm
 import { modelSeesImages, withAttachments } from './attachments.js';
 import { attachmentRefs } from '../web/api/uploads.js';
 import { AlertGate } from './alert-gate.js';
-import { setPluginImagesAllowed } from '../plugins/tool-bridge.js';
+import { setToolVision } from '../capabilities/tool-images.js';
+import { visionProfile } from './vision-profile.js';
 import { handleCallCommand } from '../plugins/call-schedule.js';
 import { handlePluginsCommand, tryPluginCommand, hasPluginDialog, answerPluginDialog } from '../plugins/commands.js';
 import { handleChatCommand as handleChatCommandImpl } from './commands/chat-command.js';
@@ -4496,7 +4497,11 @@ export class Agent {
           // get plain text.
           // Photos and PDFs from the chat go to models that can take them.
           const seesImages = modelSeesImages(provider.name, provider.getModel(), provider.seesImages);
-          setPluginImagesAllowed(seesImages && provider.supportsToolResultImages());
+          // How screenshots reach this model, and at what size (ADR-043): inside
+          // tool results, as an image message after them, or not at all.
+          const vision = visionProfile({ model: provider.getModel(), seesImages, toolResultImages: provider.supportsToolResultImages() });
+          setToolVision(vision);
+          logger.debug({ provider: provider.name, model: provider.getModel(), route: vision.route, box: vision.box }, 'Screenshot route for this model');
           const providerMessages = withAttachments(
             deepseekProviderOptions ? withReasoningParts(messages) : messages,
             msg,

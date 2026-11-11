@@ -18,6 +18,7 @@ import {
   attachedImagesNote,
   holdImages,
   resetToolImages,
+  screenshotRequest,
   setToolImagesAllowed,
   toolImagesAllowed,
   toolOutputWithImages,
@@ -35,6 +36,14 @@ export interface LiveTool {
   inputSchema: Record<string, unknown>;
   readOnly: boolean;
   timeoutMs: number;
+  /**
+   * Returns screenshots (manifest `screenshots: true`): each call gets
+   * `mercury_screenshot: { include, max_width, max_height }` — the size the
+   * current model is best served by, or none for a model that can't see
+   * images (ADR-043). The plugin shrinks the capture itself, so coordinates
+   * stay in the picture the model saw.
+   */
+  screenshots?: boolean;
   invoke(args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 
@@ -103,6 +112,24 @@ export function pluginToolAllowed(name: string, allow: readonly string[]): boole
   const m = TOOL_NAME_RE.exec(name);
   if (!m || isMcpToolName(name)) return false;
   return allow.includes(name) || allow.includes(`${m[1]}__*`);
+}
+
+/** The input parameter through which Mercury sizes a plugin's screenshots (ADR-043). */
+export const SCREENSHOT_PARAM = 'mercury_screenshot';
+
+/**
+ * A plugin tool's input schema as the model sees it, and whether the tool
+ * takes screenshots: declared in the manifest (`screenshots: true`) or by a
+ * `mercury_screenshot` parameter in its schema. That parameter is Mercury's
+ * to fill, so the model never sees it.
+ */
+export function screenshotContract(schema: Record<string, unknown>, declared?: boolean): { inputSchema: Record<string, unknown>; screenshots: boolean } {
+  const props = schema.properties as Record<string, unknown> | undefined;
+  const inSchema = !!props && Object.prototype.hasOwnProperty.call(props, SCREENSHOT_PARAM);
+  if (!inSchema) return { inputSchema: schema, screenshots: declared === true };
+  const { [SCREENSHOT_PARAM]: _hidden, ...rest } = props!;
+  const required = Array.isArray(schema.required) ? (schema.required as unknown[]).filter((r) => r !== SCREENSHOT_PARAM) : schema.required;
+  return { inputSchema: { ...schema, properties: rest, ...(required !== undefined ? { required } : {}) }, screenshots: true };
 }
 
 /** Publish a tool; returns its removal. A later registration with the same name replaces it. */
@@ -175,9 +202,11 @@ function wrap(t: LiveTool, permissions: PermissionManager): Tool {
     toModelOutput: ({ toolCallId, output }) =>
       toolOutputWithImages(toolCallId, typeof output === 'string' ? output : stringifyResult(output)),
     execute: async (input, options) => {
-      const args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+      const given = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+      // The model never sets this; Mercury does, for the model in use.
+      const args = t.screenshots ? { ...given, [SCREENSHOT_PARAM]: screenshotRequest() } : given;
       if (!t.readOnly) {
-        const approved = await permissions.approvePluginTool(full, `Run plugin tool ${t.pluginName} → ${t.name} with ${describeArgs(args)}`);
+        const approved = await permissions.approvePluginTool(full, `Run plugin tool ${t.pluginName} → ${t.name} with ${describeArgs(given)}`);
         if (!approved) return `Not run: the plugin tool ${full} was not approved.`;
       }
       const ac = new AbortController();

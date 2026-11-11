@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Optimus: screenshots per model
+- **Cheaper screenshots.** Optimus took every screenshot at 1280×800, whatever the model. Mercury now asks for the size each model is billed least for:
+  - Claude and OpenAI: 1024×640, about 30–35% fewer image tokens.
+  - Gemini: 768×480, about 75% fewer.
+  - Open vision models: 896×560.
+
+  Optimus 0.5.2 follows this, and the model still clicks in the picture it saw. Use `zoom` for a closer look at small text. Set `MERCURY_SCREENSHOT_BOX=1280x800` to keep one size for every model.
+- **Vision models on OpenAI-compatible APIs can see the screen.** Before, a screenshot reached the model only on Claude and the OpenAI API. OpenRouter, LiteLLM, Mercury Cloud, Ollama and LM Studio vision models got no image at all and used Optimus blind. The screenshot now follows the tool result as an image.
+- **Models that can't see images** no longer cause a screenshot to be taken. With Optimus 0.5.2, `look` and `act` say which window is in front instead.
+- Vision models named "…-vl" (`nemotron-…-vl`, `kimi-vl`, InternVL, MiniCPM-V and others) are recognised as seeing images.
+
+### Fixed
+- The device token from `/server token` showed cut off on a terminal. The menu that shows it counted the token as one screen row while the terminal wrapped it over several, so redrawing the menu overwrote part of it. It is now shown whole.
+
 ### Video and music
 - **Mercury makes videos and music.** Ask in your own words, use the desktop chat box's **Create** menu (it replaces the Image button; image, video or music), or type `/video <the shot>` (`--portrait`, `--seconds 6`) or `/music <style, mood, lyrics>` (`--instrumental`, `--seconds 60`).
   - They take a minute or a few. Mercury says it has started and posts the clip or song into the same chat when it's ready, even if you've moved on. The desktop app shows it as a new message with a player, Telegram and WhatsApp receive the file, and the terminal shows where it was saved.

@@ -1,4 +1,5 @@
 import { ScopedValue } from '../utils/turn-scope.js';
+import type { ImageRoute, ScreenshotBox, VisionProfile } from '../core/vision-profile.js';
 
 export interface ToolImage {
   data: string;
@@ -18,20 +19,51 @@ export const MAX_TOOL_IMAGE_CHARS = 8_000_000;
 const MAX_PENDING = 32;
 
 const pendingImages = new Map<string, ToolImage[]>();
-/** Whether the model of the calling turn can see images (per turn once claimed, ADR-037). */
-const imagesAllowed = new ScopedValue(true);
+/**
+ * How the calling turn's model takes images, and the screenshot size it is
+ * best served by (ADR-043; per turn once claimed, ADR-037).
+ */
+const vision = new ScopedValue<Pick<VisionProfile, 'route' | 'box'>>({ route: 'tool-result', box: { width: 1280, height: 800 } });
 
+export function setToolVision(profile: Pick<VisionProfile, 'route' | 'box'>): void {
+  vision.set({ route: profile.route, box: profile.box });
+}
+
+/** Older callers: a yes/no for "the model sees images in tool results". */
 export function setToolImagesAllowed(allowed: boolean): void {
-  imagesAllowed.set(allowed);
+  vision.set({ ...vision.get(), route: allowed ? 'tool-result' : 'none' });
 }
 
 export function toolImagesAllowed(): boolean {
-  return imagesAllowed.get();
+  return vision.get().route !== 'none';
 }
 
-/** Give the calling turn its own "model sees images" switch (no-op outside a turn). */
+export function toolImageRoute(): ImageRoute {
+  return vision.get().route;
+}
+
+/**
+ * What a screenshot-taking tool is asked for (passed as `mercury_screenshot`
+ * to plugin tools that declare `screenshots: true`): the size, and whether
+ * to take one at all.
+ */
+export function screenshotRequest(): { include: boolean; max_width: number; max_height: number } {
+  const { route, box } = vision.get();
+  return { include: route !== 'none', max_width: box.width, max_height: box.height };
+}
+
+export function screenshotBox(): ScreenshotBox {
+  return vision.get().box;
+}
+
+/** Give the calling turn its own image settings (no-op outside a turn). */
 export function claimToolImagesForTurn(): void {
-  imagesAllowed.claim();
+  vision.claim();
+}
+
+/** Images a tool call returned, for showing them after its result (route user-message). */
+export function heldImages(toolCallId: string): ToolImage[] | undefined {
+  return pendingImages.get(toolCallId);
 }
 
 export function usableImages(images: ToolImage[]): ToolImage[] {
@@ -53,8 +85,13 @@ export function attachedImagesNote(count: number): string {
 export function toolOutputWithImages(toolCallId: string, text: string): ToolImageOutput {
   const images = pendingImages.get(toolCallId);
   if (!images?.length) return { type: 'text', value: text };
-  if (!imagesAllowed.get()) {
+  const route = vision.get().route;
+  if (route === 'none') {
     return { type: 'text', value: `${text}\n(The current model can't view images, so the attached image was left out. Say so if it matters.)` };
+  }
+  if (route === 'user-message') {
+    // This API takes images only from the user: the screenshot follows as its own message (payload-policy.ts).
+    return { type: 'text', value: `${text}\n(The screenshot follows as an image.)` };
   }
   return {
     type: 'content',

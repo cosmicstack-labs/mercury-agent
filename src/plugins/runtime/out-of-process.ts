@@ -17,7 +17,8 @@ import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { PLUGIN_API_VERSION, type PluginManifest } from '../types.js';
 import { currentPlatform } from '../store.js';
-import { PLUGIN_IMAGE_TYPES, publishTool, toolContent, unpublishPlugin } from '../tool-bridge.js';
+import { PLUGIN_IMAGE_TYPES, publishTool,
+  screenshotContract, toolContent, unpublishPlugin } from '../tool-bridge.js';
 import type { PluginRuntime, RuntimeDeps } from './types.js';
 import { deviceFeed } from '../device-feed.js';
 
@@ -185,7 +186,7 @@ export class OutOfProcessRuntime implements PluginRuntime {
         pluginName: this.manifest.name,
         name: decl.name,
         description: decl.description,
-        inputSchema: schema,
+        ...screenshotContract(schema, decl.screenshots),
         readOnly: decl.readOnly,
         timeoutMs: decl.timeoutMs,
         invoke: (args, signal) => this.callTool(decl.name, args, signal, decl.timeoutMs),

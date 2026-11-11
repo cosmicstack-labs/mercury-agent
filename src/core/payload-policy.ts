@@ -13,6 +13,9 @@
  *     paying for it again (with the system prompt's marker: 3 of the 4
  *     breakpoints Anthropic allows). Other providers cache identical
  *     prefixes on their own and ignore the marker.
+ *  4. Screenshots for models whose API takes images only from the user
+ *     (ADR-043, route "user-message"): each tool call's images follow its
+ *     results as an image message, under the same keep-the-newest rule.
  */
 
 export const KEEP_IMAGES = 2;
@@ -92,12 +95,67 @@ export function isAnthropicModel(model: unknown): boolean {
   return typeof provider === 'string' && provider.startsWith('anthropic');
 }
 
+/** Marks the image messages added for route "user-message" (so a later step recognises them). */
+export const TOOL_IMAGE_LEAD = '[Screenshot from the tool call above';
+
+interface HeldImage { data: string; mimeType: string }
+
+/**
+ * Route "user-message": after each run of tool messages, the images their
+ * calls returned, as a user message (newest KEEP_IMAGES calls only; older
+ * ones get a one-line note). The conversation the SDK keeps is untouched.
+ */
+function withToolImageMessages(list: Message[], imagesFor: (toolCallId: string) => HeldImage[] | undefined): Message[] {
+  // Which calls have images, oldest first.
+  const calls: string[] = [];
+  for (const m of list) {
+    if (m.role !== 'tool' || !Array.isArray(m.content)) continue;
+    for (const p of m.content as Part[]) {
+      const id = typeof p?.toolCallId === 'string' ? p.toolCallId : undefined;
+      if (p?.type === 'tool-result' && id && imagesFor(id)?.length) calls.push(id);
+    }
+  }
+  if (!calls.length) return list;
+  const keep = new Set(calls.slice(-KEEP_IMAGES));
+  const out: Message[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    out.push(m);
+    if (m.role !== 'tool' || list[i + 1]?.role === 'tool') continue;
+    // The end of a run of tool messages: what its calls showed.
+    const parts: Part[] = [];
+    let noted = false;
+    for (let j = i; j >= 0 && list[j].role === 'tool'; j--) {
+      for (const p of (Array.isArray(list[j].content) ? list[j].content : []) as Part[]) {
+        const id = typeof p?.toolCallId === 'string' ? p.toolCallId : undefined;
+        const images = id ? imagesFor(id) : undefined;
+        if (p?.type !== 'tool-result' || !id || !images?.length) continue;
+        if (keep.has(id)) {
+          parts.unshift(
+            { type: 'text', text: `${TOOL_IMAGE_LEAD} (${String(p.toolName ?? 'tool')})]` },
+            ...images.map((img) => ({ type: 'image', image: img.data, mediaType: img.mimeType })),
+          );
+        } else if (!noted) {
+          parts.unshift({ type: 'text', text: IMAGE_NOTE });
+          noted = true;
+        }
+      }
+    }
+    if (parts.length) out.push({ role: 'user', content: parts });
+  }
+  return out;
+}
+
 /**
  * The messages one step sends. Returns the input array itself when nothing
  * needs to change, so a step without images or oversize results costs nothing.
  */
-export function shapeStepMessages<T>(messages: readonly T[], opts: { anthropicCache?: boolean } = {}): T[] {
-  const list = messages as unknown as Message[];
+export function shapeStepMessages<T>(
+  messages: readonly T[],
+  opts: { anthropicCache?: boolean; toolImages?: { route: 'tool-result' | 'user-message' | 'none'; imagesFor: (toolCallId: string) => HeldImage[] | undefined } } = {},
+): T[] {
+  const original = messages as unknown as Message[];
+  const list = opts.toolImages?.route === 'user-message' ? withToolImageMessages(original, opts.toolImages.imagesFor) : original;
   // Which tool results keep their images: the newest KEEP_IMAGES carrying any.
   const imageResults: Array<[number, number]> = [];
   list.forEach((m, mi) => {
@@ -136,5 +194,6 @@ export function shapeStepMessages<T>(messages: readonly T[], opts: { anthropicCa
       changed = true;
     }
   }
+  // `list` is already a new array when screenshots were added (route user-message).
   return (changed ? shaped : list) as unknown as T[];
 }

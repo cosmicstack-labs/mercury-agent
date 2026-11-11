@@ -601,3 +601,43 @@
   - **Verified live:** ElevenLabs Music (5 s, 4.2 s).
   - **Shapes taken from the current docs, not confirmed live:** the Gemini Omni and Lyria request shapes (the test key is on the free tier, with no quota for them).
   - **Implemented to the OpenAI shape, not exercised live:** the gateway Videos API.
+
+## ADR-043: Screenshots sized and routed per model
+
+- **Context:**
+  - **Optimus captured every screenshot the same way:** JPEG at quality 80, fitted to 1280×800, returned as base64 MCP image content.
+  - **Mercury passed the screenshot on only when the model saw images and its provider took images inside tool results** (Anthropic, OpenAI Responses). Every other vision model got none:
+    - OpenAI-compatible chat: OpenRouter, LiteLLM, Mercury Cloud, Ollama, LM Studio.
+    - The owner's `nemotron-3.5-super-vl`, for example, drove the screen blind.
+  - **Image pricing differs by family,** so one size overpays:
+    - Claude: about w·h/750 tokens.
+    - OpenAI: 85 + 170 per 512-px tile.
+    - Gemini: 258 per 768-px tile.
+    - Qwen-style models: 28-px patches.
+- **Decision:**
+  - **`core/vision-profile.ts` decides, per provider attempt, the route and the box.**
+    - Routes:
+      - `tool-result`: the provider takes images in tool results.
+      - `user-message`: the model sees images, but its API takes them only from the user.
+      - `none`: the model can't see images.
+    - Boxes by family: Claude and OpenAI 1024×640, Gemini 768×480, patch-based vision models 896×560, default 1024×640. `MERCURY_SCREENSHOT_BOX` overrides.
+    - The agent sets both per turn (turn-scoped, ADR-037) through `setToolVision`.
+  - **Size negotiation through the tool contract.**
+    - A plugin tool that takes screenshots declares a `mercury_screenshot` input parameter, or `screenshots: true` in its manifest.
+    - Mercury strips the parameter from the schema the model sees, and fills it on every call: `{ include, max_width, max_height }`.
+    - The plugin resizes the capture itself, so model coordinates map back exactly. Resizing in Mercury would break the mapping.
+    - Negotiating through the schema rather than a new manifest field keeps every mix of versions working. Older Mercury validates manifests strictly and would reject a new field.
+  - **Route `user-message` (payload-policy step 4):**
+    - The tool result says the screenshot follows.
+    - In `prepareStep`, the images held for each call are added as a user message right after that run of tool messages.
+    - Only the newest `KEEP_IMAGES` (2) are kept as images; older ones become the one-line note. The conversation the SDK keeps is untouched.
+    - Verified on the wire with the OpenAI chat converter: `image_url` in the user message after the tool message.
+  - **Route `none`:** Optimus 0.5.2 takes no capture. It sets the coordinate frame from the display size and reports the active window in text.
+  - **Vision detection:** now also recognises `-vl` names and other open vision families.
+- **Consequences:**
+  - **Fewer image tokens on every look/act:** about 35% on Claude, 30% on OpenAI, 75% on Gemini (estimates from the published rules).
+  - **More models can drive the screen:** vision models behind OpenAI-compatible APIs can now use Optimus.
+  - **Version mixes:**
+    - Optimus 0.5.1 with this Mercury: the route improvements apply, at the old size.
+    - Optimus 0.5.2 with an older Mercury: it uses its 1280×800 default.
+  - **Not exercised live:** the Optimus capture path. Its Rust changes are covered by unit tests (box parsing and fitting).

@@ -39,6 +39,8 @@ export function modelSeesImages(provider: string, model: string, declared?: bool
   const m = model.toLowerCase();
   if (provider === 'deepseek') return false;
   if (/gpt-4o|gpt-4\.1|gpt-5|chatgpt-4o|\bo[134](-|$)|claude|gemini|pixtral|llava|qwen.*vl|vision|grok-(2-vision|4)|llama-?4|mistral-(medium|small)-3|gemma-?3/.test(m)) return true;
+  // "-vl" / "_vl" / ":vl" model names (nemotron-…-vl, kimi-vl, glm-4.5v…) and other open vision families.
+  if (/(^|[-_.:/])vl($|[-_.:/])|internvl|minicpm-v|moondream|molmo|glm-4(\.\d)?v\b|ui-tars|holo/.test(m)) return true;
   return false;
 }
 
