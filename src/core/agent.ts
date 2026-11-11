@@ -144,6 +144,8 @@ import { getSpeechService, speakableText, voiceReplyWanted } from '../media/spee
 import { loadMediaPrefs } from '../media/prefs.js';
 import { mediaJobs, type MediaJob } from '../media/jobs.js';
 import { claimEffortChat } from '../utils/model-prefs.js';
+import { claimExposureForTurn } from '../security/provenance.js';
+import { noteMessageExposure } from '../security/message-exposure.js';
 import { TurnUsage, billingEntries, type SourceUsageTotals, type StepUsageLike, type TurnUsageTotals } from './turn-usage.js';
 
 /**
@@ -2860,6 +2862,9 @@ export class Agent {
       claimToolImagesForTurn();
       // Its requests carry this chat's effort override, if it has one (#188).
       claimEffortChat(laneKey);
+      // What untrusted content this turn reads, starting clean (ADR-044).
+      claimExposureForTurn();
+      noteMessageExposure(msg);
       try {
         await this.runQueuedItem(item);
       } finally {

@@ -203,7 +203,7 @@ describe('MCP tools in the registry and filters', () => {
     const registry = new CapabilityRegistry({} as never);
     registry.registerAll();
     registry.attachMcp(fakeMcp);
-    expect(registry.getTools().mcp__fx__echo).toBe(echo);
+    expect(registry.getTools().mcp__fx__echo).toMatchObject({ description: echo.description });
     expect(registry.getToolNames()).toContain('mcp__fx__echo');
     expect(registry.getMcpManager()).toBe(fakeMcp);
   });
@@ -216,7 +216,7 @@ describe('MCP tools in the registry and filters', () => {
     registry.permissions.setCurrentSenderRole('member');
     expect(registry.getTools().mcp__fx__echo).toBeUndefined();
     registry.permissions.setCurrentSenderRole('admin');
-    expect(registry.getTools().mcp__fx__echo).toBe(echo);
+    expect(registry.getTools().mcp__fx__echo).toMatchObject({ description: echo.description });
   });
 
   it('never gives bots MCP tools, even when allow-listed', () => {

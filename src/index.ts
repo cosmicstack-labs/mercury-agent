@@ -2787,6 +2787,17 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     },
   });
 
+  // Mercury's own word to the owner in the current chat (a new schedule, ADR-044): never left to the model.
+  capabilities.setOwnerNotice((text) => {
+    const { channelId, channelType } = capabilities.getChannelContext();
+    const target = channelType === 'internal' ? channels.getNotificationChannel() : channels.get(channelType as Parameters<typeof channels.get>[0]);
+    if (!target) return;
+    if (target instanceof WebChannel) { target.sendProgressNote(text, channelId); return; }
+    const cli = target as unknown as { sendSystemNotice?: (t: string) => void };
+    if (channelType === 'cli' && typeof cli.sendSystemNotice === 'function') { cli.sendSystemNotice(text); return; }
+    void target.send(text, channelType === 'internal' ? undefined : channelId).catch(() => {});
+  });
+
   capabilities.registerAll();
 
   const mcpConfig = validateMcpConfig(config.mcp);

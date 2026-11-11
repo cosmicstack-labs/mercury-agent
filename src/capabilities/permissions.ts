@@ -1,4 +1,5 @@
 import { commandTouchesMercuryCredentials, isMercuryCredentialPath } from '../security/protected-paths.js';
+import { ownerApprovedThisCall } from '../security/call-approval.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, lstatSync } from 'node:fs';
 import { join, resolve, sep, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -642,6 +643,9 @@ export class PermissionManager {
     // Every answer the owner gives is evidence for the Owner Model (autonomy,
     // risk per action type); the learning loop drains it once per turn.
     this.askHandler = async (prompt: string, options?: AskOptions) => {
+      // The owner already said yes to this very call at the injection guard
+      // (ADR-044): the tool's own approval doesn't ask a second time.
+      if (ownerApprovedThisCall()) return 'yes';
       const answer = await (options ? handler(prompt, options) : handler(prompt));
       if (answer === 'yes' || answer === 'no' || answer === 'always') {
         const action = prompt.split('\n')[0].replace(/:.*$/, '').trim().slice(0, 40) || 'action';
@@ -682,6 +686,11 @@ export class PermissionManager {
    */
   /** Plugin tools pre-approved for the current turn only (a scheduled task's allowTools). */
   private turnPluginGrants = new Set<string>();
+
+  /** Did the owner pre-approve this plugin tool for the current turn (a scheduled task's allowTools)? */
+  hasTurnPluginGrant(toolKey: string): boolean {
+    return (this.currentTurn()?.pluginGrants ?? this.turnPluginGrants).has(toolKey);
+  }
 
   setTurnPluginGrants(tools: string[]): void {
     const turn = this.currentTurn();

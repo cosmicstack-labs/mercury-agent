@@ -1,4 +1,5 @@
 import type { MercuryConfig } from '../utils/config.js';
+import { exposure } from '../security/provenance.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
 import type { ShortTermMemory, LongTermMemory, EpisodicMemory } from '../memory/store.js';
@@ -131,6 +132,7 @@ export class SubAgentSupervisor {
       ...config,
       id,
       permissionContext: config.permissionContext ?? this.childPermissionContext(config),
+      exposure: config.exposure ?? exposure(),
     };
     this.parents.set(id, config.parentId);
 

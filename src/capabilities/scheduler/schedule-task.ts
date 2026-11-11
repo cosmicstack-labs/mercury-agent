@@ -7,7 +7,23 @@ import { isPluginToolName } from '../../plugins/tool-bridge.js';
 import type { Scheduler, ScheduledTaskManifest } from '../../core/scheduler.js';
 import type { PermissionManager } from '../permissions.js';
 
-export function createScheduleTaskTool(scheduler: Scheduler, permissions: PermissionManager, getContext: () => { channelId: string; channelType: string }) {
+/**
+ * A scheduled prompt that asks to keep the owner in the dark ("don't tell
+ * the user", "silently") — the shape of an injected schedule (ADR-044).
+ */
+const CONCEALMENT = /\b(do not|don't|dont|never|without)\b[^.\n]{0,20}\b(tell|inform|notify|alert|mention|show|reveal|report|let .{0,10}know)\w*\b[^.\n]{0,25}\b(the )?(user|owner|human|anyone|them)\b|\b(silently|secretly|quietly|covertly|in the background without)\b/i;
+
+export function concealsFromOwner(text: string): boolean {
+  return CONCEALMENT.test(text);
+}
+
+/**
+ * Every new schedule is told to the owner by Mercury itself — not left to
+ * the model's reply, which an injected instruction could keep quiet.
+ */
+export type ScheduleAnnouncer = (text: string) => void;
+
+export function createScheduleTaskTool(scheduler: Scheduler, permissions: PermissionManager, getContext: () => { channelId: string; channelType: string }, announce?: ScheduleAnnouncer) {
   return tool({
     description: 'Schedule a task. Use "cron" for recurring tasks (e.g. "0 9 * * *" for daily at 9am) or "delay_seconds" for one-shot delayed tasks (e.g. 15 for "remind me in 15 seconds"). Provide exactly one of cron or delay_seconds.',
     inputSchema: zodSchema(z.object({
@@ -49,10 +65,17 @@ export function createScheduleTaskTool(scheduler: Scheduler, permissions: Permis
       if (allowTools.length && permissions.getCurrentSenderRole() === 'member') {
         return 'Only the owner can schedule tasks that act without asking (allow_tools).';
       }
+      // The owner approves what will actually run — the prompt — not just the
+      // description the model wrote for it.
+      const what = prompt ? `\nWhen it runs, Mercury is told: "${prompt.length > 1200 ? `${prompt.slice(0, 1200)}…` : prompt}"` : '';
+      const conceals = concealsFromOwner(`${prompt ?? ''} ${description}`);
       const approved = await permissions.requestApproval(
-        `Create scheduled task: ${description}${timezone ? ` (${timezone})` : ''}${missed_run_policy === 'run_once' ? ' (if offline, run once after restart)' : ''}${allowTools.length ? ` (when it runs, it may use ${allowTools.join(', ')} without asking again)` : ''}`,
+        `${conceals ? '⚠ This scheduled task asks to keep things from you. ' : ''}Create scheduled task: ${description}${cronExpr ? ` (cron ${cronExpr})` : ` (in ${delay_seconds}s)`}${timezone ? ` (${timezone})` : ''}${missed_run_policy === 'run_once' ? ' (if offline, run once after restart)' : ''}${skill_name ? ` (skill: ${skill_name})` : ''}${allowTools.length ? ` (when it runs, it may use ${allowTools.join(', ')} without asking again)` : ''}${what}`,
+        // A task that hides itself is asked about even under Allow All.
+        conceals ? { alwaysAsk: true } : undefined,
       );
       if (!approved) return 'Permission denied: scheduled task creation was not approved.';
+      const told = (when: string) => announce?.(`🗓 New scheduled task — ${description} (${when}).${prompt ? `\nIt will run: "${prompt.length > 400 ? `${prompt.slice(0, 400)}…` : prompt}"` : skill_name ? `\nIt will run the skill ${skill_name}.` : ''}\nSee or cancel it with /tasks.`);
 
       const id = `task-${randomUUID()}`;
       const ctx = getContext();
@@ -74,6 +97,7 @@ export function createScheduleTaskTool(scheduler: Scheduler, permissions: Permis
 
         scheduler.addDelayedTask(manifest);
         scheduler.persistSchedules();
+        told(`in ${delay_seconds} second${delay_seconds !== 1 ? 's' : ''}`);
 
         const triggerType = skill_name ? `skill: ${skill_name}` : `prompt: "${prompt!.slice(0, 60)}"`;
         return `Reminder "${id}" set. Will trigger in ${delay_seconds} second${delay_seconds !== 1 ? 's' : ''}. ${triggerType}. Description: ${description}`;
@@ -98,6 +122,7 @@ export function createScheduleTaskTool(scheduler: Scheduler, permissions: Permis
 
       scheduler.addPersistedTask(manifest);
       scheduler.persistSchedules();
+      told(`cron ${cronExpr}${timezone ? `, ${timezone}` : ''}`);
 
       const triggerType = skill_name ? `skill: ${skill_name}` : `prompt: "${prompt!.slice(0, 60)}"`;
       return `Task "${id}" scheduled. Cron: ${cronExpr} (${timezone ?? 'host timezone'}). Will execute ${triggerType}. Description: ${description}`;

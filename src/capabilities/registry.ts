@@ -21,6 +21,7 @@ import { createCreateSkillTool } from './skills/create-skill.js';
 import { createListSkillsTool } from './skills/list-skills.js';
 import { createUseSkillTool } from './skills/use-skill.js';
 import { createScheduleTaskTool } from './scheduler/schedule-task.js';
+import { guardTools } from '../security/tool-guard.js';
 import { createListTasksTool } from './scheduler/list-tasks.js';
 import { createCancelTaskTool } from './scheduler/cancel-task.js';
 import { createBudgetStatusTool } from './system/budget-status.js';
@@ -270,6 +271,13 @@ export class CapabilityRegistry {
     this.mediaJobDeps = deps;
   }
 
+  /** Tells the owner something in the current chat, from Mercury itself (not the model): ADR-044. */
+  private ownerNotice?: (text: string) => void;
+
+  setOwnerNotice(fn: (text: string) => void): void {
+    this.ownerNotice = fn;
+  }
+
   /** Text to speech as a deliverable (ADR-042 phase 2): registers generate_speech. */
   setSpeechGeneration(deps: GenerateSpeechDeps): void {
     this.speechGeneration = deps;
@@ -368,7 +376,7 @@ export class CapabilityRegistry {
     }
 
     if (this.scheduler) {
-      this.tools.schedule_task = createScheduleTaskTool(this.scheduler, this.permissions, () => this.getChannelContext());
+      this.tools.schedule_task = createScheduleTaskTool(this.scheduler, this.permissions, () => this.getChannelContext(), (text) => this.ownerNotice?.(text));
       this.tools.list_scheduled_tasks = createListTasksTool(this.scheduler);
       this.tools.cancel_scheduled_task = createCancelTaskTool(this.scheduler);
       logger.info('Scheduler tools registered');
@@ -440,11 +448,14 @@ export class CapabilityRegistry {
 
   getTools(): Record<string, Tool> {
     if (this.toolsDisabled) return {};
+    // Untrusted content can't steer privileged actions (ADR-044): every tool
+    // set goes through the guard, for the main agent, sub-agents and bots.
+    const guard = (tools: Record<string, Tool>) => guardTools(tools, { permissions: this.permissions, notify: (text) => this.ownerNotice?.(text) });
     // Scheduled calls (when a calling channel plugin is running): owner only.
     if (this.permissions.getCurrentSenderRole() !== 'member' && activeCallScheduler()) {
-      return this.filterSessionTools({ ...this.getToolsInner(), ...callTools() });
+      return guard(this.filterSessionTools({ ...this.getToolsInner(), ...callTools() }));
     }
-    return this.filterSessionTools(this.getToolsInner());
+    return guard(this.filterSessionTools(this.getToolsInner()));
   }
 
   private getToolsInner(): Record<string, Tool> {

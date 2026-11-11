@@ -76,7 +76,8 @@ describe('eval · on-demand tool schemas in the real agent loop', () => {
       caps.permissions.setTurnPluginGrants(['calendar__events']);
       expect(await execute(request.tools.calendar__events, { query: 'today' })).toContain('09:00');
       caps.permissions.setTurnPluginGrants([]);
-      expect(await execute(request.tools.calendar__events, { query: 'today' })).toContain('was not approved');
+      // Refused either by the plugin approval or, once the turn has read the tool's output, by the injection guard (ADR-044).
+      expect(await execute(request.tools.calendar__events, { query: 'today' })).toMatch(/was not approved|no one is here to approve/);
     } finally { await harness.dispose(); }
   });
 

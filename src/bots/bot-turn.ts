@@ -1,4 +1,5 @@
 import { streamText, stepCountIs, tool, zodSchema } from 'ai';
+import { runWithExposure } from '../security/provenance.js';
 import { summarizeSilentTurn } from '../core/silent-turn.js';
 import { z } from 'zod';
 import { withAttachments } from '../core/attachments.js';
@@ -242,7 +243,15 @@ export function turnCaption(prompt: string, files: ChannelAttachment[]): string 
   return `(Attached: ${files.map(f => f.name ?? 'file').join(', ')})`;
 }
 
+/**
+ * One bot turn, with its own record of the untrusted content it reads
+ * (ADR-044): what one bot reads never gates another, or the main agent.
+ */
 export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+  return runWithExposure({ sources: [], suspicious: false }, () => runBotTurnInScope(input));
+}
+
+async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
   const { manifest, provider, capabilities, tokenBudget } = input;
   const maxSteps = manifest.autonomy?.maxSteps ?? MAX_STEPS_DEFAULT;
   const limits = resolveTurnLimits(manifest, input.limits);

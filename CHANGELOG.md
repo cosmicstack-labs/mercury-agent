@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Security: prompt injection
+- **Text Mercury reads can no longer steer what it does.** A report showed a weather page with an HTML comment telling the AI to create a schedule and keep it from the user: big models refused, a small one (on Mercury Free Router) created the cron job. Mercury now enforces this in code, whatever the model:
+  - **Untrusted reads raise the bar, in every mode.** Once a turn has read anything from outside the chat (a file, web page, search result, command output, attachment, GitHub issue, or someone else's message), certain actions need your explicit yes, even under Allow All: creating schedules, writing memory, creating or installing skills, granting permissions, sending messages or files, pushing or opening issues and PRs, and plugin actions that change something. The approval shows what was read and the full action.
+  - **Hidden instructions are found and flagged.** Mercury looks for instructions aimed at an AI in HTML comments, hidden markup, zero-width text and wording like "ignore previous instructions". When it finds some, it tells you in the chat, notes it after the content for the model, and asks before commands, file writes, fetches and delegation too.
+  - **Unattended runs refuse instead of asking.** Scheduled runs and bots can still deliver a scheduled task's results to you.
+  - **Schedules are always visible.** Every new scheduled task is announced by Mercury itself with the prompt it will run, and its approval shows that prompt rather than a short description. A task that asks to keep something from you is always asked about, even under Allow All.
+  - **Delegation doesn't reset it.** Sub-agents inherit what their parent read. Each bot turn keeps its own record.
+- **No cost when nothing outside is read:** turns that read nothing from outside the chat behave exactly as before. The checks are pattern scans, with no extra model calls.
+
 ### Optimus: screenshots per model
 - **Cheaper screenshots.** Optimus took every screenshot at 1280×800, whatever the model. Mercury now asks for the size each model is billed least for:
   - Claude and OpenAI: 1024×640, about 30–35% fewer image tokens.

@@ -1,4 +1,5 @@
 import { generateText, stepCountIs } from 'ai';
+import { runWithExposure } from '../security/provenance.js';
 import { isFailedToolResult } from './execute-guard.js';
 import { summarizeSilentTurn, type TurnAction } from './silent-turn.js';
 import type { ChannelMessage } from '../types/channel.js';
@@ -159,10 +160,12 @@ export class SubAgent {
   async run(): Promise<SubAgentResult> {
     const ctx = this.getPermissionContext();
     const permissions = this.capabilities.permissions as any;
+    // What the delegating turn had read goes with it (ADR-044).
+    const inner = () => (this.config.exposure ? runWithExposure(this.config.exposure, () => this.runInContext()) : this.runInContext());
     if (ctx && typeof permissions?.withContext === 'function') {
-      return permissions.withContext(ctx, () => this.runInContext());
+      return permissions.withContext(ctx, inner);
     }
-    return this.runInContext();
+    return inner();
   }
 
   private async runInContext(): Promise<SubAgentResult> {

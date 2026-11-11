@@ -48,7 +48,7 @@ describe('schedule_task with allow_tools', () => {
     const { tool, added, asked } = setup('admin');
     await tool.execute({ delay_seconds: 60, description: 'Remind me', prompt: 'Remind me to stretch' });
     expect(added[0].allowTools).toBeUndefined();
-    expect(asked[0]).toBe('Create scheduled task: Remind me');
+    expect(asked[0]).toMatch(/^Create scheduled task: Remind me \(in \d+s\)/);
   });
 });
 
