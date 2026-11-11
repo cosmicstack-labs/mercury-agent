@@ -4,6 +4,7 @@ import { fetchChatGPTModels } from '../auth/chatgpt-models.js';
 import { fetchGitHubModels } from '../auth/github-models.js';
 import { MERCURY_CLOUD_API_URL } from '../cloud/endpoints.js';
 import { basicAuthHeaders } from '../providers/basic-auth.js';
+import { anthropicApiRoot } from '../providers/anthropic-url.js';
 
 export interface ProviderModelCatalog {
   models: string[];
@@ -446,8 +447,9 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
 
 async function fetchAnthropicModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
   const data = await fetchJson<AnthropicModelResponse>(
-    'https://api.anthropic.com/v1/models',
+    `${anthropicApiRoot(config.baseUrl)}/models`,
     {
+      redirect: 'error',
       headers: {
         'x-api-key': config.apiKey,
         'anthropic-version': '2023-06-01',

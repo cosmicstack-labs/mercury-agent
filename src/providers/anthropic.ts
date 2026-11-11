@@ -4,6 +4,7 @@ import { BaseProvider } from './base.js';
 import { withAnthropicThinking } from './reasoning-wire.js';
 import type { ProviderConfig } from '../utils/config.js';
 import type { LLMResponse, LLMStreamChunk } from './base.js';
+import { anthropicApiRoot } from './anthropic-url.js';
 
 export class AnthropicProvider extends BaseProvider {
   readonly name = 'anthropic';
@@ -17,6 +18,9 @@ export class AnthropicProvider extends BaseProvider {
 
     this.client = createAnthropic({
       apiKey: config.apiKey,
+      baseURL: anthropicApiRoot(config.baseUrl),
+      // Do not forward the API key to an endpoint selected by a redirect.
+      fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }),
     });
     // Thinking shown as a summary and the owner's effort level, per request.
     this.modelInstance = withAnthropicThinking(this.client(config.model), this.name, config.model);
