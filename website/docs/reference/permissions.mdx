@@ -69,6 +69,25 @@ enforces the protections in code, in every mode, including **Allow All**:
   asks to keep something from you is always asked about.
 - **Delegation doesn't launder it.** A sub-agent starts with what its parent
   had read.
+- **Data can't leave quietly through a web address.** A page can ask, in
+  ordinary words, for a link like `https://…/verify?key=<your key>` to be
+  opened. After reading outside content, Mercury checks the request itself
+  before opening a page, searching or running a command, whether or not it
+  found a hidden instruction. It asks you first when the request carries:
+  - something that looks like a key, token or password;
+  - an encoded blob;
+  - a long value;
+  - a long subdomain.
+
+  Commands that upload (`curl -d`, piping into `curl` or `nc`, `scp` to
+  another machine) are checked the same way. Opening a link that was in what
+  Mercury read, or in your own message, never asks, and neither does a plain
+  lookup.
+- **Memory only learns from you.** After reading outside content, Mercury's
+  learning uses only your own words: its reply is left out, and anything it
+  learns must quote you. A turn that found hidden instructions learns nothing.
+  Pasted text written to an AI, other people's messages and group chats are
+  never learned as yours.
 
 A turn that reads nothing from outside the chat works exactly as before: no
 extra prompts, no extra cost.

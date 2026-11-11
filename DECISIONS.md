@@ -673,7 +673,20 @@
   - The reported attack is stopped in code under Allow All with a model that obeys the comment. An end-to-end test with an obedient mock model asserts no schedule is created and the owner sees the hidden instruction.
   - Turns that read nothing untrusted are unchanged. The scanner bounds its work (400k characters).
   - A turn that read a file and then schedules or messages asks once, even under Allow All. This is accepted as the price of the guarantee.
-  - **Not covered:**
-    - Exfiltration through a URL in an allowed fetch when no injection was detected.
-    - The background memory-learning pass.
-    - Model-only defences such as content isolation by role.
+  - **Not covered:** model-only defences such as content isolation by role.
+- **Amendment (2026-11-11): data out, and learning.** Two gaps the first version left open are now closed.
+  - **Exfiltration without a detected injection** (`security/exfil.ts`). A page can ask, in plain words, for "https://…/verify?key=<your key>" to be opened, and the scanner then finds nothing. After an untrusted read, the guard also judges the request itself. A call whose address or arguments carry data needs the owner's `alwaysAsk` yes, and an unattended turn refuses it. This applies to `fetch_url`, `browser_navigate`, `web_search`, `run_command`, and any tool taking a `url`-like argument. Data means:
+    - something shaped like a credential, or a credential-named query key;
+    - an encoded blob: a dense token of 24+ characters with high entropy (a commit hash in a path and dash-joined slugs don't count);
+    - a long query, path or fragment value, or a very long URL;
+    - a long subdomain label (DNS);
+    - a login inside the address.
+    - For commands: upload flags (`curl -d/-F/-T`, `wget --post-*`, `-X POST`), piping into `curl`/`nc`, `scp`/`rsync` to a remote host, or command output or a variable spliced into a network command.
+  - **Links that were read are free.** Every link in what the turn read, and in the message itself, is recorded on the turn's provenance (`Exposure.seen`, bounded). Opening one as is counts as browsing. A link Mercury composes is judged. Plain addresses never ask.
+  - **Learning** (`learning/extract.ts`, `learning/reflection.ts`):
+    - A turn that read content with instructions to an AI learns nothing.
+    - A turn that read any outside content learns only from the owner's words. Mercury's reply and earlier replies are left out of the extractor prompt, and every operation's excerpt must appear in the owner's message.
+    - An owner message that itself addresses an AI (pasted text) is skipped.
+    - Messages from non-owners and general-access chats are marked in the session. The extractor history and the reflection pass skip them, and reflection also skips owner turns that address an AI.
+    - The turn's exposure is taken when the turn ends, because learning runs after the turn's scope.
+  - **Cost:** still pattern checks with no model calls. A turn that reads nothing outside behaves exactly as before.

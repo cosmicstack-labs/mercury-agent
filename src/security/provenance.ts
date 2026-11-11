@@ -26,9 +26,15 @@ export interface Exposure {
   sources: ExposureSource[];
   /** An injection attempt was found in something this turn read. */
   suspicious: boolean;
+  /**
+   * Links that appeared, as is, in what the turn read or in the owner's
+   * message: following one is browsing, not sending data out (exfil.ts).
+   */
+  seen?: ReadonlySet<string>;
 }
 
 const MAX_SOURCES = 12;
+const MAX_SEEN = 5000;
 const empty = (): Exposure => ({ sources: [], suspicious: false });
 const current = new ScopedValue<Exposure>(empty());
 /**
@@ -39,7 +45,7 @@ const current = new ScopedValue<Exposure>(empty());
 const inherited = new AsyncLocalStorage<{ e: Exposure }>();
 
 export function runWithExposure<T>(e: Exposure, fn: () => T): T {
-  return inherited.run({ e: { sources: [...e.sources], suspicious: e.suspicious } }, fn);
+  return inherited.run({ e: { sources: [...e.sources], suspicious: e.suspicious, ...(e.seen ? { seen: new Set(e.seen) } : {}) } }, fn);
 }
 
 /** Give the calling turn its own record, starting clean (no-op outside a turn). */
@@ -49,6 +55,20 @@ export function claimExposureForTurn(): void {
 
 export function exposure(): Exposure {
   return inherited.getStore()?.e ?? current.get();
+}
+
+/** Links the turn may follow freely (see Exposure.seen). */
+export function noteSeenUrls(urls: readonly string[]): void {
+  if (!urls.length) return;
+  const box = inherited.getStore();
+  const e = box?.e ?? current.get();
+  const seen = new Set(e.seen);
+  for (const u of urls) {
+    if (seen.size >= MAX_SEEN) break;
+    seen.add(u);
+  }
+  if (box) box.e = { ...e, seen };
+  else current.set({ ...e, seen });
 }
 
 export function noteExposure(source: ExposureSource): void {
@@ -62,8 +82,9 @@ export function noteExposure(source: ExposureSource): void {
     : source.findings?.length
       ? [source, ...e.sources].slice(0, MAX_SOURCES)
       : [...e.sources, source].slice(0, MAX_SOURCES);
-  if (box) box.e = { sources, suspicious };
-  else current.set({ sources, suspicious });
+  const next = { sources, suspicious, ...(e.seen ? { seen: e.seen } : {}) };
+  if (box) box.e = next;
+  else current.set(next);
 }
 
 /** Test hook. */

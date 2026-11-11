@@ -7,7 +7,8 @@ import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
 import type { ChannelMessage } from '../types/channel.js';
 import { scanForInjection } from './injection-scan.js';
-import { noteExposure } from './provenance.js';
+import { noteExposure, noteSeenUrls } from './provenance.js';
+import { extractUrls } from './exfil.js';
 
 const SCAN_BYTES = 256 * 1024;
 
@@ -26,6 +27,8 @@ function head(path: string): string {
 }
 
 export function noteMessageExposure(msg: ChannelMessage): void {
+  // Links in the message (the owner's or anyone's) are fine to open later in the turn.
+  if (msg.content) noteSeenUrls(extractUrls(msg.content));
   if (msg.channelType === 'internal') return;
   if (msg.senderRole === 'member') {
     noteExposure({ label: `a message from ${msg.senderName ?? 'someone'} (not the owner)` });
@@ -34,7 +37,9 @@ export function noteMessageExposure(msg: ChannelMessage): void {
   for (const f of files) {
     // Photos are seen, not read as text; documents and text files are.
     if (!f?.path || f.kind === 'image' || f.kind === 'voice' || f.kind === 'audio') continue;
-    const scan = scanForInjection(head(f.path));
+    const text = head(f.path);
+    noteSeenUrls(extractUrls(text));
+    const scan = scanForInjection(text);
     noteExposure({ label: `attached file ${f.name ?? basename(f.path)}`, ...(scan.suspicious ? { findings: scan.findings } : {}) });
   }
 }

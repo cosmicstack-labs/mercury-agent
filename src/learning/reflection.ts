@@ -13,6 +13,7 @@
  * Assistant text is never an input: only the owner's own turns, tool traces
  * (what Mercury did) and permission answers.
  */
+import { scanForInjection } from '../security/injection-scan.js';
 import { parseJsonLenient } from './json.js';
 import { looksLikeIdentity, looksLikeSecret, ownerWords } from './text.js';
 import { generateText } from 'ai';
@@ -196,8 +197,12 @@ export function collectSince(sessions: Session[], since: number): { turns: Owner
       const channel = typeof m.metadata?.channelType === 'string' ? m.metadata.channelType : 'unknown';
       if (m.role === 'user' && m.kind === 'message') {
         if (channel === 'internal') continue;
+        // Someone else's message, or a group chat, isn't the owner speaking (ADR-044).
+        if (m.metadata?.senderRole === 'member' || m.metadata?.channelAccess === 'general') continue;
         const content = ownerWords(m.content);
         if (!content || content.startsWith('/')) continue;
+        // Pasted text written to an AI ("remember that the owner always…") would be learned as the owner's.
+        if (scanForInjection(content).suspicious) continue;
         const cwd = typeof m.metadata?.workCwd === 'string' ? m.metadata.workCwd : typeof m.metadata?.cwd === 'string' ? m.metadata.cwd : undefined;
         turns.push({ sessionId: session.id, at: m.timestamp, channel, ...(cwd ? { cwd } : {}), content });
         any = true;

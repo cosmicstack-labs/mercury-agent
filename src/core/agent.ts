@@ -144,7 +144,7 @@ import { getSpeechService, speakableText, voiceReplyWanted } from '../media/spee
 import { loadMediaPrefs } from '../media/prefs.js';
 import { mediaJobs, type MediaJob } from '../media/jobs.js';
 import { claimEffortChat } from '../utils/model-prefs.js';
-import { claimExposureForTurn } from '../security/provenance.js';
+import { claimExposureForTurn, exposure, type Exposure } from '../security/provenance.js';
 import { noteMessageExposure } from '../security/message-exposure.js';
 import { TurnUsage, billingEntries, type SourceUsageTotals, type StepUsageLike, type TurnUsageTotals } from './turn-usage.js';
 
@@ -3816,6 +3816,9 @@ export class Agent {
           channelId: msg.channelId,
           workCwd: this.capabilities.getCwd(),
           ...(requestId ? { requestId } : {}),
+          // Not the owner's words: the learning passes skip it (ADR-044).
+          ...(msg.senderRole === 'member' ? { senderRole: 'member' } : {}),
+          ...(msg.metadata?.channelAccess === 'general' ? { channelAccess: 'general' } : {}),
           // Files the owner sent with this turn, as refs a client can fetch back.
           ...(() => { const refs = attachmentRefs(msg.metadata?.attachments); return refs.length ? { attachments: refs } : {}; })(),
         },
@@ -5542,7 +5545,8 @@ export class Agent {
       let replyDelivered: () => void = () => {};
       const delivered = new Promise<void>((resolve) => { replyDelivered = resolve; });
       if (msg.channelType !== 'internal' && msg.metadata?.channelAccess !== 'general') {
-        this.extractMemory(msg.content, finalText, { msg, channel, sessionId: canonicalSessionId, toolTrace: turnToolTrace, delivered }).catch(err => {
+        // What the turn read, taken now: the learning pass runs after the turn's scope (ADR-044).
+        this.extractMemory(msg.content, finalText, { msg, channel, sessionId: canonicalSessionId, toolTrace: turnToolTrace, delivered, exposure: exposure() }).catch(err => {
           logger.warn({ err }, 'Memory extraction failed');
         });
         this.scheduleStatusVerbRefresh(channel, msg.content);
@@ -5960,9 +5964,13 @@ export class Agent {
       toolTrace?: readonly string[];
       /** Resolves once the reply reached the channel; the note is sent after it. */
       delivered?: Promise<void>;
+      /** The untrusted content the turn read (ADR-044). */
+      exposure?: Exposure;
     } = {},
   ): Promise<void> {
     if (!this.userMemory) return;
+    // Someone else's words are never evidence about the owner.
+    if (ctx.msg?.senderRole === 'member') return;
     if (this.userMemory.isLearningPaused()) return;
     const beliefs = this.userMemory.beliefs;
     const channelAccess = typeof ctx.msg?.metadata?.channelAccess === 'string' ? ctx.msg.metadata.channelAccess : undefined;
@@ -5977,6 +5985,7 @@ export class Agent {
         for (const m of this.sessions.get(ctx.sessionId).messages) {
           if (m.kind !== 'message' || (m.role !== 'user' && m.role !== 'assistant')) continue;
           if (m.externalMessageId && thisTurn.has(m.externalMessageId)) continue;
+          if (m.role === 'user' && m.metadata?.senderRole === 'member') continue;
           history.push({ role: m.role === 'user' ? 'owner' : 'mercury', content: m.content });
         }
       } catch (err) {
@@ -6011,6 +6020,13 @@ export class Agent {
       }
     }
 
+    // A turn that read instructions written to an AI learns nothing: whatever
+    // it would take away could be what the page wanted remembered.
+    if (ctx.exposure?.suspicious) {
+      logger.info({ sources: ctx.exposure.sources.map((s) => s.label) }, 'Learning skipped: the turn read content with instructions to an AI');
+      return;
+    }
+
     try {
       const ops = await extractBeliefOperations({
         providers: this.learningProviders(),
@@ -6028,6 +6044,7 @@ export class Agent {
         channelAccess,
         sessionId: ctx.sessionId,
         turnRef: ctx.msg?.id,
+        untrusted: !!ctx.exposure?.sources.length,
       });
       this.syncTokenInfoToCli();
       if (ops.length === 0) return;

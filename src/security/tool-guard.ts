@@ -16,13 +16,18 @@
  *     (a scheduled run, a bot), they are refused. Once an injection attempt
  *     was found, commands, file writes, fetches and delegation ask too.
  *
+ *  3. Data out (exfil.ts): after an untrusted read, a fetch, page load,
+ *     search or command whose address or arguments carry data — and that
+ *     wasn't simply a link Mercury read — asks too, injection found or not.
+ *
  * Turns that read nothing untrusted are untouched: no prompts, no cost.
  */
 import type { Tool } from 'ai';
 import type { PermissionManager } from '../capabilities/permissions.js';
 import { formatMcpArgs } from '../capabilities/permissions.js';
 import { injectionNote, scanForInjection } from './injection-scan.js';
-import { describeExposure, exposure, noteExposure } from './provenance.js';
+import { describeExposure, exposure, noteExposure, noteSeenUrls } from './provenance.js';
+import { exfilRisk, extractUrls } from './exfil.js';
 import { listLiveTools } from '../plugins/tool-bridge.js';
 import { logger } from '../utils/logger.js';
 import { runOwnerApproved } from './call-approval.js';
@@ -100,23 +105,26 @@ export interface GuardDeps {
 async function allowed(name: string, input: unknown, deps: GuardDeps): Promise<{ ok: true; asked: boolean } | { ok: false; reason: string }> {
   // Reading GitHub is a source, not an action.
   if (name === 'github_api' && String((input as { method?: unknown } | null)?.method ?? 'GET').toUpperCase() === 'GET') return { ok: true, asked: false };
-  const tier = guardTier(name);
   const e = exposure();
-  if (!tier || !e.sources.length) return { ok: true, asked: false };
-  if (tier === 'strict' && !e.suspicious) return { ok: true, asked: false };
+  if (!e.sources.length) return { ok: true, asked: false };
+  const tier = guardTier(name);
+  const gated = tier === 'control' || tier === 'outbound' || (tier === 'strict' && e.suspicious);
+  // Data leaving in an address or a command: judged whether or not an injection was found.
+  const leak = exfilRisk(name, input, e.seen ?? new Set());
+  if (!gated && !leak) return { ok: true, asked: false };
 
   const p = deps.permissions;
   const channelType = p.getCurrentChannelType();
   const unattended = channelType === 'internal' || p.isFailClosed();
-  if (unattended && SCHEDULED_RUN_OUTBOUND.has(name) && !e.suspicious) return { ok: true, asked: false };
+  if (unattended && SCHEDULED_RUN_OUTBOUND.has(name) && !e.suspicious && !leak) return { ok: true, asked: false };
   // A scheduled task's own plugin tools: the owner approved them, by name, when the task was made.
-  if (p.hasTurnPluginGrant(name) && !e.suspicious) return { ok: true, asked: false };
+  if (p.hasTurnPluginGrant(name) && !e.suspicious && !leak) return { ok: true, asked: false };
   if (p.getCurrentSenderRole() === 'member') {
     return { ok: false, reason: `Not done: ${name} after reading outside content needs the owner, and this message is from someone else.` };
   }
   if (unattended) {
-    logger.warn({ tool: name, sources: e.sources.map((s) => s.label), suspicious: e.suspicious }, 'Blocked: privileged action in an unattended turn that read untrusted content');
-    return { ok: false, reason: `Not done: ${name} was requested after reading outside content${e.suspicious ? ' that contains instructions to an AI' : ''}, and no one is here to approve it. Ask the owner directly.` };
+    logger.warn({ tool: name, sources: e.sources.map((s) => s.label), suspicious: e.suspicious, leak: leak?.what }, 'Blocked: privileged action in an unattended turn that read untrusted content');
+    return { ok: false, reason: `Not done: ${name} was requested after reading outside content${e.suspicious ? ' that contains instructions to an AI' : ''}${leak ? `, and it would send data out (${leak.what})` : ''}, and no one is here to approve it. Ask the owner directly.` };
   }
 
   const prompt = [
@@ -127,6 +135,7 @@ async function allowed(name: string, input: unknown, deps: GuardDeps): Promise<{
     '',
     `It now wants to run ${name} with:`,
     formatMcpArgs(input),
+    ...(leak ? ['', `⚠ This could send data out: ${leak.what}.`] : []),
     '',
     'Approve only if YOU asked for this.',
   ].join('\n');
@@ -156,6 +165,7 @@ function guardTool(name: string, t: Tool, deps: GuardDeps): Tool {
       if (!text) return result;
       const scan = scanForInjection(text);
       const label = sourceLabel(name, input);
+      noteSeenUrls(extractUrls(text));
       noteExposure({ label, ...(scan.suspicious ? { findings: scan.findings } : {}) });
       if (scan.suspicious) {
         logger.warn({ tool: name, source: label, findings: scan.findings }, 'Possible prompt injection in tool result');

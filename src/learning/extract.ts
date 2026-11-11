@@ -14,6 +14,7 @@ import { generateText } from 'ai';
 import type { Belief, BeliefKind, BeliefOperation, BeliefStore, BeliefTimescale } from '../memory/beliefs.js';
 import { SCOPED_DIMENSIONS, TRAIT_DIMENSIONS } from '../memory/beliefs.js';
 import { logger } from '../utils/logger.js';
+import { scanForInjection } from '../security/injection-scan.js';
 import { describeSignals, type TurnSignals } from './signals.js';
 
 export const EXTRACT_MAX_OUTPUT_TOKENS = 600;
@@ -52,6 +53,13 @@ export interface ExtractInput {
   channelAccess?: string;
   sessionId?: string;
   turnRef?: string;
+  /**
+   * The turn read content the owner didn't write — a page, a file, command
+   * output, someone else's message (ADR-044). Mercury's reply, which that
+   * content could have shaped, is left out, and every operation must quote
+   * the owner's own words: a page can't plant a belief about the owner.
+   */
+  untrusted?: boolean;
 }
 
 /** The slice of the belief store the extractor reads. */
@@ -158,6 +166,7 @@ export function buildUserPrompt(input: ExtractInput, existing: readonly Belief[]
   if (input.recentTurns.length > 0) {
     parts.push('RECENT TURNS (oldest first)');
     for (const t of input.recentTurns) {
+      if (input.untrusted && t.role !== 'owner') continue;
       parts.push(`${t.role === 'owner' ? 'OWNER SAID' : 'MERCURY SAID'}: ${(t.role === 'owner' ? ownerWords(t.content) : t.content).replace(/\s+/g, ' ').trim().slice(0, 600)}`);
     }
     parts.push('');
@@ -165,7 +174,9 @@ export function buildUserPrompt(input: ExtractInput, existing: readonly Belief[]
   parts.push('THIS TURN');
   parts.push(`OWNER SAID: ${ownerWords(input.ownerMessage).slice(0, 4000)}`);
   parts.push('');
-  parts.push(`MERCURY SAID (never a source for beliefs about the owner; it may only yield an "episode" of what Mercury did): ${input.mercuryReply.replace(/\s+/g, ' ').trim().slice(0, 1500)}`);
+  parts.push(input.untrusted
+    ? 'MERCURY SAID: (left out: this turn read content the owner did not write, so only the owner\'s words above count)'
+    : `MERCURY SAID (never a source for beliefs about the owner; it may only yield an "episode" of what Mercury did): ${input.mercuryReply.replace(/\s+/g, ' ').trim().slice(0, 1500)}`);
   parts.push('');
   parts.push('Belief operations as a JSON array:');
   return parts.join('\n');
@@ -272,6 +283,14 @@ function traitFields(r: Record<string, unknown>, kind: BeliefKind): { dimension:
   return { dimension, level };
 }
 
+const flat = (t: string) => t.toLowerCase().replace(/[…"'`“”‘’.,;:!?()[\]{}*_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+/** The excerpt is (close to verbatim) in what the owner wrote. */
+export function quotesOwner(excerpt: string, ownerMessage: string): boolean {
+  const e = flat(excerpt);
+  return e.length >= 3 && flat(ownerWords(ownerMessage)).includes(e);
+}
+
 // ── the call ────────────────────────────────────────────────────────────
 
 /** Whether a turn is worth a model call at all. */
@@ -279,6 +298,8 @@ export function shouldExtract(deps: Pick<ExtractDeps, 'tokenBudget' | 'learningP
   if (deps.learningPaused()) return false;
   if (input.channelAccess === 'general') return false;
   if (isTrivialMessage(input.ownerMessage)) return false;
+  // Pasted text that talks to an AI ("remember that the owner wants…") isn't the owner speaking.
+  if (scanForInjection(input.ownerMessage).suspicious) return false;
   if (!deps.tokenBudget.canAfford(EXTRACT_MIN_BUDGET)) return false;
   return true;
 }
@@ -300,7 +321,9 @@ export async function extractBeliefOperations(deps: ExtractDeps, input: ExtractI
     provider: provider.name, model: provider.getModel(), inputTokens, outputTokens, totalTokens: inputTokens + outputTokens,
     channelType: 'internal', agentId: deps.agentId,
   });
-  const ops = parseBeliefOperations(result.text ?? '', new Set(existing.map((b) => b.id)), { sessionId: input.sessionId, turnRef: input.turnRef, defaultExcerpt: ownerWords(input.ownerMessage) });
+  const parsed = parseBeliefOperations(result.text ?? '', new Set(existing.map((b) => b.id)), { sessionId: input.sessionId, turnRef: input.turnRef, defaultExcerpt: ownerWords(input.ownerMessage) });
+  const ops = input.untrusted ? parsed.filter((o) => quotesOwner(o.excerpt, input.ownerMessage)) : parsed;
+  if (ops.length < parsed.length) logger.info({ dropped: parsed.length - ops.length }, 'Learning: dropped operations not quoting the owner (turn read outside content)');
   if (ops.length > 0) logger.debug({ ops: ops.map((o) => `${o.op}${o.kind ? `:${o.kind}` : ''}`) }, 'Belief operations extracted');
   return ops;
 }
