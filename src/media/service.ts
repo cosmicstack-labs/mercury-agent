@@ -166,7 +166,8 @@ export class MediaService {
     };
     if (requested) {
       const exact = fromRef(requested) ?? models.find((m) => m.model === requested || m.label.toLowerCase() === requested.toLowerCase());
-      return exact ? [exact] : [];
+      // A service by name ("elevenlabs", "Eleven Labs", "lyria", "veo"): its models only, never another service's.
+      return exact ? [exact] : byService(models, requested).slice(0, 3);
     }
     const prefs = loadMediaPrefs()[kind];
     const chain: MediaModel[] = [];
@@ -294,3 +295,15 @@ export function slug(prompt: string): string {
   const words = prompt.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, ' ').split(/\s+/).filter((w) => w && !/^(a|an|the|of|and|image|picture|photo|generate|create|make|draw)$/.test(w));
   return words.slice(0, 6).join('-').slice(0, 60) || 'image';
 }
+
+const squash = (s: string) => s.toLowerCase().replace(/[\s._-]+/g, '');
+
+/** Models of the service the owner named: by provider, group or a model-family word ("lyria", "veo", "sora"). */
+export function byService<T extends { provider: string; group: string; model: string; label: string }>(models: T[], requested: string): T[] {
+  const n = squash(requested);
+  if (n.length < 3) return [];
+  const own = models.filter((m) => squash(m.provider) === n || squash(m.group) === n);
+  if (own.length) return own;
+  return models.filter((m) => squash(m.model).includes(n) || squash(m.label).includes(n));
+}
+

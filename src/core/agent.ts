@@ -145,7 +145,8 @@ import { getSpeechService, speakableText, voiceReplyWanted } from '../media/spee
 import { loadMediaPrefs } from '../media/prefs.js';
 import { mediaJobs, type MediaJob } from '../media/jobs.js';
 import { claimEffortChat } from '../utils/model-prefs.js';
-import { claimExposureForTurn, exposure, type Exposure } from '../security/provenance.js';
+import { claimExposureForTurn, exposure, noteTurnModel, type Exposure } from '../security/provenance.js';
+import { chatChoices, chatChoicesNote } from '../skills/chat-choices.js';
 import { noteMessageExposure } from '../security/message-exposure.js';
 import { TurnUsage, billingEntries, type SourceUsageTotals, type StepUsageLike, type TurnUsageTotals } from './turn-usage.js';
 
@@ -3866,6 +3867,16 @@ export class Agent {
       if (!generalAccess) contextBlocks.push(...(await this.retrieveMemoryContext(msg)));
 
       if (history.toolContext) contextBlocks.push(history.toolContext);
+      // Skills and services the owner chose earlier in this chat, every turn: a skill's
+      // instructions drop out of history, and the method must not drift ("use hyperframes").
+      if (this.skillLoader && !generalAccess) {
+        try {
+          const note = chatChoicesNote(chatChoices(activeSession.messages.slice(-80), this.skillLoader.getDiscovered().map((d) => d.name)));
+          if (note) contextBlocks.push(note);
+        } catch (err) {
+          logger.debug({ err: (err as Error).message }, 'chat choices failed');
+        }
+      }
 
       if (!canonicalSessionId) messages.push({ role: 'user', content: msg.content });
 
@@ -4493,6 +4504,7 @@ export class Agent {
         const attemptStartedAt = Date.now();
         let firstResponse: { received(): void; clear(): void } | null = null;
         attemptedProvider = { name: provider.name, model: provider.getModel() };
+        noteTurnModel(provider.getModel());
         try {
           const providerDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           this.markProgress(`Calling ${provider.name}...`);

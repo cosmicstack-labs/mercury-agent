@@ -20,6 +20,10 @@
  *     search or command whose address or arguments carry data — and that
  *     wasn't simply a link Mercury read — asks too, injection found or not.
  *
+ *  With a strong model (model-strength.ts) only 3 asks: large models refuse
+ *  planted instructions, small ones follow them. The warning in the chat and
+ *  the note after the content stay for every model.
+ *
  * Turns that read nothing untrusted are untouched: no prompts, no cost.
  */
 import type { Tool } from 'ai';
@@ -28,6 +32,7 @@ import { formatMcpArgs } from '../capabilities/permissions.js';
 import { injectionNote, scanForInjection } from './injection-scan.js';
 import { describeExposure, exposure, noteExposure, noteSeenUrls } from './provenance.js';
 import { exfilRisk, extractUrls } from './exfil.js';
+import { isStrongModel } from './model-strength.js';
 import { listLiveTools } from '../plugins/tool-bridge.js';
 import { logger } from '../utils/logger.js';
 import { runOwnerApproved } from './call-approval.js';
@@ -108,7 +113,9 @@ async function allowed(name: string, input: unknown, deps: GuardDeps): Promise<{
   const e = exposure();
   if (!e.sources.length) return { ok: true, asked: false };
   const tier = guardTier(name);
-  const gated = tier === 'control' || tier === 'outbound' || (tier === 'strict' && e.suspicious);
+  // A strong model resists planted instructions (model-strength.ts): it is asked only about data leaving.
+  const strong = isStrongModel(e.model);
+  const gated = !strong && (tier === 'control' || tier === 'outbound' || (tier === 'strict' && e.suspicious));
   // Data leaving in an address or a command: judged whether or not an injection was found.
   const leak = exfilRisk(name, input, e.seen ?? new Set());
   if (!gated && !leak) return { ok: true, asked: false };

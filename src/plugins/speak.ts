@@ -7,6 +7,7 @@
  * in the apps.
  */
 import type { SpeechEngine } from './transcribe.js';
+import { geminiStyle } from '../media/spoken-text.js';
 
 /** Longest text spoken in one request; clients send a long reply in parts. */
 export const SPEAK_MAX_CHARS = 4000;
@@ -81,8 +82,9 @@ export async function synthesizeSpeech(text: string, engine: SpeechEngine, opts:
         method: 'POST',
         headers: { 'x-goog-api-key': engine.apiKey, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          // Gemini takes the style as words in front of the text.
-          contents: [{ parts: [{ text: (opts.instructions ? `Say this ${opts.instructions.replace(/[.:]+$/, '')}: ` : '') + input.slice(0, SPEAK_MAX_CHARS) }] }],
+          // Gemini takes the style as words in front of the text, and reads out anything
+          // that isn't a short description of the voice (geminiStyle).
+          contents: [{ parts: [{ text: (geminiStyle(opts.instructions) ? `Say ${geminiStyle(opts.instructions)}: ` : '') + input.slice(0, SPEAK_MAX_CHARS) }] }],
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: opts.voice || GEMINI_VOICE } } } },
         }),
         signal,

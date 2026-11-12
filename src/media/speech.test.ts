@@ -142,7 +142,7 @@ describe('the speech services themselves', () => {
       return json({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/wav', data: Buffer.from('RIFFxxxxWAVE').toString('base64') } }] } }] });
     }) as unknown as typeof fetch;
     await synthesizeSpeech('Hello', { kind: 'gemini', label: 'Gemini', apiKey: 'g' }, { fetch: fake, voice: 'Puck', instructions: 'cheerfully.' });
-    expect(body?.contents[0].parts[0].text).toBe('Say this cheerfully: Hello');
+    expect(body?.contents[0].parts[0].text).toBe('Say cheerfully: Hello');
     expect(body?.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName).toBe('Puck');
   });
 

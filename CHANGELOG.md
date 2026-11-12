@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Voice: only the words are spoken
+- **Directions stay out of the audio.** Asking for a natural reading ("keep it natural, don't make it sound like it was shared by AI") could put that request into the recording itself. The cause was Gemini, which takes the style as words in front of the text ("Say this …:") and reads anything that isn't a short description of a voice out loud.
+  - Only a short tone goes to Gemini now ("calm and warm", "like a news anchor"). Requests about the audio itself are dropped, since they shape how the words are written, not how they're read.
+  - Anything that still slips into the script is taken out before it's spoken and used as the style instead: an opener like "Here's the script:", "Tone:" lines, "Narrator:" labels, "[soft music]" and "(pause)" cues, titles and markdown. A plain script, a poem with real parentheses for example, is left exactly as written.
+- **The voice service you name is used.** "Read it with ElevenLabs" uses ElevenLabs (likewise OpenAI, Gemini, Deepgram). If it isn't set up, Mercury tells you instead of quietly using another.
+
+### Skills: the one you name is the one used, for the whole chat
+- **Skills installed for other agents work in Mercury.** Mercury now also reads the shared skill folders `~/.agents/skills` (where `npx skills add` installs) and `~/.claude/skills`, so asking for HyperFrames finds the official HyperFrames skills: how to build, animate and render the video. Before, Mercury only had satellite pieces, rendered a composition whose animation never ran (solid colours), then reached for an AI video model instead.
+  - **Kept small:** a family of related skills is one line, so the shared list adds about 3 KB to the cached prompt.
+  - **Safe:** shared skills are read-only, and they can't raise Mercury's permissions. Mercury's own skills win on a name clash. Set `MERCURY_SHARED_SKILLS=0` to turn this off.
+- **Named means that one.** "Use hyperframes", "via Hyper Frames", "beats with ElevenLabs": Mercury loads the matching skill, even written loosely, and follows it to the finished file. It passes the named service to the media tools, which now accept a service by name ("elevenlabs", "lyria", "veo"). It never swaps in a different method on its own. An AI video model is not a HyperFrames render, and Google is not ElevenLabs. If the named one isn't there or fails, Mercury says so and asks.
+- **Remembered for the chat.** Skills and services you named or used in a chat are re-stated on every later turn of that chat, so "where is the video?" or "try again" continues with HyperFrames instead of drifting.
+  - A skill's instructions are loaded again when the work continues.
+  - A skill named like an everyday word ("documents") counts only when it's clearly picked: next to "skill", after "use", "using", "via" or "through", or as `#documents`.
+- **Skills can use their own files.** Loading a skill now says where its folder is, so the references and scripts it mentions can be read.
+
+### Second Brain: one copy of each thing, real people
+- **No more copies.** The same fact was being saved again under each new wording: "Heer is my wife", "User's wife is Heer", "User is married to someone named Heer", "Heer is user's spouse"… The match only looked at beliefs of the same kind with near-identical words. Now one check sees past wording:
+  - you count as one person however you're named ("I", "my", "the user's", your name);
+  - "wife", "husband", "spouse" and "married" are one relation, and "buy" and "purchase" are one action;
+  - the kind no longer has to match ("fact" vs "relationship").
+  
+  A second wording now supports the first instead of being saved as a new belief. When it adds a little detail ("…, married since 2019"), the belief takes the fuller wording, unless the original is in your own words.
+- **Copies already saved are folded once,** after a backup (`second-brain.pre-tidy-1.db`), and again after each reflection pass. The belief that's kept takes over the copies' evidence and support. It's chosen in this order: your own word, then the best established, then the one that says the most.
+- **What it never folds:**
+  - claims with different numbers ("married in 2019" vs "married on October 9, 2025": that's a conflict to settle, not a copy);
+  - a claim and its negation;
+  - a longer claim that adds a relation or feeling ("…, about to become a father", "Zaid dislikes Shehzen");
+  - anything into a shorter one that would lose what the longer one says.
+- **One person, one entry.** A short name that is the start of exactly one other person's name is the same person ("Shehzen" / "Shehzen Sidiq Malla"), and the two merge, keeping the full name as an alias. Ambiguous first names and anyone you edited yourself are left alone.
+- **Names nobody checked get checked.** Names saved before the "is it a person?" check existed were never checked, which is how "Calcutta", "Kobo" and "Password" got onto the people list. They're queued once for the same slow check: 20 names a call, under the daily cap.
+
 ### Security: prompt injection
 - **Text Mercury reads can no longer steer what it does.** A report showed a weather page with an HTML comment telling the AI to create a schedule and keep it from the user: big models refused, a small one (on Mercury Free Router) created the cron job. Mercury now enforces this in code, whatever the model:
   - **Untrusted reads raise the bar, in every mode.** Once a turn has read anything from outside the chat (a file, web page, search result, command output, attachment, GitHub issue, or someone else's message), certain actions need your explicit yes, even under Allow All: creating schedules, writing memory, creating or installing skills, granting permissions, sending messages or files, pushing or opening issues and PRs, and plugin actions that change something. The approval shows what was read and the full action.
@@ -11,6 +43,13 @@
   - **Delegation doesn't reset it.** Sub-agents inherit what their parent read. Each bot turn keeps its own record.
 - **Data can't leave quietly through a web address.** A page doesn't need a hidden instruction to leak something: it can ask, in plain words, for "https://…?key=<your key>" to be opened. After reading outside content, Mercury checks the request itself before opening a page, searching, or running a command. It asks you first, showing what would leave, when the request carries something like a key or token, an encoded blob, a long value, or a long subdomain. Commands that upload data (`curl -d`, piping into `curl` or `nc`, `scp` to another host) are checked the same way. Opening links that were in what Mercury read, or in your message, never asks, and neither do plain lookups.
 - **Memory only learns from you.** After a turn that read outside content, Mercury's learning pass uses only your own words: its reply is left out, and anything it would learn must quote you. A turn that found hidden instructions learns nothing. Pasted text written to an AI, messages from other people and group chats are never learned as yours, including in the background reflection pass.
+- **Fewer false alarms.** Documentation about AI isn't an attack. Mercury's own ARCHITECTURE.md ("Agent loads system prompt") was flagged, and from then on every command in the turn asked for approval. In visible text, only the two signatures of an attack now count: "ignore previous instructions" and "don't tell the user". Wording like "system prompt", "the agent should" or "assistant:" counts only when it's hidden (HTML comments, invisible markup, zero-width text). Across Mercury's own docs, false alarms fell from 36 files to 4, and those 4 quote attack phrases on purpose.
+- **Approvals depend on the model.** Large models notice and refuse planted instructions; the report that started this was a small model obeying them. So with a strong model (Claude Sonnet/Opus, GPT-4o/4.1/5, o1/o3, Gemini Pro, Grok 4, DeepSeek V3/R1 and similar), Mercury no longer asks before actions after reading outside content, even when it found hidden instructions. It still:
+  - warns you in the chat when hidden instructions were found;
+  - notes after the content that it is data, not a request;
+  - asks before data leaves in an address or a command (a key, a token, an encoded blob), whatever the model.
+
+  Small, local and unknown models (mini, nano, flash, Haiku, 7B/8B, Free Router "auto") keep every approval, and so does any model the rule doesn't recognise.
 - **No cost when nothing outside is read:** turns that read nothing from outside the chat behave exactly as before. The checks are pattern scans, with no extra model calls.
 
 ### Desktop: a new chat that knows you

@@ -299,7 +299,7 @@ export function shouldExtract(deps: Pick<ExtractDeps, 'tokenBudget' | 'learningP
   if (input.channelAccess === 'general') return false;
   if (isTrivialMessage(input.ownerMessage)) return false;
   // Pasted text that talks to an AI ("remember that the owner wants…") isn't the owner speaking.
-  if (scanForInjection(input.ownerMessage).suspicious) return false;
+  if (scanForInjection(input.ownerMessage, { strict: true }).suspicious) return false;
   if (!deps.tokenBudget.canAfford(EXTRACT_MIN_BUDGET)) return false;
   return true;
 }

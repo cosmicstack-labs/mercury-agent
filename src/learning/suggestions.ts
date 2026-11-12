@@ -184,7 +184,7 @@ export function parseSuggestions(text: string): { subtitle?: string; items: Arra
     const title = typeof r.title === 'string' ? r.title.replace(/\s+/g, ' ').trim() : '';
     const prompt = typeof r.prompt === 'string' ? r.prompt.trim() : '';
     if (title.length < 3 || title.length > 70 || prompt.length < 5 || prompt.length > 600) continue;
-    if (looksLikeSecret(prompt) || scanForInjection(prompt).suspicious) continue;
+    if (looksLikeSecret(prompt) || scanForInjection(prompt, { strict: true }).suspicious) continue;
     const kind = typeof r.kind === 'string' && KINDS.has(r.kind as SuggestionKind) ? (r.kind as SuggestionKind) : 'explore';
     const why = typeof r.why === 'string' && r.why.trim() ? clip(r.why.trim(), 80) : undefined;
     items.push({ title, prompt, kind, source: 'model', ...(why ? { why } : {}) });

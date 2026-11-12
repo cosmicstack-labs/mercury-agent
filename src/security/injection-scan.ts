@@ -29,10 +29,21 @@ export interface InjectionScan {
 const MAX_SCAN_CHARS = 400_000;
 const MAX_FINDINGS = 3;
 
-/** Wording that only makes sense addressed to an AI assistant, anywhere in the content. */
-const STRONG = [
+/**
+ * The two signatures of an attack, wherever they appear: overriding the
+ * model's instructions, and keeping something from the user. Visible text is
+ * judged by these alone: documentation about AI (Mercury's own README, any
+ * agent project) says "system prompt", "the agent should" and "assistant:"
+ * all the time, and that is not an attack.
+ */
+const VISIBLE = [
   /\b(ignore|disregard|forget|override)\b[^.\n]{0,40}\b(previous|prior|above|earlier|all|any|your)\b[^.\n]{0,20}\b(instructions?|prompts?|rules|directions|guidelines)\b/i,
   /\b(do not|don't|dont|never|without)\b[^.\n]{0,20}\b(tell(ing)?|inform(ing)?|notify(ing)?|alert(ing)?|mention(ing)?|show(ing)?|reveal(ing)?|let(ting)? .{0,10}know)\b[^.\n]{0,25}\b(the )?(user|owner|human|operator|them)\b/i,
+];
+
+/** Wording addressed to an AI: an attempt when hidden (comments, invisible markup, zero-width text), ordinary in visible prose. */
+const STRONG = [
+  ...VISIBLE,
   /\b(new|updated|real|actual|hidden|secret)\s+(system\s+)?(instructions?|prompt|directives?)\b/i,
   /\b(you are now|from now on,? you|act as (an?|the) (ai|assistant|agent)|as an ai (assistant|agent|model)|system prompt|developer message)\b/i,
   /\b(ai|assistant|agent|llm|model|chatbot|claude|gpt|gemini|mercury)\b[,:]?\s+(you must|you should|please|must|should|is instructed to|are instructed to)\b/i,
@@ -52,13 +63,20 @@ function excerpt(text: string): string {
   return t.length > 160 ? `${t.slice(0, 157)}…` : t;
 }
 
-function looksAimedAtAi(text: string, hidden: boolean): boolean {
+function looksAimedAtAi(text: string, hidden: boolean, strict = false): boolean {
+  if (!hidden && !strict) return VISIBLE.some((re) => re.test(text));
   if (STRONG.some((re) => re.test(text))) return true;
   // Hidden text that asks for an action is an attempt; the same words in visible prose are not.
   return hidden && ACTION.test(text) && /\b(you|your|please|must|should|now|immediately|silently|quietly)\b/i.test(text);
 }
 
-export function scanForInjection(content: string): InjectionScan {
+/**
+ * `strict`: judge visible text by every pattern, not only the two attack
+ * signatures. For deciding what not to LEARN from (a pasted "AI assistant,
+ * you must remember…"), where a false alarm only skips one message; never
+ * for gating actions, where it would ask about every document on AI.
+ */
+export function scanForInjection(content: string, opts: { strict?: boolean } = {}): InjectionScan {
   const text = content.length > MAX_SCAN_CHARS ? content.slice(0, MAX_SCAN_CHARS) : content;
   const findings: InjectionFinding[] = [];
   const add = (where: InjectionFinding['where'], body: string) => {
@@ -76,11 +94,11 @@ export function scanForInjection(content: string): InjectionScan {
     const revealed = text.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g, '');
     for (const line of revealed.split('\n')) if (line.length < 2000 && looksAimedAtAi(line, true)) { add('zero-width', line); break; }
   }
-  // Visible text: only wording that addresses an AI directly.
+  // Visible text: only the unmistakable signatures (VISIBLE).
   if (findings.length < MAX_FINDINGS) {
     for (const line of text.split('\n')) {
       if (line.length > 2000) continue;
-      if (looksAimedAtAi(line, false)) { add('text', line); if (findings.length >= MAX_FINDINGS) break; }
+      if (looksAimedAtAi(line, false, opts.strict)) { add('text', line); if (findings.length >= MAX_FINDINGS) break; }
     }
   }
   return { suspicious: findings.length > 0, findings };

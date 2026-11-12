@@ -30,15 +30,16 @@ const started = (kind: string, id: string, chatApp: boolean) => [
 export function createGenerateVideoTool(deps: MediaJobDeps) {
   return tool({
     description: [
-      'Make a short video clip (3–15 seconds, with sound on models that have it) with a video model.',
-      'Use when the user asks for a video, clip, animation or to animate an image. It runs in the background and is sent to the user when ready (minutes).',
+      'Make a short video clip (3–15 seconds, with sound on models that have it) with an AI video model (Veo, Omni, Sora…).',
+      'Use when the user asks for a generated video clip or to animate an image. It runs in the background and is sent to the user when ready (minutes).',
+      'Not for videos built from code or a skill — HyperFrames, Remotion, motion graphics, slides, edits of an existing file: when the user names one of those (or a skill), follow that skill and render with its tool (e.g. `npx hyperframes render`); never swap this in instead.',
     ].join(' '),
     inputSchema: zodSchema(z.object({
       prompt: z.string().min(1).max(4000).describe('The shot in detail: subject, action, camera movement, style, sound.'),
       aspect: z.enum(['landscape', 'portrait']).optional().describe('16:9 (default) or 9:16 for phones and stories.'),
       seconds: z.number().int().min(3).max(15).optional().describe('Length in seconds (default 8).'),
       reference_images: z.array(z.string()).max(6).optional().describe('Paths of images to animate or keep characters consistent with.'),
-      model: z.string().optional().describe('Only when the user names a model: "provider::model" from /media.'),
+      model: z.string().optional().describe('Only when the user names a model or service: "provider::model" from /media, or the service by name ("veo", "sora", "gemini"). Named means that one only.'),
     })),
     execute: async ({ prompt, aspect, seconds, reference_images, model }) => {
       const references: string[] = [];
@@ -52,7 +53,7 @@ export function createGenerateVideoTool(deps: MediaJobDeps) {
       }
       // Fail now (not in the background) when nothing can make videos.
       if (!(await deps.media.chain('video', model)).length) {
-        return `Error: ${model ? `no video model "${model}" on the configured providers.` : 'no video model is set up. A Gemini key (Settings → Voice) gives Gemini Omni video; gateways such as LiteLLM or Mercury Cloud can serve others.'}`;
+        return `Error: ${model ? `"${model}" can't make videos here (not set up, or no such model). Tell the user; don't use another service instead unless they agree.` : 'no video model is set up. A Gemini key (Settings → Voice) gives Gemini Omni video; gateways such as LiteLLM or Mercury Cloud can serve others.'}`;
       }
       const outDir = deps.outputDir();
       const chat = deps.chat();
@@ -76,11 +77,11 @@ export function createGenerateMusicTool(deps: MediaJobDeps) {
       prompt: z.string().min(1).max(4000).describe('Genre, mood, instruments, tempo, and lyrics or theme for vocals.'),
       seconds: z.number().int().min(5).max(300).optional().describe('Approximate length in seconds.'),
       instrumental: z.boolean().optional().describe('No vocals.'),
-      model: z.string().optional().describe('Only when the user names a model: "provider::model" from /media.'),
+      model: z.string().optional().describe('Whenever the user names a service or model, in this message or earlier in the chat: "elevenlabs", "lyria", or "provider::model" from /media. Named means that one only.'),
     })),
     execute: async ({ prompt, seconds, instrumental, model }) => {
       if (!(await deps.media.chain('music', model)).length) {
-        return `Error: ${model ? `no music model "${model}".` : 'no music model is set up. A Gemini key (Lyria) or an ElevenLabs key (Settings → Voice) makes music.'}`;
+        return `Error: ${model ? `"${model}" can't make music here (not set up, or no such service). Tell the user; don't use another service instead unless they agree.` : 'no music model is set up. A Gemini key (Lyria) or an ElevenLabs key (Settings → Voice) makes music.'}`;
       }
       const outDir = deps.outputDir();
       const chat = deps.chat();

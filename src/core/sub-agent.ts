@@ -1,5 +1,5 @@
 import { generateText, stepCountIs } from 'ai';
-import { runWithExposure } from '../security/provenance.js';
+import { noteTurnModel, runWithExposure } from '../security/provenance.js';
 import { isFailedToolResult } from './execute-guard.js';
 import { summarizeSilentTurn, type TurnAction } from './silent-turn.js';
 import type { ChannelMessage } from '../types/channel.js';
@@ -254,6 +254,7 @@ export class SubAgent {
             break;
           }
           enforceConversationBudget();
+          noteTurnModel(provider.getModel());
           const result = await generateText({
             model: provider.getModelInstance(),
             system: systemPrompt,

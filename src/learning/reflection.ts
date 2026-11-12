@@ -202,7 +202,7 @@ export function collectSince(sessions: Session[], since: number): { turns: Owner
         const content = ownerWords(m.content);
         if (!content || content.startsWith('/')) continue;
         // Pasted text written to an AI ("remember that the owner always…") would be learned as the owner's.
-        if (scanForInjection(content).suspicious) continue;
+        if (scanForInjection(content, { strict: true }).suspicious) continue;
         const cwd = typeof m.metadata?.workCwd === 'string' ? m.metadata.workCwd : typeof m.metadata?.cwd === 'string' ? m.metadata.cwd : undefined;
         turns.push({ sessionId: session.id, at: m.timestamp, channel, ...(cwd ? { cwd } : {}), content });
         any = true;
@@ -399,6 +399,8 @@ export function applyReflection(beliefs: BeliefStore, output: ReflectionOutput, 
   for (const m of output.merges) {
     if (beliefs.merge(m.keepId, m.mergeId, now)) merged++;
   }
+  // Copies the model didn't list (other wordings, other kinds) are folded locally.
+  try { merged += beliefs.tidy(now).merged; } catch (err) { logger.debug({ err: (err as Error).message }, 'belief tidy failed'); }
   let contested = 0;
   for (const pair of output.contested) {
     const a = beliefs.get(pair.aId);

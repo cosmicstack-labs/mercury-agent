@@ -31,6 +31,8 @@ export interface Exposure {
    * message: following one is browsing, not sending data out (exfil.ts).
    */
   seen?: ReadonlySet<string>;
+  /** The model answering this turn (the last one called, after any fallback): approvals depend on it (model-strength.ts). */
+  model?: string;
 }
 
 const MAX_SOURCES = 12;
@@ -45,7 +47,7 @@ const current = new ScopedValue<Exposure>(empty());
 const inherited = new AsyncLocalStorage<{ e: Exposure }>();
 
 export function runWithExposure<T>(e: Exposure, fn: () => T): T {
-  return inherited.run({ e: { sources: [...e.sources], suspicious: e.suspicious, ...(e.seen ? { seen: new Set(e.seen) } : {}) } }, fn);
+  return inherited.run({ e: { sources: [...e.sources], suspicious: e.suspicious, ...(e.seen ? { seen: new Set(e.seen) } : {}), ...(e.model ? { model: e.model } : {}) } }, fn);
 }
 
 /** Give the calling turn its own record, starting clean (no-op outside a turn). */
@@ -55,6 +57,13 @@ export function claimExposureForTurn(): void {
 
 export function exposure(): Exposure {
   return inherited.getStore()?.e ?? current.get();
+}
+
+/** The model about to answer (called before each model request, so a fallback updates it). */
+export function noteTurnModel(model: string): void {
+  const box = inherited.getStore();
+  if (box) box.e = { ...box.e, model };
+  else current.set({ ...current.get(), model });
 }
 
 /** Links the turn may follow freely (see Exposure.seen). */
@@ -82,7 +91,7 @@ export function noteExposure(source: ExposureSource): void {
     : source.findings?.length
       ? [source, ...e.sources].slice(0, MAX_SOURCES)
       : [...e.sources, source].slice(0, MAX_SOURCES);
-  const next = { sources, suspicious, ...(e.seen ? { seen: e.seen } : {}) };
+  const next = { sources, suspicious, ...(e.seen ? { seen: e.seen } : {}), ...(e.model ? { model: e.model } : {}) };
   if (box) box.e = next;
   else current.set(next);
 }

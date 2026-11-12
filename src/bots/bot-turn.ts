@@ -1,5 +1,5 @@
 import { streamText, stepCountIs, tool, zodSchema } from 'ai';
-import { runWithExposure } from '../security/provenance.js';
+import { noteTurnModel, runWithExposure } from '../security/provenance.js';
 import { summarizeSilentTurn } from '../core/silent-turn.js';
 import { z } from 'zod';
 import { withAttachments } from '../core/attachments.js';
@@ -375,6 +375,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
       // result shape exactly (text/finishReason), so all classification below
       // is unchanged.
       let streamError: unknown = null;
+      noteTurnModel(provider.getModel());
       const stream = streamText({
         model: provider.getModelInstance(),
         messages,

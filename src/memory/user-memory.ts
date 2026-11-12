@@ -99,6 +99,9 @@ export interface UserPersonRecord {
 // 10: owner is never a person, real relationship phrasing, aliases merged, person-to-person links, standing.
 const PERSON_INDEX_VERSION = '10';
 
+/** Bump to run the one-time tidy again (folds copies, merges name variants, queues unchecked names). */
+const TIDY_VERSION = '1';
+
 export type KnowledgeMapResult = KnowledgeMap & {
   notes: Array<{ id: string; text: string; kind: string; at: number; confidence: number; archived: boolean }>;
 };
@@ -128,6 +131,7 @@ export class UserMemoryStore {
     this.db.init();
     this.beliefs = new BeliefStore(this.db.connection, userKey);
     this.beliefs.init();
+    this.beliefs.setOwnerNames(this.ownerNames);
     try {
       // The one-time move into beliefs (ADR-026) happens on the first boot
       // after an upgrade. A copy of the database goes next to it first, so an
@@ -138,6 +142,70 @@ export class UserMemoryStore {
     } catch (err) {
       logger.warn({ err }, 'Second Brain: belief migration failed (continuing with legacy memories)');
     }
+    try {
+      this.tidyOnce(resolvedDbPath);
+    } catch (err) {
+      logger.warn({ err }, 'Second Brain: tidy failed (continuing)');
+    }
+  }
+
+  /**
+   * Once per TIDY_VERSION, after a backup: fold beliefs that say the same
+   * thing, merge people who are one person under two names, and send names
+   * that were never checked to the slow, capped "is it a person?" check.
+   */
+  private tidyOnce(dbPath: string): void {
+    const key = `${this.userKey}:tidy_version`;
+    if (this.db.getMeta(key) === TIDY_VERSION) return;
+    // A new brain has nothing to tidy.
+    if (this.beliefs.list({ statuses: ['candidate', 'held', 'confirmed', 'contested'], limit: 1 }).length === 0 && this.db.listPersons(this.userKey, '', 1).length === 0) {
+      this.db.setMeta(key, TIDY_VERSION);
+      return;
+    }
+    if (dbPath !== ':memory:' && !this.db.backupTo(dbPath.replace(/\.db$/, '') + `.pre-tidy-${TIDY_VERSION}.db`)) return;
+    const result = this.tidy();
+    const queued = this.db.queueExistingPersonChecks(this.userKey);
+    this.db.setMeta(key, TIDY_VERSION);
+    logger.info({ ...result, queuedChecks: queued }, 'Second Brain: tidied');
+  }
+
+  /** Fold duplicate beliefs and duplicate people. Local, no model calls; safe to run any time. */
+  tidy(now = Date.now()): { beliefsMerged: number; peopleMerged: number } {
+    const beliefsMerged = this.beliefs.tidy(now).merged;
+    const peopleMerged = this.tidyPersons();
+    if (beliefsMerged || peopleMerged) this.mapCache.clear();
+    return { beliefsMerged, peopleMerged };
+  }
+
+  /**
+   * One person under several names: a name that is the start of exactly one
+   * other person's name ("Shehzen" / "Shehzen Sidiq Malla", or an alias like
+   * "Asyifa Dzaky Maulana Aditria") is the same person. The fuller name stays
+   * as an alias. The owner's edits win: two people the owner both edited are
+   * never merged, and an owner-edited person is always the one kept.
+   */
+  tidyPersons(): number {
+    this.ensurePersonsBackfilled();
+    let merged = 0;
+    const blocked = new Set<string>();
+    for (let round = 0; round < 100; round++) {
+      const names = this.db.personNames(this.userKey);
+      const ev = new Map(this.db.personEvidence(this.userKey).map((e) => [e.id, e]));
+      const pair = findNameVariant(names, (id) => {
+        const e = ev.get(id);
+        return !e || e.verified_by === 'model-rejected' || e.kind === 'pet';
+      }, this.ownerNames, blocked);
+      if (!pair) break;
+      const [a, b] = pair;
+      const ea = ev.get(a)!;
+      const eb = ev.get(b)!;
+      if (ea.owner_edited === 1 && eb.owner_edited === 1) { blocked.add(`${a}|${b}`); continue; }
+      const score = (e: typeof ea) => (e.owner_edited === 1 ? 1e6 : 0) + (e.verified_by === 'model' ? 1e3 : 0) + e.mentions;
+      const [keep, lose] = score(ea) >= score(eb) ? [a, b] : [b, a];
+      if (!this.db.mergePersons(this.userKey, lose, keep, { byOwner: false })) { blocked.add(`${a}|${b}`); continue; }
+      merged++;
+    }
+    return merged;
   }
 
   /** Toggle whether new memories are marked shareable. */
@@ -363,7 +431,7 @@ export class UserMemoryStore {
       const all = this.db.beliefsSince(this.userKey, 0, 100_000);
       for (const b of all) this.indexPersonsForBelief(b);
       const last = all[all.length - 1];
-      this.db.setMeta(`${this.userKey}:persons_belief_cursor`, last ? `${last.created_at}:${last.seq}` : String(Date.now()));
+      this.db.setMeta(`${this.userKey}:persons_belief_cursor`, last ? `${last.created_at}:${last.seq}` : '0');
     } finally {
       this.rebuilding = false;
     }
@@ -926,6 +994,24 @@ function typeToKinds(type: UserMemoryType): BeliefKind[] {
 }
 
 export { isLikelyHumanName };
+
+/**
+ * Two people who are one person under two names: one's name (or alias) is,
+ * word for word, the start of the other's, and of nobody else's. Skips the
+ * owner's names and people `skip` rules out. Returns the first pair found.
+ */
+export function findNameVariant(names: Map<string, string[]>, skip: (id: string) => boolean, owner: Set<string>, blocked: Set<string> = new Set()): [string, string] | null {
+  const people = [...names.entries()].filter(([id, list]) => !skip(id) && !list.some((n) => isOwnerName(n, owner)));
+  const startsWith = (long: string, short: string) => long !== short && long.startsWith(`${short} `);
+  for (const [id, list] of people) {
+    for (const short of list) {
+      if (short.length < 3) continue;
+      const others = people.filter(([oid, ol]) => oid !== id && ol.some((n) => n === short || startsWith(n, short)));
+      if (others.length === 1 && !blocked.has(`${id}|${others[0][0]}`)) return [id, others[0][0]];
+    }
+  }
+  return null;
+}
 
 function parseMeta(raw: string | undefined): Record<string, unknown> {
   try {

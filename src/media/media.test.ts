@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { byService } from './service.js';
 import { imageModels, isImageModelEntry, listImageModels, resetMediaCatalogCache, withoutSnapshots, type MediaSource } from './catalog.js';
 import { generateWith } from './image.js';
 import { autoOrder, MediaService, resetUnusable, slug } from './service.js';
@@ -262,3 +263,16 @@ it('a model the account has no quota for is skipped by automatic picks for a day
   resetUnusable();
 });
 
+
+describe('media: a service by name', () => {
+  const models = [
+    { provider: 'gemini', group: 'Gemini', model: 'lyria-002', label: 'Lyria 2' },
+    { provider: 'elevenlabs', group: 'ElevenLabs', model: 'music_v1', label: 'Music v1' },
+  ];
+  it('the named service only, however it is written', () => {
+    expect(byService(models, 'ElevenLabs').map((m) => m.provider)).toEqual(['elevenlabs']);
+    expect(byService(models, 'eleven labs').map((m) => m.provider)).toEqual(['elevenlabs']);
+    expect(byService(models, 'lyria').map((m) => m.provider)).toEqual(['gemini']);
+    expect(byService(models, 'suno')).toEqual([]);
+  });
+});

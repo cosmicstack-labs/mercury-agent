@@ -102,9 +102,21 @@ export class SpeechService {
     return engine ? { engine, id: engine.kind, label: engine.label, ...(voice && !prefs.choice ? { voice } : {}) } : null;
   }
 
+  /** A service the owner named ("elevenlabs", "Eleven Labs", "openai"): that one, or an error saying it isn't set up. */
+  named(service: string): SpeechTarget {
+    const n = service.toLowerCase().replace(/[\s._-]+/g, '');
+    const kind = (['openai', 'gemini', 'deepgram', 'elevenlabs'] as const).find((k) => n === k || n.startsWith(k) || (k === 'gemini' && n === 'google'));
+    if (!kind) throw new Error(`"${service}" isn't a speech service Mercury can use (OpenAI, Gemini, Deepgram, ElevenLabs).`);
+    const engine = directEngines()[kind];
+    if (!engine) throw new Error(`${ENGINE_LABEL[kind]} isn't set up: add its key in Settings → Voice. Tell the user; don't use another voice service instead unless they agree.`);
+    const prefs = this.prefs();
+    const voice = prefs.choice === kind ? prefs.voice : undefined;
+    return { engine, id: kind, label: ENGINE_LABEL[kind], ...(voice ? { voice } : {}) };
+  }
+
   /** Speak text; ogg is a voice note (converted with ffmpeg where the service can't make it). */
-  async speak(text: string, opts: { voice?: string; instructions?: string; format?: SpeechFormat; signal?: AbortSignal } = {}): Promise<{ bytes: Uint8Array; mime: string; ext: string; label: string }> {
-    const t = await this.target();
+  async speak(text: string, opts: { voice?: string; instructions?: string; format?: SpeechFormat; signal?: AbortSignal; service?: string } = {}): Promise<{ bytes: Uint8Array; mime: string; ext: string; label: string }> {
+    const t = opts.service ? this.named(opts.service) : await this.target();
     if (!t) throw new Error('No speech service is set up: add an OpenAI key (Settings → Models), or a Gemini, Deepgram or ElevenLabs key (Settings → Voice).');
     const format = opts.format ?? 'mp3';
     const bytes = await synthesizeSpeech(text.slice(0, SPEAK_MAX_CHARS), t.engine, {
@@ -123,7 +135,7 @@ export class SpeechService {
   }
 
   /** Speak into a file in `outDir`; named from the text. */
-  async speakToFile(text: string, outDir: string, opts: { voice?: string; instructions?: string; format?: SpeechFormat; signal?: AbortSignal } = {}): Promise<{ file: string; label: string; ms: number }> {
+  async speakToFile(text: string, outDir: string, opts: { voice?: string; instructions?: string; format?: SpeechFormat; signal?: AbortSignal; service?: string } = {}): Promise<{ file: string; label: string; ms: number }> {
     const started = Date.now();
     const audio = await this.speak(text, opts);
     mkdirSync(outDir, { recursive: true });

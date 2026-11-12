@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync, unlinkSync, renameSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, resolve, sep } from 'node:path';
+import { homedir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
 import type { SkillDiscovery, Skill, SkillMeta } from './types.js';
@@ -26,6 +27,25 @@ const SKILL_FILE = 'SKILL.md';
 const SEEDED_FILE = '.seeded-defaults.json';
 const DISABLED_FILE = '.disabled';
 
+/**
+ * Skill folders other agents share: `~/.agents/skills` (the cross-agent
+ * standard that `npx skills add` installs into) and `~/.claude/skills`.
+ * Skills there (HyperFrames, for one) are usable by name in Mercury too,
+ * read-only. Mercury's own skills win on a name clash. Off with
+ * MERCURY_SHARED_SKILLS=0.
+ */
+export function sharedSkillDirs(home = homedir()): string[] {
+  if (process.env.MERCURY_SHARED_SKILLS === '0') return [];
+  return [join(home, '.agents', 'skills'), join(home, '.claude', 'skills')];
+}
+
+/** A shared skill's description for the always-sent list: its first sentence, short. */
+function briefDescription(d: string, max = 160): string {
+  const t = d.replace(/\s+/g, ' ').trim();
+  const first = /^(.{20,}?[.!?])(\s|$)/.exec(t)?.[1] ?? t;
+  return first.length <= max ? first : `${first.slice(0, max - 1).replace(/\s+\S*$/, '')}…`;
+}
+
 function parseSkillMd(content: string): { meta: SkillMeta; instructions: string } | null {
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
   if (!fmMatch) return null;
@@ -48,14 +68,19 @@ export class SkillLoader {
   private skillsDir: string;
   /** Additional read-only skill roots (e.g. a bot's own skills dir). Own-dir entries load after the primary dir, so they win on name collision. */
   private extraDirs: string[];
+  /** Folders other agents share (sharedSkillDirs): read before the primary dir, so Mercury's own skills win. */
+  private sharedDirs: string[];
+  private sharedPaths = new Set<string>();
   private seedDefaults: boolean;
   private discovered: Map<string, SkillDiscovery> = new Map();
   private loaded: Map<string, Skill> = new Map();
   readonly intentRouter: IntentRouter;
 
-  constructor(skillsDir?: string, options?: { extraDirs?: string[]; seedDefaults?: boolean }) {
+  constructor(skillsDir?: string, options?: { extraDirs?: string[]; seedDefaults?: boolean; sharedDirs?: string[] }) {
     this.skillsDir = skillsDir || join(getMercuryHome(), 'skills');
     this.extraDirs = options?.extraDirs ?? [];
+    // Only the owner's own loader reads shared folders (not bots, not a custom root).
+    this.sharedDirs = options?.sharedDirs ?? (skillsDir ? [] : sharedSkillDirs());
     this.seedDefaults = options?.seedDefaults !== false;
     this.intentRouter = new IntentRouter();
   }
@@ -88,6 +113,7 @@ export class SkillLoader {
         this.discovered.set(parsed.meta.name, {
           name: parsed.meta.name,
           description: parsed.meta.description,
+          ...(this.sharedPaths.has(skillPath) ? { shared: true } : {}),
         });
         parsedSkills.push({ meta: parsed.meta, path: skillPath });
       } catch (err) {
@@ -123,6 +149,8 @@ export class SkillLoader {
         const skill: Skill = {
           ...parsed.meta,
           instructions: parsed.instructions,
+          dir: skillDir,
+          ...(this.sharedPaths.has(skillPath) ? { shared: true } : {}),
           scriptsDir: existsSync(join(skillDir, 'scripts')) ? join(skillDir, 'scripts') : undefined,
           referencesDir: existsSync(join(skillDir, 'references')) ? join(skillDir, 'references') : undefined,
         };
@@ -147,10 +175,33 @@ export class SkillLoader {
    */
   private findSkillFiles(): string[] {
     const out: string[] = [];
+    // Shared first: later entries win on a name clash, so Mercury's own skills override.
+    for (const dir of this.sharedDirs) {
+      const before = out.length;
+      this.findSkillFilesIn(dir, out);
+      for (const p of out.slice(before)) this.sharedPaths.add(p);
+    }
+    // The same skill in two shared folders (~/.agents and ~/.claude): keep one.
+    const seen = new Set<string>();
+    for (let i = out.length - 1; i >= 0; i--) {
+      const name = out[i].split(sep).slice(-2, -1)[0];
+      if (seen.has(name)) out.splice(i, 1); else seen.add(name);
+    }
     for (const dir of [this.skillsDir, ...this.extraDirs]) {
       this.findSkillFilesIn(dir, out);
     }
     return out;
+  }
+
+  /** The discovered skill closest to a name the user or model wrote ("hyperframe", "Hyper Frames"). */
+  closest(name: string): string | null {
+    const sq = (s: string) => s.toLowerCase().replace(/[\s._-]+/g, '').replace(/s$/, '');
+    const n = sq(name);
+    if (n.length < 3) return null;
+    const names = [...this.discovered.keys()];
+    return names.find((k) => sq(k) === n)
+      ?? names.filter((k) => sq(k).startsWith(n) || n.startsWith(sq(k))).sort((a, b) => a.length - b.length)[0]
+      ?? null;
   }
 
   /** Walk one skills root (flat + one nested category level), appending SKILL.md paths. */
@@ -200,6 +251,8 @@ export class SkillLoader {
   getSkillSummariesText(): string {
     const skills = this.getDiscovered();
     if (skills.length === 0) return '';
+    const sharedNames = new Set(skills.filter((s) => s.shared).map((s) => s.name));
+    const own = skills.filter((s) => !s.shared);
 
     // Group skills by category using IntentRouter
     const categories = this.intentRouter.getAllCategories();
@@ -212,7 +265,7 @@ export class SkillLoader {
       // under the first (every line here is re-sent with each request).
       const listed = new Set<string>();
       for (const [category, catSkills] of categories) {
-        const fresh = catSkills.filter((s) => !listed.has(s.name));
+        const fresh = catSkills.filter((s) => !listed.has(s.name) && !sharedNames.has(s.name));
         if (fresh.length === 0) continue;
         const label = category === SELF_MADE_CATEGORY ? SELF_MADE_LABEL : getCategoryLabel(category);
         text += `\n**${label}:**\n`;
@@ -225,7 +278,23 @@ export class SkillLoader {
       }
     } else {
       // Flat list (no categorization or only one category)
-      text += skills.map(s => `- ${s.name}: ${s.description}`).join('\n');
+      text += own.map(s => `- ${s.name}: ${s.description}`).join('\n');
+    }
+
+    // Skills other agents share, compactly: a family (hyperframes, hyperframes-core, …) is one line.
+    const shared = skills.filter((s) => s.shared).sort((a, b) => a.name.localeCompare(b.name));
+    if (shared.length) {
+      text += '\n\n**Shared skills** (installed for other agents too; load the same way):\n';
+      const children = new Map<string, string[]>();
+      const heads = shared.filter((s) => !shared.some((p) => p !== s && s.name.startsWith(`${p.name}-`)));
+      for (const s of shared) {
+        const head = heads.find((h) => h !== s && s.name.startsWith(`${h.name}-`));
+        if (head) children.set(head.name, [...(children.get(head.name) ?? []), s.name]);
+      }
+      for (const h of heads) {
+        const kids = children.get(h.name);
+        text += `- ${h.name}: ${briefDescription(h.description)}${kids?.length ? ` (with ${kids.join(', ')})` : ''}\n`;
+      }
     }
 
     // Skills are optional procedures, never a gate in front of the answer
@@ -243,7 +312,11 @@ export class SkillLoader {
     text += '\n\n**Using skills** — When a request clearly matches a skill, invoke it via `use_skill`. '
       + 'A skill is optional help, not a requirement: if none fits, just do the task. '
       + 'If the request could match several skills equally, pick the best fit or ask with `ask_user`. '
-      + 'A message that starts with `#skill-name` means the user already picked that skill.';
+      + 'A message that starts with `#skill-name` means the user already picked that skill.'
+      + '\n\n**When the user names a skill, tool or service** ("use hyperframes", "with ElevenLabs", "render it with Remotion"), that is the method: '
+      + 'load the skill whose name matches, even written loosely ("hyperframe", "hyper frames"), follow it to the finished file (render it, don\'t stop at the source), '
+      + 'and pass the named service to the media tools. Never swap in a different method (an AI video model for a HyperFrames render, Google for ElevenLabs) on your own: '
+      + 'if the named one isn\'t available or fails, say so and ask. It holds for the rest of the chat, not only the message that named it.';
 
     return text;
   }
