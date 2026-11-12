@@ -13,7 +13,9 @@ import { requireOwner } from '../owner-gate.js';
 import { getPluginManager } from '../../plugins/manager.js';
 import { localService } from '../../plugins/service.js';
 import { qrSvg } from '../../plugins/qr-svg.js';
-import { RENDERER_HEADERS, listRenderers, readRendererAsset } from '../../plugins/renderers.js';
+import { listRenderers, readRendererAsset, rendererHeaders } from '../../plugins/renderers.js';
+import { allowedOrigins } from '../cors.js';
+import { loadConfig } from '../../utils/config.js';
 
 const plugins = new Hono();
 
@@ -50,10 +52,24 @@ plugins.get('/api/ui/renderers', (c) => {
   return c.json({ renderers });
 });
 
+/**
+ * Who may frame a renderer: this dashboard (`'self'`), the desktop shells, and whatever the
+ * owner configured for CORS. Read per request, like the CORS middleware does, so a config
+ * change does not need a restart to take effect on the next frame.
+ */
+function frameAncestors(): string[] {
+  try {
+    const extra = loadConfig().web?.corsOrigins;
+    return [...allowedOrigins(Array.isArray(extra) ? extra.filter((o): o is string => typeof o === 'string') : [])];
+  } catch {
+    return [...allowedOrigins([])];
+  }
+}
+
 plugins.get('/api/ui/renderers/:id/:language', (c) => {
   const asset = readRendererAsset(c.req.param('id'), c.req.param('language'));
   if (!asset) return c.json({ error: 'No such renderer' }, 404);
-  return new Response(asset.html, { headers: RENDERER_HEADERS });
+  return new Response(asset.html, { headers: rendererHeaders(frameAncestors()) });
 });
 
 plugins.get('/api/plugins', async (c) => {

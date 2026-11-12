@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { PluginRenderer } from "@/lib/renderers";
+import { apiUrl } from "@/lib/connection";
 
 /**
  * Frame protocol v1 — the only thing a renderer and this host agree on.
@@ -130,7 +131,7 @@ export function PluginRendererFrame({ renderer, text, complete }: PluginRenderer
       <iframe
         ref={frameRef}
         title={renderer.title ?? `${renderer.language} renderer`}
-        src={renderer.url}
+        src={apiUrl(renderer.url)}
         sandbox="allow-scripts"
         referrerPolicy="no-referrer"
         // No `loading="lazy"`: a frame that loads while scrolled out of view inside the

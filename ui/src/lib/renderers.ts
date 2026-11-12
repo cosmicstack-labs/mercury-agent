@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiUrl, authHeaders } from "@/lib/connection";
 
 /**
  * Renderers a plugin declares for a fence language (Plugin API 1.3).
@@ -23,7 +24,9 @@ let cache: Promise<PluginRenderer[]> | null = null;
 /** One fetch per page load; a failed listing is an empty registry, never an error screen. */
 export function loadRenderers(): Promise<PluginRenderer[]> {
   if (!cache) {
-    cache = fetch("/api/ui/renderers", { credentials: "same-origin" })
+    // Desktop and remote shells have no session cookie: the address comes from
+    // `configureApi()` and the credential rides as a header, like every other call.
+    cache = fetch(apiUrl("/api/ui/renderers"), { headers: authHeaders(), credentials: "same-origin" })
       .then((response) => (response.ok ? response.json() : { renderers: [] }))
       .then((body: { renderers?: PluginRenderer[] }) => (Array.isArray(body.renderers) ? body.renderers : []))
       .catch(() => []);

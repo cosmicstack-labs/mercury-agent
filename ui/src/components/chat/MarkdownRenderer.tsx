@@ -26,7 +26,8 @@ function FencedBlock({ code, language }: { code: string; language: string }) {
 
 const components: Components = {
   code({ className, children, ...props }) {
-    const match = /language-(\w+)/.exec(className || "");
+    // A fence language is an identifier a manifest chose: `-` included (`openui-contract`).
+    const match = /language-([\w-]+)/.exec(className || "");
     const codeString = String(children).replace(/\n$/, "");
 
     // Fenced blocks go through the renderer registry: a plugin may claim a language and

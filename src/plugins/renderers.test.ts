@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MAX_RENDERER_BYTES, RENDERER_HEADERS, duplicateLanguages, listRenderers, readRendererAsset } from './renderers.js';
+import { MAX_RENDERER_BYTES, duplicateLanguages, listRenderers, readRendererAsset, rendererCsp, rendererHeaders } from './renderers.js';
 import { pluginVersionDir, readState, writeState } from './store.js';
 import { tempHome } from './test-fixtures.js';
 import type { PluginManifest, PluginsState } from './types.js';
@@ -162,13 +162,33 @@ describe('/plugins info', () => {
 });
 
 describe('the headers a renderer is served with', () => {
-  it('blocks every network call and every frame', () => {
-    const csp = RENDERER_HEADERS['Content-Security-Policy'];
+  it('blocks every network call and every foreign frame', () => {
+    const csp = rendererHeaders([])['Content-Security-Policy'];
     expect(csp).toContain("default-src 'none'");
     expect(csp).toContain("connect-src 'none'");
     expect(csp).toContain("form-action 'none'");
     expect(csp).toContain("base-uri 'none'");
     expect(csp).not.toContain('unsafe-eval');
-    expect(RENDERER_HEADERS['X-Content-Type-Options']).toBe('nosniff');
+    expect(rendererHeaders([])['X-Content-Type-Options']).toBe('nosniff');
+  });
+
+  it('sandboxes the document, so a top-level visit has no origin either', () => {
+    // The asset route is public: any site can navigate a window to it. The sandbox
+    // directive is what keeps that page from running on Mercury's own origin.
+    expect(rendererCsp([])).toContain('sandbox allow-scripts');
+  });
+
+  it('names the dashboard and the desktop shells as the only ancestors', () => {
+    const csp = rendererCsp(['tauri://localhost', 'http://tauri.localhost']);
+    expect(csp).toContain("frame-ancestors 'self' tauri://localhost http://tauri.localhost");
+    // No configured origin, no wildcard: an empty list still refuses everyone but us.
+    expect(rendererCsp([])).toContain("frame-ancestors 'self'");
+    expect(rendererCsp([])).not.toContain('*');
+  });
+
+  it('never repeats an origin it was given twice', () => {
+    expect(rendererCsp(["'self'", 'tauri://localhost', 'tauri://localhost'])).toContain(
+      "frame-ancestors 'self' tauri://localhost",
+    );
   });
 });

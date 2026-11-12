@@ -101,8 +101,14 @@ app.use('*', async (c, next) => {
   c.res.headers.set('X-Content-Type-Options', 'nosniff');
   c.res.headers.set('Referrer-Policy', 'no-referrer');
   if ((c.res.headers.get('Content-Type') ?? '').startsWith('text/html')) {
-    c.res.headers.set('X-Frame-Options', 'DENY');
-    if (!c.res.headers.has('Content-Security-Policy')) c.res.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+    // A page that names its own ancestors has already answered the question, and every browser
+    // that reads `frame-ancestors` ignores `X-Frame-Options` when it is present. Sending both
+    // would make the pair contradict itself the moment a route allows a frame.
+    const csp = c.res.headers.get('Content-Security-Policy') ?? '';
+    if (!/frame-ancestors/i.test(csp)) {
+      c.res.headers.set('X-Frame-Options', 'DENY');
+      if (!csp) c.res.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+    }
   }
 });
 // Sign-in bodies are tiny: refuse big ones before reading them (they arrive without a credential).

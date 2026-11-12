@@ -90,16 +90,48 @@ export function readRendererAsset(pluginId: string, language: string): RendererA
   return { html: readFileSync(file, 'utf8'), pluginId, language };
 }
 
-/** Headers a served renderer gets: no network, no framing, no sniffing. */
-export const RENDERER_HEADERS: Record<string, string> = {
-  'Content-Type': 'text/html; charset=utf-8',
-  'Content-Security-Policy':
-    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'",
-  'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'no-referrer',
-  // A renderer is versioned with its plugin: revalidate, but never hold a stale copy.
-  'Cache-Control': 'no-cache',
-};
+/**
+ * The CSP a served renderer gets: no network, no sniffing — and an opaque origin even when
+ * the URL is opened as a top-level page.
+ *
+ * `sandbox allow-scripts` is the part that survives a renderer being opened directly: the
+ * asset route is public, so a hostile site can navigate a window to it, and without the
+ * directive that page would run on Mercury's own origin with inline script allowed — enough
+ * to `window.open('/')` into the dashboard with the session cookie attached. With it, the
+ * document has no origin at all, whatever framed it.
+ *
+ * `frame-ancestors` names who may embed it: this dashboard, plus the desktop shells and any
+ * origin configured for CORS. Browsers that know the directive ignore `X-Frame-Options`
+ * entirely, which is why the server leaves that header alone when a response names its
+ * ancestors (see `src/web/server.ts`).
+ */
+export function rendererCsp(frameAncestors: readonly string[]): string {
+  const ancestors = [...new Set(["'self'", ...frameAncestors])].join(' ');
+  return [
+    'sandbox allow-scripts',
+    "default-src 'none'",
+    "script-src 'unsafe-inline'",
+    "style-src 'unsafe-inline'",
+    'img-src data:',
+    'font-src data:',
+    "connect-src 'none'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    `frame-ancestors ${ancestors}`,
+  ].join('; ');
+}
+
+/** Headers a served renderer gets: no network, no foreign framing, no sniffing. */
+export function rendererHeaders(frameAncestors: readonly string[]): Record<string, string> {
+  return {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Security-Policy': rendererCsp(frameAncestors),
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    // A renderer is versioned with its plugin: revalidate, but never hold a stale copy.
+    'Cache-Control': 'no-cache',
+  };
+}
 
 /** True when the language is claimed by more than one enabled plugin (first wins, loudly). */
 export function duplicateLanguages(entries: RendererEntry[] = listRenderers()): string[] {

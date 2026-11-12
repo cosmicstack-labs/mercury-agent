@@ -75,6 +75,9 @@ describe('renderer routes', () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(ASSET);
     expect(res.headers.get('Content-Security-Policy')).toContain("connect-src 'none'");
+    // Public asset, opaque origin, and only this dashboard may frame it.
+    expect(res.headers.get('Content-Security-Policy')).toContain('sandbox allow-scripts');
+    expect(res.headers.get('Content-Security-Policy')).toContain('frame-ancestors');
     expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
   });
 
