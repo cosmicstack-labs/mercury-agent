@@ -7,7 +7,7 @@ import { Markdown } from "~/components/Markdown";
 import { StreamCaret } from "~/components/indicators/Thinking";
 import { Spinner } from "~/components/ui/bits";
 import { cx } from "~/lib/cx";
-import { MediaSkeleton } from "~/components/MediaSkeleton";
+import { MediaSkeleton, mediaPhase, type MediaShape } from "~/components/MediaSkeleton";
 
 /* ═══════════════════════════════════════════════════════════════
    A turn as it happened, top to bottom: thinking, the tools it ran, the
@@ -61,9 +61,52 @@ export function blocksOf(trace: ThoughtTrace): Block[] {
   return blocks;
 }
 
+/** A picture or a voice being made in this reply: its placeholder stands in until the reply lands. */
+function isMaking(s: ThoughtStep): boolean {
+  return !!s.media && (s.media.kind === "image" || s.media.kind === "speech") && s.status !== "error" && s.status !== "stopped";
+}
+
+export interface MediaBatch { key: string; shape: MediaShape; startedAt: number; done: number; total: number }
+
+/**
+ * What a running turn is making, as batches: every picture in the turn is
+ * one batch ("make five images" is often several calls: 4 + 1, or 5 × 1),
+ * each voice its own. Videos and songs have their own (PendingMedia).
+ */
+export function liveMedia(trace: ThoughtTrace): MediaBatch[] {
+  const making = trace.steps.filter(isMaking);
+  const out: MediaBatch[] = [];
+  const images = making.filter((s) => s.media!.kind === "image");
+  if (images.length) {
+    const size = (s: ThoughtStep) => Math.max(s.media!.count ?? 1, 1);
+    const total = images.reduce((n, s) => n + size(s), 0);
+    const done = images.filter((s) => s.status === "done").reduce((n, s) => n + size(s), 0);
+    const prompts = [...new Set(images.map((s) => s.media!.prompt).filter(Boolean))];
+    out.push({
+      key: "images",
+      shape: { kind: "image", aspect: images[0].media!.aspect, count: total, prompt: prompts.length === 1 ? prompts[0] : undefined },
+      startedAt: Math.min(...images.map((s) => s.startedAt)),
+      done, total,
+    });
+  }
+  for (const s of making.filter((x) => x.media!.kind === "speech")) {
+    out.push({ key: String(s.key ?? s.id), shape: s.media!, startedAt: s.startedAt, done: s.status === "done" ? 1 : 0, total: 1 });
+  }
+  return out;
+}
+
+/** "Creating 5 images · 2 of 5 ready · Adding detail" for the turn's status line. */
+export function describeMedia(b: MediaBatch, now: number): string {
+  const what = b.shape.kind === "speech" ? "Creating voice" : b.total > 1 ? `Creating ${b.total} images` : "Creating image";
+  const ready = b.total > 1 && b.done > 0 ? ` · ${b.done} of ${b.total} ready` : "";
+  const phase = b.done >= b.total ? "Almost there" : mediaPhase(b.shape.kind, Math.max(0, now - b.startedAt));
+  return `${what}${ready} · ${phase}`;
+}
+
 /** `expanded`: a finished turn opened on purpose — its thinking shows open too. */
 export function TraceTimeline({ trace, live = false, expanded = false, now }: { trace: ThoughtTrace; live?: boolean; expanded?: boolean; now: number }) {
   const blocks = blocksOf(trace);
+  const making = live ? liveMedia(trace) : [];
   return (
     <div className="flex flex-col gap-2.5">
       {blocks.map((b, i) => {
@@ -89,6 +132,8 @@ export function TraceTimeline({ trace, live = false, expanded = false, now }: { 
             );
         }
       })}
+      {/* One placeholder per batch, below everything, where the finished pictures will appear; the turn's status line says how it's going. */}
+      {making.map((b) => <MediaSkeleton key={`m-${b.key}`} shape={b.shape} startedAt={b.startedAt} now={now} done={b.done} quiet className="mt-1" />)}
     </div>
   );
 }
@@ -132,14 +177,13 @@ const SHOW_STEPS = 4;
 /** A run of tool calls. Long runs show the latest few; failures always show. */
 function StepGroup({ steps, live, now }: { steps: ThoughtStep[]; live: boolean; now: number }) {
   const [all, setAll] = useState(false);
-  const hidden = all ? [] : steps.slice(0, Math.max(0, steps.length - SHOW_STEPS)).filter((s) => s.status !== "error" && s.status !== "running");
+  // While it runs, a picture or voice being made is shown by its placeholder, not also as a row.
+  const listed = live ? steps.filter((s) => !isMaking(s)) : steps;
+  const hidden = all ? [] : listed.slice(0, Math.max(0, listed.length - SHOW_STEPS)).filter((s) => s.status !== "error" && s.status !== "running");
   const hiddenKeys = new Set(hidden);
-  const shown = steps.filter((s) => !hiddenKeys.has(s));
-  // A picture or voice being made in this reply: its placeholder until the reply lands
-  // (the finished file arrives with it). Videos and songs have their own (PendingMedia).
-  const making = live ? steps.filter((s) => s.media && (s.media.kind === "image" || s.media.kind === "speech") && s.status !== "error" && s.status !== "stopped") : [];
+  const shown = listed.filter((s) => !hiddenKeys.has(s));
+  if (!listed.length) return null;
   return (
-    <>
     <ol className="flex flex-col gap-1">
       {hidden.length > 0 && (
         <li>
@@ -151,10 +195,6 @@ function StepGroup({ steps, live, now }: { steps: ThoughtStep[]; live: boolean; 
       )}
       {shown.map((s) => <StepRow key={s.key ?? `${s.id}-${s.startedAt}`} step={s} live={live} now={now} />)}
     </ol>
-    {making.map((s) => (
-      <MediaSkeleton key={`m-${s.key ?? s.id}`} shape={s.media!} startedAt={s.startedAt} now={now} note={s.status === "done" ? "Almost there…" : undefined} className="mt-1" />
-    ))}
-    </>
   );
 }
 
@@ -207,8 +247,12 @@ export function LiveStatus({ trace, agent, stopping, now }: { trace: ThoughtTrac
   const writing = last?.kind === "text" && quietFor < 2500 && !stopping;
   const step = runningStep(trace);
   const thinking = last?.kind === "reasoning" && !last.endedAt;
+  // Pictures or a voice on the way: said here, once, for the whole batch.
+  const media = liveMedia(trace)[0];
+  const makingNow = media && media.done < media.total && (!step || isMaking(step));
   const what = stopping ? "Stopping"
     : writing ? "Writing"
+    : makingNow ? describeMedia(media, now)
     : step ? (step.title || step.label)
     : thinking ? "Thinking"
     : trace.phase ? trace.phase

@@ -4,7 +4,7 @@ import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
 import type { ChatEffort, ImageAspect, ImageIntent, MediaModelsResponse, ModelsResponse, ReasoningChoice, ReasoningLevel } from "~/api/types";
 import { usePermissionMode } from "~/app/permission";
-import { useBots, useRuntimeState } from "~/app/store";
+import { useBots, useRuntimeState, useUi } from "~/app/store";
 import { CommandPicker } from "./CommandPicker";
 import { CommandChip } from "./CommandChip";
 import { matchCommands, matchSkills, pickerMode, relevantCommands, setKnownCommands, type CommandEntry, type PickerItem, type SkillEntry } from "./picker";
@@ -161,6 +161,27 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
     if (el.parentElement) ro.observe(el.parentElement);
     return () => ro.disconnect();
   }, [fit]);
+
+  // The cursor goes to the box when a chat opens (new or switched to) and when this view is shown,
+  // so typing can start at once. Two frames: the view must have rendered (a hidden view can't take focus).
+  const view = useUi((st) => st.view);
+  const focusSoon = useCallback((force = false) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = ref.current;
+      if (!el || el.offsetParent === null) return;
+      // Don't take the cursor from another field the owner is typing in (a search box, a dialog).
+      const at = document.activeElement as HTMLElement | null;
+      if (!force && at && at !== el && at !== document.body && (at.tagName === "INPUT" || at.tagName === "TEXTAREA" || at.isContentEditable)) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }));
+  }, []);
+  useEffect(() => {
+    const on = (e: Event) => { if ((e as CustomEvent<{ surface: string }>).detail?.surface === surface) focusSoon(true); };
+    window.addEventListener("mercury:focus-composer", on);
+    return () => window.removeEventListener("mercury:focus-composer", on);
+  }, [surface, focusSoon]);
+  useEffect(() => { if (view === surface) focusSoon(); }, [view, surface, threadKey, focusSoon]);
 
   // ⌘L / Ctrl+L focuses the box from anywhere in the view.
   useEffect(() => {

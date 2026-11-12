@@ -53,6 +53,8 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'brain.map',         // GET /api/brain/map[?archive=1] — themes, sub-themes, notes, related links
   'artifacts.convert', // GET /api/artifacts/:id/file?as=pdf|docx, POST /api/artifacts/:id/export { dest, as } — Markdown/text as PDF or Word
   'artifacts.folder',  // GET /api/artifacts/folder (the output folder, loose files), POST /api/artifacts/folder/tidy
+  'suggestions',       // GET /api/suggestions?n= (greeting, subtitle, items {id,title,prompt,why,kind}), POST /api/suggestions/:id/used
+  'artifacts.cleanup', // GET /api/artifacts/usage, POST /api/artifacts/delete { ids | kind, olderThanDays, threadId | all }; DELETE removes Mercury-owned originals too
   'chat.favicon',      // GET /api/chat/favicon?domain= — a site's icon (204 when it has none), fetched and cached by the runtime
   'security.remote',   // device pairing needs the owner (202 + POST /api/auth/token/pending), sensitive remote actions 428 + X-Mercury-Approval, /api/security/* (this computer), SSE 'owner_approval' (local activity), expired devices 401 { expired }
   'updates',           // GET /api/updates[?seen=1], POST /api/updates/check, POST /api/updates/server { version?, now? } (202; remote → 428 owner), POST /api/updates/server/cancel — see UPDATES.md

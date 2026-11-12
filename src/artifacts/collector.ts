@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -21,6 +22,12 @@ const ARTIFACT_EXT = 'png|jpe?g|gif|webp|heic|avif|bmp|tiff|svg|mp4|mov|webm|mkv
 const ABS_PATH = new RegExp(`(?<=^|[\\s'"=(:\\[])(?:~|/|[A-Za-z]:[\\\\/])(?:[^\\s'"\`<>|;,()\\[\\]{}]|\\\\ )+\\.(?:${ARTIFACT_EXT})(?=$|[\\s'"\`<>|;,()\\]\\[.:!?])`, 'gi');
 /** Quoted paths may contain spaces: "/Users/me/Movies/My Clip.mp4". Windows drive paths (C:\…) count too. */
 const QUOTED_PATH = new RegExp(`(["'])((?:~|/|[A-Za-z]:[\\\\/])[^"'\\n]+?\\.(?:${ARTIFACT_EXT}))\\1`, 'gi');
+/**
+ * A list item that is one path, read to the end of the line: "- /Users/me/Chats/2026-11-11 Go to the
+ * GitHub training/fox.png". Folder names with spaces are common (the output folder names chats by
+ * their title); without this, only a quoted path survived and a batch of images became one.
+ */
+const LIST_PATH = new RegExp(`^[ \\t]*(?:[-*•]|\\d+[.)])[ \\t]+((?:~|/|[A-Za-z]:[\\\\/])[^\\n]*?\\.(?:${ARTIFACT_EXT}))[ \\t]*$`, 'gim');
 const REL_PATH = new RegExp(`(?:^|[\\s'"=])((?:\\./)?[\\w@][\\w.@/-]*\\.(?:${ARTIFACT_EXT}))(?=$|[\\s'"\`;,)])`, 'gi');
 
 type How = 'sent' | 'written' | 'mentioned';
@@ -42,6 +49,7 @@ function expand(p: string, cwd: string): string {
 /** Paths with artifact extensions in free text (a command line or a tool's output). */
 export function pathsIn(text: string, cwd: string, opts: { relative: boolean }): string[] {
   const out = new Set<string>();
+  for (const m of text.matchAll(LIST_PATH)) out.add(expand(m[1], cwd));
   for (const m of text.matchAll(QUOTED_PATH)) out.add(expand(m[2], cwd));
   for (const m of text.matchAll(ABS_PATH)) out.add(expand(m[0], cwd));
   if (opts.relative) for (const m of text.matchAll(REL_PATH)) out.add(expand(m[1], cwd));
@@ -49,13 +57,13 @@ export function pathsIn(text: string, cwd: string, opts: { relative: boolean }):
 }
 
 export class ArtifactCollector {
-  private candidates = new Map<string, { how: How; tool: string }>();
+  private candidates = new Map<string, { how: How; tool: string; prompt?: string }>();
   constructor(private readonly ctx: TurnContext) {}
 
-  private add(path: string, how: How, tool: string): void {
+  private add(path: string, how: How, tool: string, prompt?: string): void {
     if (!path || !extOf(path) && how !== 'sent') return;
     const prev = this.candidates.get(path);
-    if (!prev || RANK[how] > RANK[prev.how]) this.candidates.set(path, { how, tool });
+    if (!prev || RANK[how] > RANK[prev.how]) this.candidates.set(path, { how, tool, ...(prompt ? { prompt } : {}) });
   }
 
   observe(tool: string, input: unknown, result: unknown, cwd = this.ctx.cwd): void {
@@ -64,7 +72,10 @@ export class ArtifactCollector {
       const text = typeof result === 'string' ? result : JSON.stringify(result ?? '');
       if (tool === 'send_file' && typeof args.path === 'string') this.add(expand(args.path, cwd), 'sent', tool);
       // Made for the owner by an image model: always a deliverable.
-      else if (tool === 'generate_image' || tool === 'generate_speech') for (const p of pathsIn(text.slice(0, 4000), cwd, { relative: false })) this.add(p, 'sent', tool);
+      else if (tool === 'generate_image' || tool === 'generate_speech') {
+        const prompt = typeof args.prompt === 'string' ? args.prompt : typeof args.text === 'string' ? args.text : undefined;
+        for (const p of pathsIn(text.slice(0, 4000), cwd, { relative: false })) this.add(p, 'sent', tool, prompt);
+      }
       else if ((tool === 'write_file' || tool === 'create_file') && typeof args.path === 'string') {
         if (!/^(Error|⚠)/.test(text.trim())) this.add(expand(args.path, cwd), 'written', tool);
       } else if (tool === 'run_command') {
@@ -86,7 +97,11 @@ export class ArtifactCollector {
     const kept: Artifact[] = [];
     const seen = new Set<string>();
     const since = this.ctx.startedAt - 2000;
-    for (const [path, { how, tool }] of this.candidates) {
+    // Everything one media tool made in this turn is one batch ("make five images": often several calls).
+    const made = new Map<string, number>();
+    for (const { tool } of this.candidates.values()) if (tool.startsWith('generate_')) made.set(tool, (made.get(tool) ?? 0) + 1);
+    const batches = new Map([...made].filter(([, n]) => n > 1).map(([tool]) => [tool, randomUUID()]));
+    for (const [path, { how, tool, prompt }] of this.candidates) {
       try {
         if (!existsSync(path)) continue;
         const real = realpathSync(path);
@@ -100,7 +115,8 @@ export class ArtifactCollector {
         if (how === 'mentioned' && st.mtimeMs < since) continue;
         const kind = classifyArtifact(real, { surface: this.ctx.surface, cwd: this.ctx.cwd, mercuryHome: this.ctx.mercuryHome, how, isNew, size: st.size });
         if (!kind) continue;
-        kept.push(store.add({ threadId, path: real, kind, tool, surface: this.ctx.surface }));
+        const batch = batches.get(tool);
+        kept.push(store.add({ threadId, path: real, kind, tool, surface: this.ctx.surface, ...(batch ? { batch } : {}), ...(prompt ? { prompt } : {}) }));
       } catch { /* one bad candidate never loses the others */ }
     }
     return kept;

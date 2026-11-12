@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -104,6 +104,31 @@ describe('collecting a turn\'s artifacts', () => {
     expect(store.list().items).toHaveLength(0);
   });
 
+  it('pictures made together in one turn are one batch, with their prompt; a lone one is not', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mercury-art-'));
+    // A chat folder named by its title, with spaces, as the output folder makes them.
+    const work = join(root, '2026-11-11 Go to the GitHub training');
+    mkdirSync(work);
+    const store = new ArtifactStore(join(root, 'mercury', 'artifacts'));
+    const c = new ArtifactCollector({ startedAt: Date.now() - 1000, cwd: work, surface: 'chat', mercuryHome: join(root, 'mercury') });
+    const files = ['fox-1.png', 'fox-2.png', 'fox-3.png'].map((n) => join(work, n));
+    for (const f of files) writeFileSync(f, Buffer.alloc(4000, 1));
+    // What generate_image really returns: one "- path" line each, then a quoted hint with the first.
+    c.observe('generate_image', { prompt: 'a red fox in snow', count: 2 }, `Generated 2 images with GPT Image (OpenAI) in 40.1s:\n- ${files[0]}\n- ${files[1]}\nShown in the chat.\nTo edit it, call generate_image again with reference_images: ["${files[0]}"]. Don't send it again with send_file.`);
+    c.observe('generate_image', { prompt: 'a red fox in snow' }, `Generated 1 image with GPT Image (OpenAI) in 12.0s:\n- ${files[2]}\nShown in the chat.`);
+    const kept = c.finalize('thread-b', store);
+    expect(kept).toHaveLength(3);
+    expect(new Set(kept.map((a) => a.batch)).size).toBe(1);
+    expect(kept[0].batch).toBeTruthy();
+    expect(kept.every((a) => a.prompt === 'a red fox in snow')).toBe(true);
+
+    const solo = join(work, 'cat.png');
+    writeFileSync(solo, Buffer.alloc(4000, 1));
+    const c2 = new ArtifactCollector({ startedAt: Date.now() - 1000, cwd: work, surface: 'chat', mercuryHome: join(root, 'mercury') });
+    c2.observe('generate_image', { prompt: 'a cat' }, `Generated 1 image:\n- ${solo}`);
+    expect(c2.finalize('thread-b', store)[0].batch).toBeUndefined();
+  });
+
   it('pages newest first and sweeps threads that no longer exist', () => {
     const root = mkdtempSync(join(tmpdir(), 'mercury-art-'));
     const store = new ArtifactStore(join(root, 'artifacts'));
@@ -118,5 +143,56 @@ describe('collecting a turn\'s artifacts', () => {
     expect(p2.items.map((a) => a.name)).toEqual(['img-2.png', 'img-1.png']);
     expect(store.reconcile((id) => id === 'keep')).toBe(2);
     expect(store.list().counts.all).toBe(3);
+  });
+});
+
+describe('deleting artifacts for real', () => {
+  function setup() {
+    const root = mkdtempSync(join(tmpdir(), 'mercury-del-'));
+    const output = join(root, 'mercury-artifacts', 'Chats', 'fox');
+    const project = join(root, 'project');
+    mkdirSync(output, { recursive: true });
+    mkdirSync(project);
+    const store = new ArtifactStore(join(root, 'home', 'artifacts'));
+    const roots = [join(root, 'mercury-artifacts'), join(root, 'home')];
+    const mine = join(output, 'fox.png');
+    const theirs = join(project, 'report.pdf');
+    writeFileSync(mine, Buffer.alloc(5000, 1));
+    writeFileSync(theirs, Buffer.alloc(3000, 1));
+    const a = store.add({ threadId: 't', path: mine, kind: 'image', tool: 'generate_image' });
+    const b = store.add({ threadId: 't', path: theirs, kind: 'pdf', tool: 'write_file' });
+    return { store, roots, mine, theirs, a, b };
+  }
+
+  it('counts space as the disk does, and what deleting frees', () => {
+    const { store, roots } = setup();
+    const u = store.usage(roots);
+    expect(u.count).toBe(2);
+    // The copies are hard links: 5000 + 3000, not twice that.
+    expect(u.bytes).toBe(8000);
+    expect(u.byKind.image).toEqual({ count: 1, bytes: 5000 });
+    // The project file stays when deleted, and its copy is a link to it: nothing to gain there.
+    expect(u.freeable).toBe(5000);
+    expect(u.outside).toBe(1);
+  });
+
+  it("deletes Mercury's own file, keeps a project's file", () => {
+    const { store, roots, mine, theirs, a, b } = setup();
+    const r = store.removeMany([a.id, b.id], { roots });
+    expect(r).toEqual({ removed: 2, freed: 5000, keptOriginals: 1 });
+    expect(existsSync(mine)).toBe(false);
+    expect(existsSync(theirs)).toBe(true);
+    expect(existsSync(a.storedPath)).toBe(false);
+    expect(store.list().items).toHaveLength(0);
+  });
+
+  it('a delete made by another process is not undone by a stale copy of the index', () => {
+    const { store, roots, a, b } = setup();
+    const other = new ArtifactStore(store.root);
+    expect(other.list().items).toHaveLength(2);
+    store.removeMany([a.id], { roots });
+    // The index changed on disk after `other` read it; its next change starts from that.
+    other.relocate(b.id, b.originalPath);
+    expect(new ArtifactStore(store.root).list().items.map((x) => x.id)).toEqual([b.id]);
   });
 });

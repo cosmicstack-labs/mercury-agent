@@ -115,6 +115,7 @@ import { recordVoiceCalls } from './plugins/voice-calls.js';
 import { setChannelRuntime } from './web/api/channels.js';
 import { setSkillBuilder } from './web/api/system.js';
 import { setArtifactOutputDir, setArtifactSessions } from './web/api/artifacts.js';
+import { setSuggestionEngine } from './web/api/suggestions.js';
 import { artifactStore } from './artifacts/store.js';
 import { isWebAuthInitialized, setWebPassword, writeAttachToken, initWebAuth } from './web/auth.js';
 import { startLoopLagMonitor } from './utils/loop-lag.js';
@@ -2829,6 +2830,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (!daemonOwnsRuntime) setTimeout(() => { void jobs.recover().catch(() => {}); }, 10_000).unref?.();
   agent.setSkillLoader(skillLoader);
   agent.terminalOnly = daemonOwnsRuntime;
+  setSuggestionEngine(agent.suggestions, sessions);
 
   if (supervisor) {
     agent.setSupervisor(supervisor);

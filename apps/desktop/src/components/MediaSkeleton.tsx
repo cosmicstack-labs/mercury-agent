@@ -1,4 +1,4 @@
-import { Clapperboard, Image as ImageIcon, Music, AudioLines } from "lucide-react";
+import { Check, Clapperboard, Image as ImageIcon, Music, AudioLines } from "lucide-react";
 import { cx } from "~/lib/cx";
 import { formatDuration } from "~/app/trace";
 
@@ -16,6 +16,20 @@ export interface MediaShape {
   aspect?: string;
   count?: number;
   prompt?: string;
+}
+
+/** The most tiles a batch shows (the rest are counted). */
+export const MAX_TILES = 9;
+
+/**
+ * How a batch of pictures is laid out, waiting and finished alike, so
+ * nothing jumps when they land: one large, two or four in pairs, three or
+ * five and more in rows of three.
+ */
+export function mediaGrid(n: number): { cols: number; maxWidth: number } {
+  if (n <= 1) return { cols: 1, maxWidth: 380 };
+  if (n === 2 || n === 4) return { cols: 2, maxWidth: 520 };
+  return { cols: 3, maxWidth: 600 };
 }
 
 /** What it says while working: changes every few seconds so a long wait never reads as stuck. */
@@ -42,7 +56,12 @@ function ratioOf(kind: MediaKind, aspect?: string): string {
   return "1 / 1";
 }
 
-export function MediaSkeleton({ shape, startedAt, now, note, className }: { shape: MediaShape; startedAt: number; now: number; note?: string; className?: string }) {
+/**
+ * `done`: how many tiles of a batch are ready (they stop moving and show a tick).
+ * `quiet`: no status line of its own — inside a running turn the turn's
+ * status line says what is happening, once.
+ */
+export function MediaSkeleton({ shape, startedAt, now, note, className, done, quiet = false }: { shape: MediaShape; startedAt: number; now: number; note?: string; className?: string; done?: number; quiet?: boolean }) {
   const elapsed = Math.max(0, now - startedAt);
   const status = `${mediaPhase(shape.kind, elapsed)}…`;
   const Icon = shape.kind === "video" ? Clapperboard : shape.kind === "music" ? Music : shape.kind === "speech" ? AudioLines : ImageIcon;
@@ -67,25 +86,37 @@ export function MediaSkeleton({ shape, startedAt, now, note, className }: { shap
     );
   }
 
-  const tiles = Math.min(Math.max(shape.count ?? 1, 1), 4);
+  const total = Math.max(shape.count ?? 1, 1);
+  const tiles = Math.min(total, MAX_TILES);
+  const grid = shape.kind === "video" ? { cols: 1, maxWidth: shape.aspect !== "portrait" ? 520 : 380 } : mediaGrid(tiles);
+  // A batch is square tiles (what the finished grid shows); one picture keeps its shape.
+  const ratio = tiles > 1 ? "1 / 1" : ratioOf(shape.kind, shape.aspect);
   return (
     <div className={cx("flex w-full flex-col gap-2", className)} role="status" aria-label={`${label}: ${status}`}>
-      <div className={cx("grid gap-2", tiles > 1 ? "grid-cols-2" : "grid-cols-1")} style={{ maxWidth: tiles > 1 ? 520 : shape.kind === "video" && shape.aspect !== "portrait" ? 520 : 380 }}>
-        {Array.from({ length: tiles }, (_, i) => (
-          <div key={i} className="media-skeleton relative overflow-hidden rounded-xl border border-line" style={{ aspectRatio: ratioOf(shape.kind, shape.aspect) }}>
-            <div className="media-aurora absolute inset-0" style={{ animationDelay: `${i * -2.3}s` }} aria-hidden="true" />
-            <div className="media-sweep absolute inset-0" aria-hidden="true" />
-            <div className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
-              <Icon size={28} className="media-icon text-ink/30" strokeWidth={1.5} />
+      <div className="grid gap-2" style={{ maxWidth: grid.maxWidth, gridTemplateColumns: `repeat(${grid.cols}, minmax(0, 1fr))` }}>
+        {Array.from({ length: tiles }, (_, i) => {
+          const ready = i < (done ?? 0);
+          return (
+            <div key={i} className={cx("media-skeleton relative overflow-hidden rounded-xl border border-line", ready && "media-tile-ready")} style={{ aspectRatio: ratio }}>
+              {!ready && <div className="media-aurora absolute inset-0" style={{ animationDelay: `${i * -2.3}s` }} aria-hidden="true" />}
+              {!ready && <div className="media-sweep absolute inset-0" style={{ animationDelay: `${i * 0.18}s` }} aria-hidden="true" />}
+              <div className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
+                {ready ? <Check size={tiles > 4 ? 18 : 22} className="text-accent" strokeWidth={2.25} /> : <Icon size={tiles > 4 ? 20 : 28} className="media-icon text-ink/30" strokeWidth={1.5} />}
+              </div>
+              {i === tiles - 1 && total > tiles && (
+                <span className="absolute bottom-1.5 right-1.5 rounded-md bg-surface/90 px-1.5 font-mono text-2xs text-ink3">+{total - tiles}</span>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
-      <div className="flex max-w-[520px] items-center gap-2 text-xs text-ink3">
-        <span className="shimmer-text">{label} · {note ?? status}</span>
-        <span className="ml-auto shrink-0 font-mono text-2xs text-ink4">{formatDuration(elapsed)}</span>
-      </div>
-      {shape.prompt && <p className="line-clamp-1 max-w-[520px] text-2xs text-ink4" title={shape.prompt}>{shape.prompt}</p>}
+      {!quiet && (
+        <div className="flex items-center gap-2 text-xs text-ink3" style={{ maxWidth: grid.maxWidth }}>
+          <span className="shimmer-text">{label}{total > 1 ? ` · ${done ? `${done} of ${total} ready` : `${total}`}` : ""} · {note ?? status}</span>
+          <span className="ml-auto shrink-0 font-mono text-2xs text-ink4">{formatDuration(elapsed)}</span>
+        </div>
+      )}
+      {shape.prompt && <p className="line-clamp-1 text-2xs text-ink4" style={{ maxWidth: grid.maxWidth }} title={shape.prompt}>{shape.prompt}</p>}
     </div>
   );
 }

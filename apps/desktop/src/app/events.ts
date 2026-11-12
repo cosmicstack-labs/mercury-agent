@@ -447,6 +447,12 @@ async function restoreRunningTurn(store: ConversationStore, id: string): Promise
   if (!s.prompts.length) s.setAgent(running ? "working" : snap.text ? "streaming" : "thinking");
 }
 
+/** Ask the composer of a surface to take the cursor (after the view has rendered). */
+export function focusComposer(surface: Surface): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("mercury:focus-composer", { detail: { surface } }));
+}
+
 export async function openThread(surface: Surface, id: string | null): Promise<void> {
   const store = conversations[surface];
   // Leaving a chat mid-reply: keep what it showed.
@@ -456,6 +462,8 @@ export async function openThread(surface: Surface, id: string | null): Promise<v
   }
   store.getState().setActive(id);
   store.getState().clearStreaming();
+  // A new chat or another session: the cursor goes to the message box, ready to type.
+  focusComposer(surface);
   // Coming back to one: show it straight away, then ask the runtime how far it got.
   const kept = id ? leftMidTurn.get(id) : undefined;
   if (id && kept) {

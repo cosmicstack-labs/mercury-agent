@@ -2,11 +2,11 @@ import type { ArtifactKind } from './classify.js';
 import type { Artifact } from './store.js';
 
 /** What a message or an event carries about an artifact (never the stored path). */
-export interface ArtifactRef { id: string; name: string; kind: ArtifactKind; mime: string; size: number; path: string; tool?: string }
+export interface ArtifactRef { id: string; name: string; kind: ArtifactKind; mime: string; size: number; path: string; tool?: string; batch?: string; prompt?: string }
 
 export function artifactRef(a: Artifact): ArtifactRef {
   // `tool`: the apps show what a media model made (generate_*) large and playable.
-  return { id: a.id, name: a.name, kind: a.kind, mime: a.mime, size: a.size, path: a.originalPath, ...(a.tool ? { tool: a.tool } : {}) };
+  return { id: a.id, name: a.name, kind: a.kind, mime: a.mime, size: a.size, path: a.originalPath, ...(a.tool ? { tool: a.tool } : {}), ...(a.batch ? { batch: a.batch } : {}), ...(a.prompt ? { prompt: a.prompt } : {}) };
 }
 
 const LABEL: Record<ArtifactKind, string> = { image: 'image', video: 'video', audio: 'audio', pdf: 'PDF', document: 'document', text: 'notes', file: 'file' };

@@ -215,3 +215,13 @@ export const media = {
   /** Speaking: what speaks, the voice, and when chat-app replies come as voice notes. null clears. */
   setSpeech: (update: { choice?: string | null; voice?: string | null; replies?: VoiceReplies }) => http.put<{ ok: boolean }>("/api/media/speech", update),
 };
+
+/** What the owner might want next, for a new chat (GET /api/suggestions). */
+export interface Suggestion { id: string; title: string; prompt: string; why?: string; kind: "continue" | "create" | "plan" | "check" | "learn" | "explore" }
+export interface SuggestionPick { greeting: string; subtitle?: string; items: Suggestion[]; generatedAt: number }
+
+export const suggestions = {
+  pick: (n = 4) => http.get<SuggestionPick>(`/api/suggestions?n=${n}`),
+  used: (id: string) => http.post<{ ok: boolean }>(`/api/suggestions/${encodeURIComponent(id)}/used`, {}),
+};
+

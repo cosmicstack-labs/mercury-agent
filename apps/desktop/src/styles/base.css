@@ -126,6 +126,7 @@ button, input, textarea, a, [role="button"], [data-no-drag] { -webkit-app-region
 
 /* Media on its way (MediaSkeleton): a soft colour field drifting under a light sweep. */
 .media-skeleton { background: rgb(var(--ink) / 0.035); }
+.media-tile-ready { background: rgb(var(--accent) / 0.08); border-color: rgb(var(--accent) / 0.3); transition: background-color 300ms, border-color 300ms; }
 .media-aurora {
   background:
     radial-gradient(60% 55% at 25% 30%, rgb(var(--accent) / 0.22), transparent 70%),
@@ -159,6 +160,10 @@ button, input, textarea, a, [role="button"], [data-no-drag] { -webkit-app-region
   -webkit-background-clip: text; background-clip: text; color: transparent;
   animation: shimmer-text 2.4s linear infinite;
 }
+/* New-chat suggestions (Welcome): rise into place one after another. */
+.suggest-in { animation: suggest-in 420ms cubic-bezier(.2,.7,.2,1) both; }
+@keyframes suggest-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .suggest-in { animation: none; } }
 @keyframes shimmer-text { from { background-position: 100% 0; } to { background-position: -150% 0; } }
 @media (prefers-reduced-motion: reduce) { .shimmer-text { animation: none; color: rgb(var(--ink-3)); background: none; } }
 .thought-stream { mask-image: linear-gradient(to bottom, transparent 0, #000 18px); -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px); }

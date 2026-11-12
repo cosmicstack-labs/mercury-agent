@@ -4,6 +4,8 @@ import { artifactBlobUrl, formatBytes, KIND_LABEL, type ArtifactKind, type Artif
 import { Dialog } from "~/components/ui/Dialog";
 import { cx } from "~/lib/cx";
 import { ArtifactViewer } from "./ArtifactViewer";
+import { Lightbox } from "./Lightbox";
+import { mediaGrid } from "~/components/MediaSkeleton";
 
 /**
  * Artifacts as cards: a real thumbnail for images, an icon for the rest
@@ -56,7 +58,7 @@ function isGenerated(a: ArtifactRef): boolean {
  * A generated picture, clip or sound in the reply itself, where its
  * placeholder was (MediaSkeleton); `fresh` reveals it from soft to sharp.
  */
-function GeneratedMedia({ a, fresh, onOpen }: { a: ArtifactRef; fresh: boolean; onOpen: () => void }) {
+function GeneratedMedia({ a, fresh, onOpen, tile = false, delay = 0 }: { a: ArtifactRef; fresh: boolean; onOpen: () => void; tile?: boolean; delay?: number }) {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
@@ -78,6 +80,14 @@ function GeneratedMedia({ a, fresh, onOpen }: { a: ArtifactRef; fresh: boolean; 
       </div>
     );
   }
+  // In a batch: square tiles, like the placeholder they replace, revealed one after another.
+  if (tile) {
+    return (
+      <button onClick={onOpen} title={a.name} className={cx("group block aspect-square overflow-hidden rounded-xl border border-line bg-soft", fresh && "media-reveal")} style={fresh ? { animationDelay: `${delay}ms` } : undefined}>
+        {url && <img src={url} alt={a.name} className="block h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]" draggable={false} />}
+      </button>
+    );
+  }
   return (
     <button onClick={onOpen} title={a.name} className={cx("block max-w-[380px] overflow-hidden rounded-xl border border-line bg-soft", fresh && "media-reveal")}>
       {url ? <img src={url} alt={a.name} className="block h-auto w-full" draggable={false} /> : <div className="aspect-square w-[380px] max-w-full" />}
@@ -87,15 +97,29 @@ function GeneratedMedia({ a, fresh, onOpen }: { a: ArtifactRef; fresh: boolean; 
 
 export function ArtifactStrip({ items, onOpenThread, fresh = false }: { items: ArtifactRef[]; onOpenThread?: (threadId: string) => void; fresh?: boolean }) {
   const [open, setOpen] = useState<string | null>(null);
+  /** Which picture the full-screen slider shows (pictures open there; the rest in the viewer). */
+  const [viewing, setViewing] = useState<number | null>(null);
   if (!items.length) return null;
   const media = items.filter(isGenerated);
   const rest = items.filter((a) => !isGenerated(a));
+  // Several pictures from one reply: one grid, laid out like their placeholder (mediaGrid).
+  const images = media.filter((a) => a.kind === "image");
+  const grid = mediaGrid(images.length);
+  const prompts = [...new Set(images.map((a) => a.prompt).filter(Boolean))];
+  const prompt = prompts.length === 1 ? prompts[0] : undefined;
   return (
     <div className="mt-3 flex flex-col gap-2" aria-label="Artifacts">
-      {media.length > 0 && (
-        <div className={cx("grid gap-2", media.filter((a) => a.kind === "image").length > 1 ? "max-w-[520px] grid-cols-2" : "grid-cols-1")}>
-          {media.map((a) => <GeneratedMedia key={a.id} a={a} fresh={fresh} onOpen={() => setOpen(a.id)} />)}
+      {images.length > 1 && (
+        <div className="flex flex-col gap-1.5" style={{ maxWidth: grid.maxWidth }}>
+          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${grid.cols}, minmax(0, 1fr))` }}>
+            {images.map((a, i) => <GeneratedMedia key={a.id} a={a} fresh={fresh} tile delay={i * 90} onOpen={() => setViewing(i)} />)}
+          </div>
+          <p className="line-clamp-1 text-2xs text-ink4" title={prompt}>{images.length} images{prompt ? ` · ${prompt}` : ""}</p>
         </div>
+      )}
+      {(images.length > 1 ? media.filter((a) => a.kind !== "image") : media).map((a) => <GeneratedMedia key={a.id} a={a} fresh={fresh} onOpen={() => (a.kind === "image" ? setViewing(0) : setOpen(a.id))} />)}
+      {viewing !== null && images.length > 0 && (
+        <Lightbox items={images} index={Math.min(viewing, images.length - 1)} onIndex={setViewing} onClose={() => setViewing(null)} onDetails={(id) => { setViewing(null); setOpen(id); }} />
       )}
       {rest.length > 0 && <div className="flex flex-wrap gap-2">
       {rest.map((a) => (

@@ -23,6 +23,7 @@ import { setApprovalRoutes } from '../web/owner-gate.js';
 import { onDeviceNewLocation } from '../web/middleware.js';
 import { artifactKindLabel, artifactRef, formatBytes } from '../artifacts/ref.js';
 import { getMercuryHome } from '../utils/config.js';
+import { SuggestionEngine, type SuggestionContext } from '../learning/suggestions.js';
 import { createProvider } from '../providers/registry.js';
 import type { BaseProvider } from '../providers/base.js';
 import { Lifecycle } from './lifecycle.js';
@@ -5847,6 +5848,64 @@ export class Agent {
   }
   private warnedLearningProvider = false;
 
+  /** Suggestions for a new chat (learning/suggestions.ts): refreshed from the heartbeat, a few times a day at most. */
+  readonly suggestions = new SuggestionEngine({
+    file: path.join(getMercuryHome(), 'suggestions.json'),
+    ownerName: () => this.config.identity.owner || 'the owner',
+    gather: () => this.suggestionContext(),
+    generate: () => {
+      // The model only when learning may run and the budget allows; rules otherwise.
+      if (this.userMemory?.isLearningPaused() || !this.tokenBudget.canAfford(4000)) return null;
+      let provider: ReturnType<ProviderRegistry['getDefault']>;
+      try { provider = this.learningProviders().getDefault(); } catch { return null; }
+      return async (system, prompt, maxOutputTokens) => {
+        const result = await generateText({ model: provider.getModelInstance() as Parameters<typeof generateText>[0]['model'], system, messages: [{ role: 'user', content: prompt }], maxOutputTokens });
+        const inputTokens = result.usage?.inputTokens ?? 0;
+        const outputTokens = result.usage?.outputTokens ?? 0;
+        this.tokenBudget.recordUsage({ provider: provider.name, model: provider.getModel(), inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, channelType: 'internal', agentId: this.config.cloud.agentId || undefined });
+        return result.text;
+      };
+    },
+  });
+
+  /** What suggestions are made from: the owner's profile, goals, recent chats (their own words), schedules, artifacts. */
+  private suggestionContext(): SuggestionContext {
+    const now = Date.now();
+    let about: string | undefined;
+    let current: string[] = [];
+    try {
+      const beliefs = this.userMemory?.beliefs;
+      if (beliefs) {
+        const brief = beliefs.getMeta('brief');
+        if (brief) about = (JSON.parse(brief) as { about?: string }).about;
+        current = beliefs.list({ statuses: ['held', 'confirmed'], kinds: ['goal', 'project', 'situation'], limit: 8 }).map((b) => b.statement);
+      }
+    } catch (err) { logger.debug({ err }, 'Suggestions: profile unavailable'); }
+    const recent: SuggestionContext['recent'] = [];
+    let lastActivity = 0;
+    try {
+      const summaries = this.sessions.listSummaries().sort((a, b) => b.updatedAt - a.updatedAt);
+      lastActivity = summaries[0]?.updatedAt ?? 0;
+      for (const sum of summaries.slice(0, 8)) {
+        let lastAsk: string | undefined;
+        try {
+          const msgs = this.sessions.get(sum.id).messages;
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i];
+            // The owner's own words only: never someone else's message or a scheduled run.
+            if (m.role === 'user' && m.kind === 'message' && m.metadata?.senderRole !== 'member' && m.metadata?.channelType !== 'internal') { lastAsk = m.content.slice(0, 300); break; }
+          }
+        } catch { /* gone */ }
+        recent.push({ title: sum.title, updatedAt: sum.updatedAt, ...(lastAsk ? { lastAsk } : {}) });
+      }
+    } catch (err) { logger.debug({ err }, 'Suggestions: sessions unavailable'); }
+    let schedules: string[] = [];
+    try { schedules = this.scheduler.getManifests().map((m) => m.description).filter(Boolean); } catch { /* none */ }
+    let artifacts: string[] = [];
+    try { artifacts = artifactStore().all().slice(0, 8).map((a) => `${a.name} (${a.kind})`); } catch { /* none */ }
+    return { ownerName: this.config.identity.owner || 'the owner', now, about, current, recent, schedules, artifacts, lastActivity };
+  }
+
   async reflectNow(): Promise<void> {
     if (!this.userMemory) return;
     if (this.reflectionInFlight) return this.reflectionInFlight;
@@ -5894,6 +5953,12 @@ export class Agent {
       // It is the only maintenance the Second Brain gets — one source.
       await this.reflectNow().catch((err) => logger.warn({ err }, 'Reflection pass failed'));
     }
+
+    // New-chat suggestions: remade a few times a day at most, only after the owner was active.
+    try {
+      const last = this.sessions.listSummaries().reduce((n, s) => Math.max(n, s.updatedAt), 0);
+      if (!this.terminalOnly && this.suggestions.shouldRefresh(Date.now(), last)) await this.suggestions.refresh();
+    } catch (err) { logger.debug({ err }, 'Suggestions refresh failed'); }
 
     const notifications: string[] = [];
 

@@ -13,6 +13,34 @@
 - **Memory only learns from you.** After a turn that read outside content, Mercury's learning pass uses only your own words: its reply is left out, and anything it would learn must quote you. A turn that found hidden instructions learns nothing. Pasted text written to an AI, messages from other people and group chats are never learned as yours, including in the background reflection pass.
 - **No cost when nothing outside is read:** turns that read nothing from outside the chat behave exactly as before. The checks are pattern scans, with no extra model calls.
 
+### Desktop: a new chat that knows you
+- **Ready to type.** The cursor goes to the message box when you start a new chat, switch to another chat, or come back to the chat view, so there's no need to click into it first.
+- **Suggestions made for you.** A new chat opens with a greeting for the time of day, a line about what you're up to, and four things you might want next. They're grounded in what Mercury knows: your recent chats and what you last asked, your goals and projects, your scheduled tasks, what it made for you, and the day of the week.
+  - Click one to put it in the message box. Edit it, or press Enter to send it. **More ideas** shows others.
+  - **Different each time.** Each new chat shows the ones you've seen least lately. One you use leaves the list, and recent ones aren't suggested again soon.
+  - **Lightweight.** The suggestions are remade at most every 6 hours, and only after you've used Mercury since the last time. That takes one small call on the learning model, in the background and never while you wait. When learning is paused or the budget is low, simple rules make them at no cost.
+  - Nothing runs by itself: the text you send is the text you saw.
+- **It never breaks a new chat.** If suggestions can't load (an older runtime, a fresh install, a failure), the page shows the greeting and the box; a crash in the page shows a plain greeting, never an error.
+
+### Desktop: batches of images
+- **Several images for one ask are one group.** While they're being made, the chat shows one placeholder grid (pairs for two or four, rows of three for three or five or more), and each tile turns into a tick as its image is ready. The finished images land in the same grid, so nothing jumps, with the prompt under it.
+- **Progress shows in one place.** Before, each image call added its own step row, its own placeholder and its own timer, stacked one under another. Now the turn's status line says it once: "Creating 5 images · 4 of 5 ready · Adding detail".
+- **Fixed: a batch showed one image.** All the images were made and saved, but only the first reached the chat and Artifacts. The image tool lists each file on its own line, and chat folders are named after the chat ("2026-11-11 Go to the GitHub training"). The space in that name cut each path short, and only the first image, quoted in the tool's "to edit it" hint, was found. A list line that holds one path is now read to its end, so every image arrives.
+- **Slide through them.** Clicking an image opens it full screen:
+  - arrows, ← → keys or a swipe to move between images, a "3 / 5" counter, and a strip of thumbnails to jump to any of them;
+  - behind each image, a blurred copy of it fills the screen with its colours;
+  - **Info** opens the details (save, copy path, delete).
+  
+  In Artifacts, a batch's preview has the same arrows and keys, and a full-screen button.
+- **Artifacts keeps a batch together.** Images made together are one card with a mosaic and a count. Opening it lets you step through them.
+
+### Artifacts: deleting for real, and cleaning up
+- **Deleting an artifact deletes it.** Before, delete removed only Mercury's own copy, which is usually a hard link to the file in your output folder. The file stayed in `~/mercury-artifacts` and no space came back. Now the file goes too when it's Mercury's own (its output folder, a generated image, video, sound or voice). A file Mercury wrote into one of your projects is never deleted; only Mercury's copy goes, and the button says so.
+- **Clean up, behind the ⋯ menu in Artifacts.** It shows the space artifacts take, counted the way the disk counts it, and has:
+  - **Clean up…:** space per kind with a bar, delete a whole kind, delete everything older than 7, 30 or 90 days, or delete all. After each action it says how much was freed.
+  - **Select…:** tick several cards (a batch counts as one) and delete them together.
+- A delete made in one Mercury process (the desktop app's server, Mercury Code, the CLI) is no longer undone when another process saves an older copy of the artifact list.
+
 ### Optimus: screenshots per model
 - **Cheaper screenshots.** Optimus took every screenshot at 1280×800, whatever the model. Mercury now asks for the size each model is billed least for:
   - Claude and OpenAI: 1024×640, about 30–35% fewer image tokens.
