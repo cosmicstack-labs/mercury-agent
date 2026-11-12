@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createUpdatePlanTool } from './update-plan.js';
+import { createUpdatePlanTool, WORK_RULES } from './update-plan.js';
 import { CLIChannel } from '../../channels/cli.js';
 
 describe('update_plan tool', () => {
@@ -71,3 +71,20 @@ describe('CLIChannel.setPlanProgress normalization', () => {
     expect(channel.getTuiState().planProgress).toBeNull();
   });
 });
+
+const runPlan = (steps: Array<{ label: string; status: 'pending' | 'active' | 'done' }>) =>
+  (createUpdatePlanTool() as unknown as { execute: (i: unknown, o: unknown) => Promise<string> }).execute({ steps }, { toolCallId: 't', messages: [] });
+
+describe('update_plan: the working rules', () => {
+  it('a new plan of real work brings the working rules, once', async () => {
+    const fresh = await runPlan([{ label: 'a', status: 'active' }, { label: 'b', status: 'pending' }, { label: 'c', status: 'pending' }]);
+    expect(fresh).toContain(WORK_RULES);
+    const later = await runPlan([{ label: 'a', status: 'done' }, { label: 'b', status: 'active' }, { label: 'c', status: 'pending' }]);
+    expect(later).not.toContain(WORK_RULES);
+    expect(later).toMatch(/before your final reply/);
+  });
+  it('a short plan stays short', async () => {
+    expect(await runPlan([{ label: 'a', status: 'active' }])).not.toContain(WORK_RULES);
+  });
+});
+

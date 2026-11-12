@@ -37,6 +37,15 @@ app.get('/api/bots', (c: any) => {
 
 // The owner's inbox (Bots 2.0): results, reported failures and runs that need
 // the owner, newest first. `?unread=1` for unread only, `?bot=<id>` for one bot.
+// The live feed's recent history (the stream sends what happens next).
+app.get('/api/bots/activity', (c: any) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const bots = String(c.req.query('bots') ?? '').split(',').map((s: string) => s.trim()).filter(Boolean);
+  const since = Number(c.req.query('since') ?? 0) || 0;
+  const limit = Number(c.req.query('limit') ?? 400) || 400;
+  return c.json({ events: botManager.recentActivity({ bots, since, limit }), now: Date.now() });
+});
+
 app.get('/api/bots/inbox', (c: Context) => {
   if (!botManager) return c.json({ entries: [], unread: 0, available: false });
   const limit = Math.max(1, Math.min(500, Number(c.req.query('limit')) || 100));
@@ -369,6 +378,7 @@ app.post('/api/bots/:id/message', async (c: any) => {
     for (const a of upload.attachments) rmSync(a.path, { force: true });
     return c.json({ accepted: false, reasonCode: result.reasonCode }, 409);
   }
+  if (!result.duplicated) botManager.noteOwnerMessage(id, result.jobId, message || '(attachments)');
   if (result.duplicated) {
     // A retry of a job already queued: that job holds its own copies of the files.
     for (const a of upload.attachments) rmSync(a.path, { force: true });

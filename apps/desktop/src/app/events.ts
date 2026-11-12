@@ -49,7 +49,10 @@ export function useRuntimeEvents(enabled: boolean): void {
         }
         if (event !== "bot_activity") return;
         const ev = safeJson<BotActivityEvent>(raw);
-        if (!ev || ev.kind === "thinking") return;
+        if (!ev) return;
+        // Everything goes to the live feed; the roster label follows steps only.
+        useBots.getState().addLive([{ ...ev, at: ev.at ?? Date.now() }]);
+        if (ev.kind === "thinking" || ev.kind === "queued") return;
         useBots.getState().setActivity(ev.botId, ev.kind === "turn-end" ? null : ev.label);
         if (ev.kind === "turn-end" || ev.kind === "turn-start") void refreshBots();
       },
@@ -220,7 +223,8 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       break;
     case "plan": {
       const steps = Array.isArray(data.steps) ? (data.steps as Array<{ label: string; status: "pending" | "active" | "done" }>) : [];
-      if (steps.length) conv.setPlan({ steps, updatedAt: Number(data.updatedAt) || Date.now() });
+      const state = data.state === "paused" || data.state === "stopped" ? data.state : undefined;
+      if (steps.length) conv.setPlan({ steps, updatedAt: Number(data.updatedAt) || Date.now(), ...(state ? { state } : {}) });
       break;
     }
     case "artifacts": {
@@ -508,7 +512,7 @@ export async function openThread(surface: Surface, id: string | null): Promise<v
     })
     .catch(() => { /* older Mercury */ });
   // The plan Mercury was working through in this conversation, if any.
-  void http.get<{ plan: { steps: Array<{ label: string; status: "pending" | "active" | "done" }>; updatedAt: number } | null }>(`/api/chat/plan?sessionId=${encodeURIComponent(id)}`)
+  void http.get<{ plan: { steps: Array<{ label: string; status: "pending" | "active" | "done" }>; updatedAt: number; state?: "paused" | "stopped" } | null }>(`/api/chat/plan?sessionId=${encodeURIComponent(id)}`)
     .then((r) => { if (store.getState().activeId === id && r.plan?.steps?.length) store.getState().setPlan(r.plan); })
     .catch(() => { /* older Mercury: no plans */ });
   try {

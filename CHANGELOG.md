@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+### Chat: complex work done the way Mercury Code does it
+A real chat ("install the HyperFrames skills, then make an intro video with an ElevenLabs beat") went wrong in a chain:
+- the HyperFrames CLI refused to run ("requires Node.js >= 22");
+- Mercury tried to upgrade Node with brew, then switched to an AI video model, which hit its quota;
+- it made a black MP4 with ffmpeg and announced "Video created & sent!";
+- it wrote six summary documents nobody asked for.
+
+Each link is fixed:
+- **Commands use Mercury's own Node.** A service PATH often lists an old system Node (`/usr/local/bin`) before a newer one, so every Node tool the model ran used Node 18 even though Mercury runs on 22. The Node that runs Mercury now comes first in a command's PATH, so `npx`, `hyperframes` and other Node CLIs get the right version.
+- **A video that never rendered isn't sent as if it worked.** Before `send_file` sends a video, ffmpeg's own detectors look at it once. If it's black for most of its length, or the same frame the whole time (the animation never ran), it isn't sent, and the model is told why, so it fixes the render or says plainly that it couldn't. Without ffmpeg, files are sent as before.
+- **Mercury Code's discipline, in chat, when the work is real.** It applies when the model makes a plan of three or more steps, which is its own sign that this is multi-step work. Quick questions and ordinary chats don't change.
+  - **Working rules with the plan:**
+    - act, don't announce;
+    - a step is done when its result exists and was checked;
+    - when a tool or requirement fails, fix the cause or ask: never switch to a method you didn't ask for, or present a workaround as the result;
+    - no summaries nobody asked for.
+  - **One check before "done":** if the turn made something (files, renders, sent files), the model gets one round to look at what it produced and fix it, then reports only what it verified. It's the chat version of Mercury Code's verification gate.
+- **Always:** never call something done without checking it, and no unrequested summary or README files.
+
+### Plans that keep up
+- **A plan no longer freezes mid-way.** The checklist moved only when the model ticked a step, and models often finish the work and forget the last tick. Stopping a task also left its step "in progress" for good. In one owner's chats, 7 of 21 plans were stuck like that (✓✓✓✓◐). Now, when a turn ends:
+  - **finished, only the last step unticked:** it's marked done, since the reply is that step;
+  - **a reply with several steps still open:** "Plan paused" at the first open step, with "say continue to pick it up";
+  - **stopped by you, or failed:** "Plan stopped", with no guessed ticks.
+
+  Only the turn that worked on a plan settles it, so a quick question asked in between leaves it alone. The plan tool also reminds the model to tick its finished steps before its final reply. The terminal's checklist gets the same end-of-turn tidy.
+- **An open plan in an idle chat never looks in progress.** No pulsing step while nothing runs, plans saved before this release included.
+
+### Desktop: "Needs you", one at a time
+- **Approvals look like the rest of the app.** A question Mercury is waiting on (allow a command, write a file, use an MCP tool, keep going, pick one) used to be an amber box in the conversation, with the raw request dumped in monospace and one box stacked under another. It's now a card pinned above the message box, in the same style as the plan:
+  - a plain title ("Run a command", "Write a file", "Use create_issue", "Suspicious request: schedule a task");
+  - the exact command or path underneath, folded when long;
+  - what it read and any warning in a quiet line;
+  - the main answer as the primary button, and Deny quietly on the right.
+- **Several questions are a carousel:** "1 of 4", ‹ › or ←/→ to move between them. Answering one shows the next, and the card leaves when none are left. Y / N and 1–9 still answer from the keyboard.
+- **Bots ask the same way:** their questions use the same card on every bot screen, and in Live it sits above the message box, with how long the bot will wait.
+
+### Bots: watch them live, talk to them, fewer false alarms
+- **Live, the first tab of every bot and fleet.** What the bots are doing as it happens, one card per run:
+  - who started it (you, a schedule, another bot) and what was asked;
+  - each step as it runs: tool, running → done or failed, with the error;
+  - what the bot is writing as it writes it;
+  - how it ended.
+
+  A run's status comes from its latest event, so it can't go stale: "Waiting for you" appears only while a question for that very run is pending, and a run cut short by a restart says it ended instead of "working" forever. Long runs fold their earlier steps, and a fleet shows every member's runs together. Opening the screen mid-run shows what already happened: the runtime keeps a short, capped log of recent events, in memory only. The old Activity tab is now History.
+- **Talk to them from the same place.** The box under the feed messages the bot, or any crew member in a fleet. A message to a busy bot shows as queued and runs after the current one. A bot's question sits inside its run with its buttons, and every finished run has Reply, which answers with that run quoted.
+- **Far fewer "needs you" questions that weren't needed.** A bot's shell command used to be scanned for anything that looked like a path, and each one was asked about as a file to write. Now the scan reads the command the way the shell does:
+  - code inside a heredoc no longer counts (it used to ask to write to "/", "/*" and "/\s+");
+  - quoted paths with spaces stay whole;
+  - `/dev/null` is not a file;
+  - `ls`, `find`, `cat` and `grep` read, they don't write;
+  - `-o` only means an output file to `curl`, `wget` and `sort` (to `find` it means "or").
+
+  A read-only command (with pipes and `2>/dev/null`) that touches only folders the bot may read now runs without asking. Writes, the network and anything that can run other commands still ask.
+- **Bot faces always have colour.** A face shown in two places shared one colour gradient. If the first copy sat in a hidden tab, macOS drew the others black, or as bare white eyes. Each face now has its own gradient, written in notation every engine reads, with a solid colour under it.
+
 ### Voice: only the words are spoken
 - **Directions stay out of the audio.** Asking for a natural reading ("keep it natural, don't make it sound like it was shared by AI") could put that request into the recording itself. The cause was Gemini, which takes the style as words in front of the text ("Say this …:") and reads anything that isn't a short description of a voice out loud.
   - Only a short tone goes to Gemini now ("calm and warm", "like a news anchor"). Requests about the audio itself are dropped, since they shape how the words are written, not how they're read.

@@ -1,3 +1,4 @@
+import { checkVideo } from '../../media/blank-check.js';
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { existsSync, statSync } from 'node:fs';
@@ -38,6 +39,12 @@ export function createSendFileTool(
 
       if (stat.size > 50 * 1024 * 1024) {
         return `Error: File too large (${Math.round(stat.size / (1024 * 1024))}MB). Maximum is 50MB.`;
+      }
+
+      // A video that never rendered (all black, or one still frame) isn't sent as if it worked.
+      const blank = await checkVideo(target).catch(() => null);
+      if (blank) {
+        return `Not sent: ${basename(resolved)} isn't a real video — ${blank.problem}. Fix the render (check that the composition actually draws and animates when captured), or tell the user plainly what went wrong. Don't send it or describe it as finished.`;
       }
 
       try {

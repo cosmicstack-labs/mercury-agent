@@ -1763,6 +1763,11 @@ export class CLIChannel extends BaseChannel {
    * Replace the live plan checklist (from the update_plan tool). Validates
    * defensively — malformed model output must never break the TUI.
    */
+  /** The checklist as the terminal shows it now (null: none). */
+  currentPlanProgress(): PlanStep[] | null {
+    return this.state.planProgress ? this.state.planProgress.map((s) => ({ ...s })) : null;
+  }
+
   setPlanProgress(steps: unknown): void {
     if (!Array.isArray(steps)) return;
     const normalized: PlanStep[] = [];

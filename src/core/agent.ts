@@ -54,6 +54,7 @@ import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import { classifyResearchIntent } from './research-intent.js';
+import { settlePlan } from './plan.js';
 import { closePlan, coverageSection, parsePlanLines, reportBody, reportFileName, RESEARCH_PLAN_SYSTEM, RESEARCH_WRITE_SYSTEM, sourcesAppendix, unansweredFrom, type ResearchRun } from './research-run.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { fallbackSessionTitle, isThinOpening, normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
@@ -99,7 +100,7 @@ import { compactConversation } from './memory-governor.js';
 import { writeCrashFlag } from './crash-flag.js';
 import { summarizeSilentTurn, type TurnAction } from './silent-turn.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
-import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
+import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt, chatNeedsCheck, chatCheckPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, buildModelHistory, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult, detectRepetitionLoop } from './context-window.js';
 import { buildSystemPrompt as assembleSystemPrompt, buildSystemPromptParts, budgetContext, type SystemPromptInputs } from './system-prompt.js';
@@ -3109,9 +3110,33 @@ export class Agent {
     } catch { /* telling about artifacts must never break a turn */ }
   }
 
+  /** End of a turn: settle the chat's plan (settlePlan) and show it settled. Never throws. */
+  private settleTurnPlan(msg: ChannelMessage, outcome: 'completed' | 'stopped' | 'failed', turnStartedAt: number): void {
+    try {
+      // A plan from an earlier turn (a question asked in between) is left as it is.
+      if ((this.planTouchedAt.get(msg.channelId) ?? 0) < turnStartedAt) return;
+      this.planTouchedAt.delete(msg.channelId);
+      const channel = this.channels.getChannelForMessage(msg);
+      if (channel instanceof WebChannel) {
+        const plan = channel.plans.get(msg.channelId);
+        if (!plan || plan.state) return;
+        const settled = settlePlan(plan.steps, outcome);
+        if (settled) channel.sendPlan(settled.steps, msg.channelId, settled.state);
+      } else if (channel instanceof CLIChannel) {
+        const steps = channel.currentPlanProgress();
+        const settled = steps ? settlePlan(steps, outcome) : null;
+        if (settled) channel.setPlanProgress(settled.steps);
+      }
+    } catch { /* the plan display must never break a turn */ }
+  }
+
+  /** When each chat's plan was last updated by the model: only the turn that worked on a plan settles it. */
+  private planTouchedAt = new Map<string, number>();
+
   private maybeRecordPlanProgress(channel: unknown, toolName: string, input: unknown, targetId?: string): void {
     try {
       if (toolName !== 'update_plan') return;
+      if (targetId) this.planTouchedAt.set(targetId, Date.now());
       const steps = (input as { steps?: Parameters<CLIChannel['setPlanProgress']>[0] } | null)?.steps;
       if (channel instanceof CLIChannel) channel.setPlanProgress(steps);
       else {
@@ -3594,6 +3619,9 @@ export class Agent {
       ? this.researchMode.beginRun(msg.channelId, msg.content, this.saverMode.adjustMaxSteps(MAX_STEPS) * 3)
       : null;
     if (researchRun) this.emitResearch(msg, researchRun);
+    // How the turn ended, for the plan it leaves behind (settlePlan).
+    let turnFailed = false;
+    const turnStartedAt = Date.now();
     if (!isSlashCommand) raiseTurnIndicator();
     const stopHeartbeat = isSlashCommand ? () => {} : this.startForegroundHeartbeat(msg);
     // Memory: the turn governor watches the heap for the whole process (one
@@ -5272,19 +5300,24 @@ export class Agent {
       // (no build/test/typecheck ran clean after the last edit). Force one
       // bounded evidence round. Execute mode only: in plain chat "write my
       // notes to notes.md" must not trigger "running the build/tests now".
+      // Chat doing real multi-step work (it made a plan this turn) and producing something:
+      // Mercury Code's rule, adapted — look at the result before calling it done.
+      const chatCheck = !this.programmingMode.isExecute()
+        && (this.planTouchedAt.get(msg.channelId) ?? 0) >= turnStartedAt
+        && chatNeedsCheck(executeToolSucceeded)
+        && !responseAsksUser(result.text || '');
       if (
         !loopAbortController.signal.aborted
         && turnEnd() === 'text-stop'
-        && this.programmingMode.isExecute()
         && !this.capabilities.areToolsDisabled()
         && verificationContinuations < MAX_VERIFICATION_CONTINUATIONS
-        && shouldRequireVerification({
+        && (chatCheck || (this.programmingMode.isExecute() && shouldRequireVerification({
           taskText: msg.content,
           hasApprovedPlan: this.programmingMode.getLastPlan() != null,
           commandsRun: executeCommandsRun,
           toolsSucceeded: executeToolSucceeded,
           verifiedOk: verifiedAfterLastMutation(),
-        })
+        })))
       ) {
         verificationContinuations++;
         logger.warn(
@@ -5295,13 +5328,13 @@ export class Agent {
         this.pushLiveActivity('Verifying the work', 'verification gate');
         if (channel && msg.channelType !== 'internal') {
           await this.sendProgressNote(channel, 
-            'Checking my work before I call it done — running the build/tests now...',
+            chatCheck ? 'Checking the result before I call it done...' : 'Checking my work before I call it done — running the build/tests now...',
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
         }
         const verifyText = (result.text || '').trim();
         if (verifyText && verifyText !== '(no text response)') messages.push({ role: 'assistant', content: verifyText });
-        messages.push({ role: 'user', content: verificationPrompt(msg.content) });
+        messages.push({ role: 'user', content: chatCheck ? chatCheckPrompt(msg.content) : verificationPrompt(msg.content) });
         const verifyProvider = usedProvider
           ? (providersForAttempt.find((p) => p.name === usedProvider!.name && p.getModel() === usedProvider!.model) ?? providersForAttempt[0])
           : providersForAttempt[0];
@@ -5616,6 +5649,7 @@ export class Agent {
 
       this.lifecycle.transition('idle');
     } catch (err) {
+      turnFailed = true;
       logger.error({ err }, 'Error handling message');
       const ledgerEntry = this.currentWorkKey ? this.workLedger.get(this.currentWorkKey) : undefined;
       if (this.currentWorkKey) {
@@ -5682,6 +5716,8 @@ export class Agent {
         this.emitResearch(msg, researchRun);
         this.researchMode.endRun(msg.channelId);
       }
+      // The plan as this turn leaves it: a forgotten last tick done, open steps paused or stopped.
+      if (!researchRun) this.settleTurnPlan(msg, this.turnCancelled() ? 'stopped' : turnFailed ? 'failed' : 'completed', turnStartedAt);
       stallWatchdog.stop();
       stopHeartbeat();
       this.finalizeChannelTask(msg);

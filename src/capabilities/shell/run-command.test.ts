@@ -67,3 +67,17 @@ describe('run_command executor (ROADMAP P1.8)', () => {
     expect(arg).toBe('$HOME;echo pwned');
   });
 });
+
+describe('the shell finds the Node that runs Mercury first', () => {
+  it('an old system Node earlier on PATH no longer wins', async () => {
+    const { shellEnv } = await import('./run-command.js');
+    const env = shellEnv({ PATH: '/usr/bin:/usr/local/bin:/Users/me/.nvm/versions/node/v22/bin', HOME: '/Users/me' }, '/Users/me/.nvm/versions/node/v22/bin/node', 'darwin');
+    expect(env.PATH).toBe('/Users/me/.nvm/versions/node/v22/bin:/usr/bin:/usr/local/bin');
+    expect(env.HOME).toBe('/Users/me');
+  });
+  it('a standalone Mercury binary leaves PATH alone', async () => {
+    const { shellEnv } = await import('./run-command.js');
+    const src = { PATH: '/usr/bin' };
+    expect(shellEnv(src, '/Applications/Mercury.app/Contents/MacOS/mercury', 'darwin')).toBe(src);
+  });
+});

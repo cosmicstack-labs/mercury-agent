@@ -1,7 +1,7 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
-import { resolve, isAbsolute } from 'node:path';
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import type { PermissionManager } from '../permissions.js';
@@ -40,11 +40,29 @@ interface ExecOptions {
 export function executeCommand(command: string, cwd: string, timeoutMs: number, options: ExecOptions = {}): Promise<ExecResult> {
   return superviseChild(() => spawn(command, [], {
     cwd,
+    env: shellEnv(),
     shell: true,
     stdio: ['pipe', 'pipe', 'pipe'],
     // Its own process group, so a stop ends everything it started.
     ...processTreeSpawnOptions(),
   }), timeoutMs, options);
+}
+
+/**
+ * The approval lane's environment: the owner's, with the Node that runs
+ * Mercury first on PATH. A service PATH often lists an old system Node
+ * (/usr/local/bin) before a newer one, so `node`, `npx` and every Node CLI
+ * (`hyperframes`, needing Node 22) ran on Node 18 and refused, and the
+ * model went round the failure instead of doing the task. Not when Mercury
+ * runs as a standalone binary (its executable isn't a Node).
+ */
+export function shellEnv(source: NodeJS.ProcessEnv = process.env, execPath: string = process.execPath, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const exe = basename(execPath).toLowerCase();
+  if (exe !== 'node' && exe !== 'node.exe') return source;
+  const sep = platform === 'win32' ? ';' : ':';
+  const own = dirname(execPath);
+  const rest = (source.PATH ?? source.Path ?? '').split(sep).filter((d) => d && d !== own);
+  return { ...source, PATH: [own, ...rest].join(sep) };
 }
 
 /**

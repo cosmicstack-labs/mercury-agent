@@ -43,7 +43,8 @@ export interface ConversationState {
   draft: string | null;
   setDraft(draft: string | null): void;
   /** The conversation's plan checklist (update_plan), if Mercury made one. */
-  plan: { steps: Array<{ label: string; status: "pending" | "active" | "done" }>; updatedAt: number } | null;
+  /** The plan checklist; `state` once the turn that worked on it ended without finishing it. */
+  plan: { steps: Array<{ label: string; status: "pending" | "active" | "done" }>; updatedAt: number; state?: "paused" | "stopped" } | null;
   setPlan(plan: ConversationState["plan"]): void;
   /**
    * Research in this conversation: switched on for the next message

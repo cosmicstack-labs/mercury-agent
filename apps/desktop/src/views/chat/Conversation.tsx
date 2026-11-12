@@ -7,7 +7,8 @@ import { useConversation, useConversationStore } from "~/app/conversation";
 import { answerPrompt } from "~/app/events";
 import { runningStep } from "~/app/trace";
 import { StateLabel } from "~/components/indicators/StateOrb";
-import { Approval } from "~/components/indicators/Approval";
+import { NeedsYou, rolesFor } from "~/components/needs-you/NeedsYou";
+import { describePrompt } from "~/components/needs-you/describe";
 import { ThinkingDots } from "~/components/indicators/Thinking";
 import { Message, StreamingMessage } from "./Message";
 import { MediaSkeleton } from "~/components/MediaSkeleton";
@@ -147,11 +148,6 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
               </p>
             )}
             <ResearchPlan />
-            {prompts.map((p, i) => (
-              <div key={p.id} className="min-w-0 pl-10">
-                <Approval prompt={p} onAnswer={(v) => answerPrompt(store, p, v)} keys={i === prompts.length - 1} />
-              </div>
-            ))}
           </div>
         )}
       </div>
@@ -171,6 +167,20 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
 
       <ResearchBar />
       {/* While research runs, its bar shows the questions (and Details the checklist): one progress display, not two. */}
+      {prompts.length > 0 && (
+        <div className="shrink-0 px-8 pt-1">
+          <div className="mx-auto w-full max-w-[780px]">
+            <NeedsYou items={prompts.map((p) => ({
+              id: p.id,
+              described: describePrompt(p),
+              options: rolesFor(p.options),
+              list: p.kind === "choice" || p.options.some((o) => o.label.length > 32),
+              cancelable: p.kind === "choice",
+              onAnswer: (v) => answerPrompt(store, p, v),
+            }))} />
+          </div>
+        </div>
+      )}
       {!researching && <PlanCard surface={composer.surface} />}
       <Composer {...composer} />
     </section>

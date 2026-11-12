@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { apiUrl, authHeaders } from "~/api/client";
 import * as api from "~/api/mercury";
 import { cx } from "~/lib/cx";
@@ -70,18 +70,21 @@ function GeneratedFace({ id, name, size, dimmed, className }: { id: string; name
   const tri = shape === SHAPES[2];
   const eyeY = tri ? 36 : 44;
   const mouthY = tri ? 52 : 60;
-  const gid = `g-${id}`;
+  // Each face its own gradient id: a shared one ("g-<bot>") broke when the first
+  // copy sat in a hidden tab — WebKit then filled every other copy black.
+  const gid = `bot-face-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   return (
     <svg viewBox="0 0 100 100" width={size} height={size} role="img" aria-label={name} className={cx("shrink-0", dimmed && "opacity-90", className)}>
       <defs>
         <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor={`hsl(${hue} 70% 62%)`} />
-          <stop offset="1" stopColor={`hsl(${hue2} 72% 44%)`} />
+          {/* Comma syntax: understood by every engine (a colour it can't parse is black). */}
+          <stop offset="0" stopColor={`hsl(${hue}, 70%, 62%)`} />
+          <stop offset="1" stopColor={`hsl(${hue2}, 72%, 44%)`} />
         </linearGradient>
       </defs>
       {/* The same path stroked wide with round joins softens every corner;
           drawn at 88% so the rounded edge stays inside the frame. */}
-      <path d={shape} fill={`url(#${gid})`} stroke={`url(#${gid})`} strokeWidth={10} strokeLinejoin="round" transform="translate(6 6) scale(0.88)" />
+      <path d={shape} fill={`url(#${gid}) hsl(${hue}, 70%, 55%)`} stroke={`url(#${gid}) hsl(${hue}, 70%, 55%)`} strokeWidth={10} strokeLinejoin="round" transform="translate(6 6) scale(0.88)" />
       <circle cx={50 - eyeGap} cy={eyeY} r="5.2" fill="#fff" />
       <circle cx={50 + eyeGap} cy={eyeY} r="5.2" fill="#fff" />
       {mouth === 0 && <path d={`M${40} ${mouthY} q10 9 20 0`} stroke="#fff" strokeWidth="4.5" strokeLinecap="round" fill="none" />}

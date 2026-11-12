@@ -7,7 +7,7 @@ import { http, ApiError } from "./client";
 import type { ChatEffort, ImageIntent, MediaModelsResponse, TurnsInfo, VoiceReplies } from "./types";
 import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
-  BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
+  BotActivityEvent, BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
   McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, PluginItem, ReasoningChoice, Skill, DeviceSummary,
 } from "./types";
 
@@ -140,6 +140,8 @@ export const bots = {
   disable: (id: string) => http.post<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/disable`),
   stop: (id: string) => http.post<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/stop`),
   remove: (id: string) => http.delete<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}`),
+  /** The live feed's recent past, oldest first (the bots stream sends what happens next). */
+  activity: (bots: string[], limit = 400) => http.get<{ events: BotActivityEvent[]; now: number }>(`/api/bots/activity?bots=${encodeURIComponent(bots.join(","))}&limit=${limit}`),
   journal: (id: string, limit = 60) => http.get<{ journal: BotRunRecord[] }>(`/api/bots/${encodeURIComponent(id)}/journal?limit=${limit}`),
   run: (id: string, runId: string) => http.get<RunTranscript>(`/api/bots/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`),
   outputs: (id: string) => http.get<{ outputs: Deliverable[] }>(`/api/bots/${encodeURIComponent(id)}/outputs`),

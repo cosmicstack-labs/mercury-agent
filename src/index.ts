@@ -2897,7 +2897,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     // label is updated inside the manager itself.
     const botCliChannel = channels.get('cli');
     bot.onBotActivity((ev) => {
-      if (botCliChannel instanceof CLIChannel) botCliChannel.setBotLiveActivity(ev.botId, ev);
+      if (botCliChannel instanceof CLIChannel && ev.kind !== 'queued') botCliChannel.setBotLiveActivity(ev.botId, { ...ev, kind: ev.kind });
       webChannel.broadcastBotActivity(ev);
     });
     if (config.bots?.webhookSecret) {

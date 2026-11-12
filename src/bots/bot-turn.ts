@@ -33,7 +33,7 @@ export interface BotTurnMail {
 export type BotActivityEvent = {
   botId: string;
   jobId: string;
-  kind: 'turn-start' | 'step' | 'tool' | 'turn-end' | 'thinking';
+  kind: 'turn-start' | 'step' | 'tool' | 'turn-end' | 'thinking' | 'queued';
   /** Human-readable: "read_file ~/cookies" / "step 4 · 12.3k tok in". */
   label: string;
   detail?: string;
@@ -44,6 +44,14 @@ export type BotActivityEvent = {
    *  every consumer to reassemble state — tails render stateless instead). */
   reasoningTail?: string;
   textTail?: string;
+  /** Filled by the manager for the live feed: when, which bot by name, what started the run. */
+  at?: number;
+  botName?: string;
+  trigger?: string;
+  /** turn-start / queued: the full request (≤ 600 chars). */
+  prompt?: string;
+  /** turn-start / queued: the bot that sent the work, for crew mail. */
+  fromBot?: string;
 };
 
 /**

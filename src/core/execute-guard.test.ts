@@ -340,3 +340,14 @@ describe('wakeUpPrompt — the final automatic attempt', () => {
     expect(prompt).toContain('3D world');
   });
 });
+
+describe('chat: check before done', () => {
+  it('only when the turn made something', async () => {
+    const { chatNeedsCheck, chatCheckPrompt } = await import('./execute-guard.js');
+    expect(chatNeedsCheck(new Map([['run_command', true]]))).toBe(true);
+    expect(chatNeedsCheck(new Map([['run_command', false], ['web_search', true]]))).toBe(false);
+    expect(chatNeedsCheck(new Map([['read_file', true]]))).toBe(false);
+    expect(chatCheckPrompt('make an intro video')).toMatch(/probe a video/);
+    expect(chatCheckPrompt()).toMatch(/do not present a workaround/);
+  });
+});

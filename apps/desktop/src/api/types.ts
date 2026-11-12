@@ -439,10 +439,25 @@ export interface CostReport {
   fleetPaused: boolean;
 }
 
+/** What a bot is doing right now (SSE bot_activity; GET /api/bots/activity for the recent past). */
 export interface BotActivityEvent {
   botId: string;
-  kind: "turn-start" | "step" | "tool" | "turn-end" | "thinking";
+  /** The run (job); "" for events outside a run (a delivery). */
+  jobId?: string;
+  kind: "turn-start" | "step" | "tool" | "turn-end" | "thinking" | "queued";
   label: string;
+  detail?: string;
+  stepIndex?: number;
+  elapsedMs?: number;
+  status?: "running" | "done" | "error";
+  reasoningTail?: string;
+  textTail?: string;
+  at?: number;
+  botName?: string;
+  /** What started the run: api (you), cron (a schedule), mailbox (another bot), … */
+  trigger?: string;
+  prompt?: string;
+  fromBot?: string;
 }
 
 // ── Plugins / MCP / Skills ──

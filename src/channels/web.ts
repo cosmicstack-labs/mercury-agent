@@ -1,5 +1,5 @@
 import { BaseChannel } from './base.js';
-import { normalizePlan, PlanStore } from '../core/plan.js';
+import { normalizePlan, PlanStore, type PlanState } from '../core/plan.js';
 import type { ChannelMessage, ChannelAttachment } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
 import { randomUUID } from 'node:crypto';
@@ -613,11 +613,11 @@ export class WebChannel extends BaseChannel {
   plans = new PlanStore();
 
   /** The model updated its plan checklist: keep it with the conversation and show it live. */
-  sendPlan(steps: unknown, targetId?: string): void {
+  sendPlan(steps: unknown, targetId?: string, state?: PlanState): void {
     const normalized = normalizePlan(steps);
     if (normalized.length === 0) return;
-    const plan = targetId ? this.plans.set(targetId, normalized) : { steps: normalized, updatedAt: Date.now() };
-    this.broadcast({ type: 'plan', data: { steps: plan.steps, updatedAt: plan.updatedAt, targetId } });
+    const plan = targetId ? this.plans.set(targetId, normalized, Date.now(), state) : { steps: normalized, updatedAt: Date.now(), ...(state ? { state } : {}) };
+    this.broadcast({ type: 'plan', data: { steps: plan.steps, updatedAt: plan.updatedAt, targetId, ...(plan.state ? { state: plan.state } : {}) } });
   }
 
   /**

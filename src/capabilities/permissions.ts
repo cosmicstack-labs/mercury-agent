@@ -5,6 +5,7 @@ import { join, resolve, sep, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
+import { isReadOnlySegment, shellPaths, stripHeredocs } from './shell-paths.js';
 import { logger } from '../utils/logger.js';
 import { redactSecrets } from '../utils/redact.js';
 import { BLOCKED_COMMANDS } from './shell/blocklist.js';
@@ -1094,12 +1095,16 @@ export class PermissionManager {
     }
 
     if (shell.cwdOnly) {
-      for (const segment of segments) {
-        const hasPathTraversal = this.hasPathBeyondCwd(segment);
-        if (hasPathTraversal) {
-          const scopeCheck = await this.checkFsAccess(hasPathTraversal, 'write');
-          if (!scopeCheck.allowed && !this.isExecuteScoped(hasPathTraversal)) {
-            return { allowed: false, reason: `No permission to access ${hasPathTraversal}. Use approve_scope tool with path="${hasPathTraversal}" and mode="write" to request access.`, needsApproval: false };
+      // The files the command touches, read as the shell reads it (shell-paths.ts):
+      // heredoc bodies are data, quotes are honoured, /dev/null is not a file,
+      // and `ls dir` is a read, not a write.
+      for (const segment of splitShellSegments(stripHeredocs(trimmed))) {
+        for (const { path: raw, mode } of shellPaths(segment)) {
+          const target = resolve(cwd, raw.replace(/^~(?=\/|$)/, homedir()));
+          if (target.startsWith(this.cwd)) continue;
+          const scopeCheck = await this.checkFsAccess(target, mode);
+          if (!scopeCheck.allowed && !this.isExecuteScoped(target)) {
+            return { allowed: false, reason: `No permission to ${mode} ${target}. Use approve_scope tool with path="${target}" and mode="${mode}" to request access.`, needsApproval: false };
           }
         }
       }
@@ -1158,9 +1163,17 @@ export class PermissionManager {
     // approval-gated: an unscoped `npm install` mutates cwd and can reach
     // anywhere via the network, so it is not covered by a directory grant.
     if (this.failClosed) {
-      const pathTokens = segments.flatMap(s => this.extractPathTokens(s));
-      if (pathTokens.length > 0 && pathTokens.every(t => this.isExecuteScoped(t))) {
-        logger.info({ cmd: trimmed, paths: pathTokens.length }, 'Shell command allowed by execute scope');
+      const pathSegments = splitShellSegments(stripHeredocs(trimmed));
+      const paths = pathSegments.flatMap((s) => shellPaths(s)).map((p) => ({ ...p, path: resolve(cwd, p.path.replace(/^~(?=\/|$)/, homedir())) }));
+      if (paths.length > 0 && paths.every((p) => this.isExecuteScoped(p.path))) {
+        logger.info({ cmd: trimmed, paths: paths.length }, 'Shell command allowed by execute scope');
+        return { allowed: true, needsApproval: false, lane: 'shell' };
+      }
+      // Only reading, only where it may read (`ls … | grep`, `find … 2>/dev/null | head`):
+      // no question. These used to ask the owner every time a pipe or redirect was used.
+      if (pathSegments.length > 0 && pathSegments.every(isReadOnlySegment)
+        && paths.every((p) => p.path.startsWith(this.cwd) || this.isWithinScope(this.canonicalizePath(p.path), 'read'))) {
+        logger.info({ cmd: trimmed, paths: paths.length }, 'Shell command allowed: read-only within granted scopes');
         return { allowed: true, needsApproval: false, lane: 'shell' };
       }
     }
@@ -1451,36 +1464,10 @@ export class PermissionManager {
     }
   }
 
-  private static readonly PATH_PATTERNS = [
-    /(?:^|\s)(\/[^\s]+)/,
-    /(?:^|\s)(~\/[^\s]+)/,
-    /(?:^|\s)\.\.\/([^\s]+)/,
-    /(?:^|\s)([A-Za-z]:\\[^\s]+)/,
-    /(?:^|\s)(\\\\[^\s]+)/,
-  ];
-
-  /** Every path-like token in a command segment, resolved (tilde expanded). */
-  private extractPathTokens(text: string): string[] {
-    const out: string[] = [];
-    for (const pattern of PermissionManager.PATH_PATTERNS) {
-      for (const match of text.matchAll(new RegExp(pattern.source, 'g'))) {
-        out.push(resolve(match[1].replace(/^~/, homedir())));
-      }
-    }
-    return out;
-  }
-
   /** A resolved path is covered by an explicit execute grant. */
   private isExecuteScoped(resolvedPath: string): boolean {
     if (this.findScope(resolvedPath)?.execute) return true;
     return this.findTempScope(resolvedPath)?.execute === true;
-  }
-
-  private hasPathBeyondCwd(command: string): string | null {
-    for (const candidate of this.extractPathTokens(command)) {
-      if (!candidate.startsWith(this.cwd)) return candidate;
-    }
-    return null;
   }
 
   private mergeDefaults(parsed: Partial<PermissionsManifest>): PermissionsManifest {

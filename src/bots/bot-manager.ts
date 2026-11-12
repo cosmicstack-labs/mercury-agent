@@ -113,6 +113,8 @@ export interface BotManagerDeps {
   notify?: (channelType: string, channelId: string, message: string) => Promise<void>;
 }
 
+/** How many recent events the live feed keeps in memory (the whole fleet). */
+const LIVE_EVENTS = 2000;
 const MAX_TRANSIENT_ATTEMPTS = 3;
 /** Consecutive no-outcome runs after which a work routine is paused (ADR-020). */
 export const NO_OUTCOME_PAUSE_AFTER = 3;
@@ -363,12 +365,53 @@ export class BotManager {
     this.activityListeners.add(listener);
     return () => this.activityListeners.delete(listener);
   }
+  /** What each running job was asked, by whom, for the live feed (set when the turn starts). */
+  private jobContext = new Map<string, { trigger: string; prompt: string; fromBot?: string }>();
+  /**
+   * The live feed's short memory: recent events across the fleet, so a
+   * screen opened mid-run shows what already happened. In memory only and
+   * capped (LIVE_EVENTS); a 'thinking' preview replaces the previous one of
+   * the same run instead of piling up.
+   */
+  private liveLog: BotActivityEvent[] = [];
+
+  /** The owner sent a bot a message: it shows in the live feed at once, before the run starts. */
+  noteOwnerMessage(botId: string, jobId: string, prompt: string): void {
+    // Already started (an idle bot picks the job up at once): the run's own start says it all.
+    if (this.liveLog.some((e) => e.jobId === jobId && e.kind !== 'queued')) return;
+    const busy = (this.running.get(botId)?.size ?? 0) > 0;
+    this.emitBotActivity({ botId, jobId, kind: 'queued', label: busy ? 'Queued: runs when the current run finishes' : 'Starting', stepIndex: 0, elapsedMs: 0, trigger: 'api', prompt: prompt.slice(0, 600) });
+  }
+
+  /** Recent live events, oldest first: for some bots (a fleet) or all, newer than `since`. */
+  recentActivity(opts: { bots?: string[]; since?: number; limit?: number } = {}): BotActivityEvent[] {
+    const want = opts.bots?.length ? new Set(opts.bots) : null;
+    const since = opts.since ?? 0;
+    const out = this.liveLog.filter((e) => (!want || want.has(e.botId)) && (e.at ?? 0) > since);
+    return out.slice(-Math.max(1, Math.min(opts.limit ?? 400, LIVE_EVENTS)));
+  }
+
   private emitBotActivity(ev: BotActivityEvent): void {
+    const ctx = ev.jobId ? this.jobContext.get(ev.jobId) : undefined;
+    ev = {
+      ...ev,
+      at: ev.at ?? Date.now(),
+      botName: ev.botName ?? this.store.get(ev.botId)?.name ?? ev.botId,
+      ...(ev.kind === 'turn-start' && ctx ? { trigger: ctx.trigger, prompt: ctx.prompt.slice(0, 600), ...(ctx.fromBot ? { fromBot: ctx.fromBot } : {}) } : {}),
+    };
+    if (ev.kind === 'turn-end' && ev.jobId) this.jobContext.delete(ev.jobId);
+    if (ev.kind === 'thinking') {
+      for (let i = this.liveLog.length - 1; i >= 0; i--) {
+        if (this.liveLog[i].kind === 'thinking' && this.liveLog[i].jobId === ev.jobId) { this.liveLog.splice(i, 1); break; }
+      }
+    }
+    this.liveLog.push(ev);
+    if (this.liveLog.length > LIVE_EVENTS) this.liveLog.splice(0, this.liveLog.length - LIVE_EVENTS);
     // Live roster label: keep the static job description until the first
     // step arrives, then follow the actual work. 'thinking' events are a
     // stream preview for threads, not a roster label — the label must stay
     // semantic (step/tool names), not the last 80 chars of reasoning.
-    if (ev.kind !== 'turn-end' && ev.kind !== 'thinking') this.activity.set(ev.botId, ev.label);
+    if (ev.kind !== 'turn-end' && ev.kind !== 'thinking' && ev.kind !== 'queued') this.activity.set(ev.botId, ev.label);
     for (const listener of this.activityListeners) {
       try { listener(ev); } catch (err: any) {
         logger.warn({ botId: ev.botId, err: err?.message }, 'Bot activity listener failed');
@@ -942,6 +985,7 @@ export class BotManager {
       const taskForJob = this.tasks.byJob(job.id);
       if (taskForJob) this.tasks.update(taskForJob.id, { status: 'running', startedAt: Date.now() });
       const turn = this.buildTurn(botId, manifest, job, controller.signal);
+      this.jobContext.set(job.id, { trigger: job.trigger, prompt: job.prompt ?? '', ...(job.fromBot ? { fromBot: job.fromBot } : {}) });
       const output = await runBotTurn({
         ...turn.input,
         jobId: job.id,
