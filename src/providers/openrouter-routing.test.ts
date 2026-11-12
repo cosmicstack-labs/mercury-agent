@@ -1,6 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// Reasoning prefs live under MERCURY_HOME; point it at a scratch dir so the
+// level set for the composition test never touches the real home.
+await vi.hoisted(async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  process.env.MERCURY_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'mercury-or-routing-'));
+});
+
 import { OpenAICompatProvider } from './openai-compat.js';
 import type { ProviderConfig } from '../utils/config.js';
+import { setModelPref } from '../utils/model-prefs.js';
 
 /**
  * The endpoint pin lives on the wire, not in the SDK: `createOpenAI` has no
@@ -22,6 +33,7 @@ interface SentBody {
   model?: string;
   messages?: Array<{ role?: string; content?: unknown }>;
   provider?: { order?: string[]; quantizations?: string[]; allow_fallbacks?: boolean };
+  reasoning?: { effort?: string };
 }
 
 function stubFetch() {
@@ -113,5 +125,23 @@ describe('openrouter endpoint pinning', () => {
     await provider.generateText('17+25 ?', 'one word');
 
     expect(bodies[0].provider?.allow_fallbacks).toBe(true);
+  });
+
+  it('keeps both the pin and the reasoning level on one request', async () => {
+    // OpenRouter has a reasoning control too, so the routing hook and the
+    // reasoning hook meet on the same request. They must compose: a level set
+    // for the model must not cost the endpoint pin, and vice versa.
+    setModelPref('openrouter', 'anthropic/claude-sonnet-4.6', { reasoning: 'high' });
+    const bodies = stubFetch();
+    const provider = new OpenAICompatProvider(
+      config({ model: 'anthropic/claude-sonnet-4.6', routing: { order: ['inference-net'] } }),
+      { useChatApi: true },
+    );
+
+    await provider.generateText('17+25 ?', 'one word');
+
+    expect(bodies.length).toBe(1);
+    expect(bodies[0].provider).toEqual({ order: ['inference-net'], allow_fallbacks: false });
+    expect(bodies[0].reasoning).toEqual({ effort: 'high' });
   });
 });
