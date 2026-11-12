@@ -115,6 +115,20 @@ export function useSSE(): SSEResult {
       }
     });
 
+    // A note while the turn keeps working ("Checking my work…"): shown, but the turn goes on.
+    es.addEventListener("progress", (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data);
+        if (typeof data.text !== "string" || !data.text.trim()) return;
+        store.getState().addMessage({
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: data.text,
+          timestamp: new Date().toISOString(),
+        });
+      } catch { /* ignore */ }
+    });
+
     es.addEventListener("permission_request", (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);

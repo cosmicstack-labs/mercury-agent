@@ -14,12 +14,18 @@ import type { WebChannel } from '../../channels/web.js';
 import type { ProgrammingMode, ProgrammingModeState } from '../../core/programming-mode.js';
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { join, extname, basename, relative, resolve } from 'node:path';
-import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
+import { getMercuryHome, loadConfig, getActiveProviders, type ProviderConfig } from '../../utils/config.js';
+import { basicAuthHeaders } from '../../providers/basic-auth.js';
 import type { SessionRepository } from '../../sessions/index.js';
+import { SessionTitleError } from '../../sessions/repository.js';
 import { loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
+import { discoverReasoningCaps } from '../../providers/reasoning-discovery.js';
+import { mediaService } from '../../media/runtime.js';
+import { isChatModelId } from '../../utils/provider-models.js';
 import {
   getModelPref, setModelPref, humanizeModelName, modelGroupLabel,
   reasoningLevelsFor, effectiveReasoning, isReasoningLevel, isValidModelRef, type ReasoningLevel,
+  effortFor, setChatEffort,
 } from '../../utils/model-prefs.js';
 
 let webChannel: WebChannel | null = null;
@@ -35,6 +41,27 @@ export function setSessionRepository(repository: SessionRepository): void {
 
 export function setSessionSyncEnabledCallback(fn: () => boolean): void {
   sessionSyncEnabledFn = fn;
+}
+
+/**
+ * What one reply cost (#296: every step of its turn), from what the turn
+ * recorded: tokens in (and how many came from the prompt cache), tokens out,
+ * steps, time and the model. Nothing for replies recorded before usage was.
+ */
+function usageOf(meta: Record<string, unknown> | undefined): { usage?: { provider?: string; model?: string; inputTokens: number; cachedInputTokens: number; outputTokens: number; steps?: number; elapsedMs?: number } } {
+  if (!meta || typeof meta.inputTokens !== 'number' || typeof meta.outputTokens !== 'number') return {};
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  return {
+    usage: {
+      ...(typeof meta.provider === 'string' ? { provider: meta.provider } : {}),
+      ...(typeof meta.model === 'string' ? { model: meta.model } : {}),
+      inputTokens: num(meta.inputTokens) ?? 0,
+      cachedInputTokens: num(meta.cachedInputTokens) ?? 0,
+      outputTokens: num(meta.outputTokens) ?? 0,
+      ...(num(meta.steps) !== undefined ? { steps: num(meta.steps) } : {}),
+      ...(num(meta.elapsedMs) !== undefined ? { elapsedMs: num(meta.elapsedMs) } : {}),
+    },
+  };
 }
 
 function toThread(session: ReturnType<SessionRepository['get']>, includeMessages = true) {
@@ -59,6 +86,8 @@ function toThread(session: ReturnType<SessionRepository['get']>, includeMessages
       ...(typeof message.metadata?.voiceRole === 'string' ? { voice: message.metadata.voiceRole } : {}),
       ...(Array.isArray(message.metadata?.artifacts) && message.metadata.artifacts.length ? { artifacts: message.metadata.artifacts } : {}),
       ...(message.metadata?.research && typeof message.metadata.research === 'object' ? { research: message.metadata.research } : {}),
+      ...(message.role === 'assistant' ? usageOf(message.metadata) : {}),
+      ...(message.role === 'assistant' && message.metadata?.trace && typeof message.metadata.trace === 'object' ? { trace: message.metadata.trace } : {}),
       ...(Array.isArray(message.metadata?.attachments) && message.metadata.attachments.length > 0
         ? { attachments: (message.metadata.attachments as Array<{ name: string; kind: string; mime?: string; ref: string }>).map((a) => ({ name: a.name, kind: a.kind, mime: a.mime, url: `/api/chat/uploads/${a.ref}` })) }
         : {}),
@@ -78,7 +107,7 @@ export function setCurrentProviderCallback(fn: () => { name: string; model: stri
   currentProviderFn = fn;
 }
 
-let stopFn: (() => Promise<string>) | null = null;
+let stopFn: ((target?: { channelId?: string; sessionId?: string; keepQueued?: boolean }) => Promise<string>) | null = null;
 let busyFn: ((sessionId: string) => boolean) | null = null;
 /** Whether a session has a turn running or queued (undo waits for it). */
 export function setSessionBusyLookup(fn: ((sessionId: string) => boolean) | null): void {
@@ -91,6 +120,39 @@ export function setQueueControls(controls: typeof queueControls): void {
   queueControls = controls;
 }
 
+/** A chat a turn runs or waits in, as screens see it (ADR-037). */
+export interface TurnChat {
+  /** The thread/session it belongs to, when it has one (desktop/web chats always do). */
+  sessionId?: string;
+  channelType: string;
+  channelId: string;
+}
+
+/** Chats running at once: what runs, what waits, and the limit (ADR-037). */
+export interface TurnControls {
+  running: () => Array<TurnChat & { startedAt: number; activity: string; steps: number }>;
+  waiting: () => Array<TurnChat & { waiting: number; position: number }>;
+  /** `limit`: in effect now. `configured`: 0 = automatic. `auto`: what automatic gives on this machine. */
+  limit: () => { limit: number; configured: number; auto: number };
+  /** Set the configured limit (0 = automatic); applies at once and persists. */
+  setLimit: (configured: number) => void;
+  /** The reply a chat is working on now, as far as it got (agent.liveTurn). */
+  live?: (id: string) => { startedAt: number; activity: string; trace: unknown } | undefined;
+}
+let turnControls: TurnControls | null = null;
+export function setTurnControls(controls: TurnControls | null): void {
+  turnControls = controls;
+}
+
+function turnsSnapshot(controls: TurnControls) {
+  const label = (activity: string) => activity.replace(/^\W+/u, '').replace(/\s+/g, ' ').trim().slice(0, 90);
+  return {
+    ...controls.limit(),
+    running: controls.running().map((t) => ({ ...t, activity: label(t.activity) })),
+    waiting: controls.waiting(),
+  };
+}
+
 /** Research runs per chat: what's going on, "write the report now". */
 let researchControls: {
   state: (sessionId: string) => Record<string, unknown>;
@@ -100,8 +162,12 @@ let researchControls: {
 export function setResearchControls(controls: typeof researchControls): void {
   researchControls = controls;
 }
-/** The same stop the terminal's Esc and `/stop` use: abort the running turn, cancel its work entry. */
-export function setStopCallback(fn: () => Promise<string>): void {
+/**
+ * The same stop the terminal's Esc and `/stop` use: abort the running turn,
+ * cancel its work entry. Given a thread or session, only that chat's work
+ * stops (other chats keep running, ADR-037); given neither, everything does.
+ */
+export function setStopCallback(fn: (target?: { channelId?: string; sessionId?: string; keepQueued?: boolean }) => Promise<string>): void {
   stopFn = fn;
 }
 
@@ -260,12 +326,14 @@ chat.post('/api/chat/send', async (c) => {
     content?: string;
     sessionId?: string;
     threadId?: string;
-    /** Base64 files: photos and PDFs become real attachments for this turn. */
+    /** Base64 files: images, PDFs and UTF-8 text become attachments for this turn. */
     attachments?: unknown;
     /** Session-scoped coding: 'auto' | 'plan' | 'execute' for this turn only. */
     programming?: unknown;
     /** Folder the coding turn works in (an existing directory). */
     cwd?: unknown;
+    /** The desktop's Image switch: { kind: "image", aspect? } (ADR-042). */
+    media?: unknown;
   }>();
   const content = body.content?.trim() ?? '';
   const upload = storeInlineAttachments(body.attachments);
@@ -300,7 +368,11 @@ chat.post('/api/chat/send', async (c) => {
       }
       codeCwd = resolvedCwd;
     }
-    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, { ...(programming ? { programming, cwd: codeCwd } : {}), thisComputer: isThisComputer(c) });
+    const mediaRaw = body.media as { kind?: unknown; aspect?: unknown } | undefined;
+    const media = mediaRaw?.kind === 'image' || mediaRaw?.kind === 'video' || mediaRaw?.kind === 'music'
+      ? { kind: mediaRaw.kind as 'image' | 'video' | 'music', ...(mediaRaw.aspect === 'square' || mediaRaw.aspect === 'landscape' || mediaRaw.aspect === 'portrait' ? { aspect: mediaRaw.aspect } : {}) }
+      : undefined;
+    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, { ...(programming ? { programming, cwd: codeCwd } : {}), thisComputer: isThisComputer(c), ...(media ? { media } : {}) });
     return c.json({
       sent: true,
       sessionId: session.id,
@@ -319,15 +391,18 @@ chat.get('/api/chat/uploads/:month/:file', (c) => {
   const path = resolveUploadRef(c.req.param('month'), c.req.param('file'));
   if (!path) return c.json({ error: 'Not found' }, 404);
   const bytes = readFileSync(path);
-  const mime = uploadMime(bytes);
+  const mime = uploadMime(bytes, c.req.param('file'));
   if (!mime) return c.json({ error: 'Not found' }, 404);
+  const name = c.req.param('file').slice(37);
+  const fallbackName = name.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  const encodedName = encodeURIComponent(name).replace(/['()*]/g, ch => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
   return new Response(bytes, {
     headers: {
       'Content-Type': mime,
       'Content-Length': String(bytes.length),
       'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'private, max-age=31536000, immutable',
-      'Content-Disposition': `inline; filename="${c.req.param('file').slice(37).replace(/["\\\r\n]/g, '_')}"`,
+      'Content-Disposition': `inline; filename="${fallbackName}"; filename*=UTF-8''${encodedName}`,
     },
   });
 });
@@ -368,11 +443,16 @@ chat.put('/api/chat/settings', async (c) => {
 
 // ─── Permission Resolution ───────────────────────────────────
 
-/** Stop button: interrupt whatever Mercury is doing right now. */
+/** Stop button: interrupt this chat's work (`threadId`/`sessionId`), or everything when neither is given. */
 chat.post('/api/chat/stop', async (c) => {
   if (!stopFn) return c.json({ error: 'Stop is not available on this runtime' }, 503);
   try {
-    const note = await stopFn();
+    const body = await c.req.json<{ threadId?: unknown; sessionId?: unknown; keepQueued?: unknown }>().catch(() => ({} as { threadId?: unknown; sessionId?: unknown; keepQueued?: unknown }));
+    const threadId = typeof body.threadId === 'string' && body.threadId ? body.threadId.slice(0, 200) : undefined;
+    const sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId.slice(0, 200) : undefined;
+    // keepQueued: stop only the running turn ("do mine first"); by default a
+    // stop also drops the chat's waiting messages (ADR-038).
+    const note = await stopFn(threadId || sessionId ? { channelId: threadId, sessionId, keepQueued: body.keepQueued === true } : undefined);
     return c.json({ ok: true, note });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -423,12 +503,12 @@ function recentlyFailed(key: string): boolean {
 }
 
 /** Every model the local Ollama server has pulled (empty if unreachable). */
-async function listOllamaModels(baseUrl: string): Promise<string[]> {
-  const root = baseUrl.replace(/\/+$/, '').replace(/\/(v1|api)$/, '');
+async function listOllamaModels(server: Pick<ProviderConfig, 'baseUrl' | 'username' | 'password'>): Promise<string[]> {
+  const root = server.baseUrl.replace(/\/+$/, '').replace(/\/(v1|api)$/, '');
   const lookup = `ollama:${root}`;
   if (recentlyFailed(lookup)) return [];
   try {
-    const res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${root}/api/tags`, { headers: basicAuthHeaders(server), signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = (await res.json()) as { models?: { name?: string }[] };
     failedLookups.delete(lookup);
@@ -463,19 +543,59 @@ async function listChatGPTModels(): Promise<string[]> {
   }
 }
 
+/**
+ * Mercury Cloud's chat models this account's tier may use (its /v1/models
+ * marks each `available`), with Cloud's own names. Cached for five minutes.
+ */
+let cloudModelCache: { at: number; models: Array<{ id: string; label?: string }> } | null = null;
+const CLOUD_MODEL_TTL_MS = 5 * 60 * 1000;
+const cloudLabels = new Map<string, string>();
+/** Why the last Mercury Cloud lookup failed, for the picker to say. */
+let cloudProblem: string | null = null;
+
+async function listMercuryCloudModels(): Promise<string[]> {
+  if (cloudModelCache && Date.now() - cloudModelCache.at < CLOUD_MODEL_TTL_MS) return cloudModelCache.models.map((m) => m.id);
+  if (recentlyFailed('mercuryCloud')) return cloudModelCache?.models.map((m) => m.id) ?? [];
+  try {
+    // The provider's own endpoint and auth (a fresh JWT or the access key).
+    const ep = await mediaService()?.endpointFor('mercuryCloud');
+    if (!ep) throw new Error('Mercury Cloud is not connected');
+    const res = await fetch(`${ep.baseUrl}/models`, { headers: ep.headers, signal: AbortSignal.timeout(5000) });
+    if (res.status === 401 || res.status === 403) throw new Error('Mercury Cloud sign-in expired: run `mercury cloud login` (or sign in again in Settings → Cloud) to see your models.');
+    if (!res.ok) throw new Error(`Mercury Cloud didn't answer (HTTP ${res.status}).`);
+    const data = (await res.json()) as { data?: Array<{ id?: string; label?: string; available?: boolean; output_modalities?: unknown }> };
+    const all = (data.data ?? []).filter((m): m is { id: string; label?: string; available?: boolean; output_modalities?: unknown } => typeof m.id === 'string' && m.id.length > 0);
+    // The tier decides: only models marked available (older deployments without the flag: all of them).
+    const tiered = all.some((m) => typeof m.available === 'boolean') ? all.filter((m) => m.available === true) : all;
+    const chat = tiered.filter((m) => isChatModelId(m.id) && (!Array.isArray(m.output_modalities) || m.output_modalities.includes('text')));
+    for (const m of chat) if (m.label) cloudLabels.set(m.id, m.label);
+    cloudModelCache = { at: Date.now(), models: chat.map((m) => ({ id: m.id, ...(m.label ? { label: m.label } : {}) })) };
+    failedLookups.delete('mercuryCloud');
+    cloudProblem = null;
+    return cloudModelCache.models.map((m) => m.id);
+  } catch (err) {
+    cloudProblem = err instanceof Error ? err.message : String(err);
+    failedLookups.set('mercuryCloud', Date.now());
+    return cloudModelCache?.models.map((m) => m.id) ?? [];
+  }
+}
+
 /** Providers that serve many models list each one; others list their configured model. */
-async function listProviderModels(p: { name: string; baseUrl: string }): Promise<string[]> {
-  if (p.name === 'ollamaLocal') return listOllamaModels(p.baseUrl);
+async function listProviderModels(p: ProviderConfig): Promise<string[]> {
+  if (p.name === 'ollamaLocal') return listOllamaModels(p);
   if (p.name === 'chatgptWeb') return [...(await listChatGPTModels())];
+  if (p.name === 'mercuryCloud') return listMercuryCloudModels();
   return [];
 }
 
 /** What the picker needs to show a model in plain language. */
 function describeModel(provider: string, model: string) {
   const pref = getModelPref(provider, model);
+  // Mercury Cloud names its models itself ("Mercury Pro").
+  const auto = (provider === 'mercuryCloud' ? cloudLabels.get(model) : undefined) ?? humanizeModelName(model);
   return {
-    label: pref.label ?? humanizeModelName(model),
-    autoLabel: humanizeModelName(model),
+    label: pref.label ?? auto,
+    autoLabel: auto,
     customLabel: pref.label ?? null,
     group: modelGroupLabel(provider, model),
     reasoning: effectiveReasoning(provider, model) ?? 'auto',
@@ -483,10 +603,26 @@ function describeModel(provider: string, model: string) {
   };
 }
 
+/**
+ * The reply this chat is working on right now: its thinking and steps so
+ * far, the text written so far, and what it is doing. A screen that left
+ * the chat mid-turn shows this on return, then follows the live events.
+ */
+chat.get('/api/chat/threads/:id/live', (c) => {
+  const id = c.req.param('id');
+  const live = turnControls?.live?.(id);
+  if (!live) return c.json({ running: false });
+  return c.json({ running: true, startedAt: live.startedAt, activity: live.activity, trace: live.trace, text: webChannel?.liveTextFor(id) ?? '' });
+});
+
 chat.get('/api/chat/models', async (c) => {
   const config = loadConfig();
   const active = getActiveProviders(config);
   const current = currentProviderFn ? currentProviderFn() : { name: config.providers.default || '', model: '' };
+  // An OpenAI-compatible server may say which models take an effort: ask
+  // about the current one before answering (bounded; cached for a day).
+  const currentPc = active.find((p) => p.name === current.name);
+  if (currentPc && current.model) await discoverReasoningCaps(currentPc, current.model).catch(() => undefined);
   const entries: ({ name: string; model: string; available: boolean; isCurrent: boolean } & ReturnType<typeof describeModel>)[] = [];
   const perProvider = await Promise.all(active.map((p) => listProviderModels(p)));
   for (const [i, p] of active.entries()) {
@@ -502,7 +638,48 @@ chat.get('/api/chat/models', async (c) => {
       });
     }
   }
-  return c.json({ current: { ...current, ...describeModel(current.name, current.model) }, providers: entries });
+  // The chat's own effort (#188), when the screen says which chat it shows.
+  const sessionId = c.req.query('sessionId');
+  const chatKey = sessionId && isValidModelRef(sessionId) ? sessionId : undefined;
+  const effort = effortFor(current.name, current.model, chatKey);
+  return c.json({
+    // Lookups that failed, said plainly (an expired Mercury Cloud sign-in).
+    notices: active.some((p) => p.name === 'mercuryCloud') && cloudProblem ? [cloudProblem] : [],
+    current: {
+      ...current,
+      ...describeModel(current.name, current.model),
+      effort: {
+        effective: effort.effective ?? 'auto',
+        source: effort.source,
+        modelDefault: effort.modelDefault,
+        chat: effort.chat ?? null,
+        ...(effort.chatUnsupported ? { chatUnsupported: true } : {}),
+      },
+    },
+    providers: entries,
+  });
+});
+
+/**
+ * One chat's effort override (#188): a level this model takes, "auto" (let
+ * the model decide, whatever the default), or null to use the model's
+ * default again.
+ */
+chat.post('/api/chat/effort', async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+  if (!body || !isValidModelRef(body.sessionId)) return c.json({ error: 'sessionId is required' }, 400);
+  const level = body.level;
+  if (level !== null && level !== undefined && typeof level !== 'string') return c.json({ error: 'level must be a string or null' }, 400);
+  const config = loadConfig();
+  const current = currentProviderFn ? currentProviderFn() : { name: config.providers.default || '', model: '' };
+  if (typeof level === 'string' && level !== 'auto' && level !== 'default') {
+    if (!isReasoningLevel(level) || !reasoningLevelsFor(current.name, current.model).includes(level)) {
+      return c.json({ error: `${humanizeModelName(current.model)} doesn't take the effort '${level}'` }, 400);
+    }
+  }
+  setChatEffort(body.sessionId, level === null || level === undefined || level === 'default' ? null : (level as ReasoningLevel | 'auto'));
+  const effort = effortFor(current.name, current.model, body.sessionId);
+  return c.json({ ok: true, effort: { effective: effort.effective ?? 'auto', source: effort.source, modelDefault: effort.modelDefault, chat: effort.chat ?? null } });
 });
 
 /** Rename a model (label) and/or set its reasoning level. null / '' / 'auto' resets. */
@@ -752,6 +929,24 @@ chat.get('/api/chat/threads/:id', (c) => {
   }
 });
 
+/** Owner titles survive automatic naming and keep the conversation's position. */
+chat.put('/api/chat/threads/:id/title', async (c) => {
+  if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+  const body: unknown = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || !('title' in body) || typeof body.title !== 'string') {
+    return c.json({ error: 'Send { title: "New chat name" }.' }, 400);
+  }
+  const id = c.req.param('id');
+  try { sessions.get(id); } catch { return c.json({ error: 'Thread not found' }, 404); }
+  try {
+    const session = sessions.updateTitle(id, body.title, 'user', { touch: false });
+    return c.json({ id: session.id, title: session.title });
+  } catch (error) {
+    if (error instanceof SessionTitleError) return c.json({ error: error.message }, 400);
+    return c.json({ error: 'Could not save the chat name. Please try again.' }, 500);
+  }
+});
+
 chat.delete('/api/chat/threads/:id', (c) => {
   const id = c.req.param('id');
   if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
@@ -783,6 +978,24 @@ chat.post('/api/chat/threads/:id/delete', async (c) => {
 });
 
 /** Save a thread to come back to later, or unsave it: { saved: boolean }. */
+// Which chats are working right now, which wait, and how many may run at once (ADR-037).
+chat.get('/api/chat/running', (c) => {
+  if (!turnControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  return c.json(turnsSnapshot(turnControls));
+});
+
+// How many chats may run at once: { maxTurns: 0 (automatic) … 16 }. Applies at once.
+chat.put('/api/chat/concurrency', async (c) => {
+  if (!turnControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  const body = await c.req.json<{ maxTurns?: unknown }>().catch(() => ({} as { maxTurns?: unknown }));
+  const n = body.maxTurns;
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 16) {
+    return c.json({ error: 'maxTurns must be a whole number from 0 (automatic) to 16.' }, 400);
+  }
+  turnControls.setLimit(n);
+  return c.json(turnsSnapshot(turnControls));
+});
+
 // Where this chat's message stands: running, waiting in line (and behind what), or nothing.
 chat.get('/api/chat/threads/:id/queue', (c) => {
   if (!queueControls) return c.json({ state: 'none' });

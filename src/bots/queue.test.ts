@@ -46,6 +46,7 @@ mockedStreamText.mockImplementation(((opts: any) => {
 }) as any);
 import { BotQueue, JsonFileQueueBackend, SqliteQueueBackend, idempotencyKeyFor, LEASE_SECONDS } from './queue.js';
 import type { DurableBotJob } from './queue.js';
+import { openSqlite } from '../utils/sqlite-driver.js';
 
 function job(id: string, overrides: Partial<DurableBotJob> = {}): Omit<DurableBotJob, 'state'> {
   return {
@@ -181,6 +182,62 @@ describe('BotQueue backends (JSON-file + SQLite semantics)', () => {
         expect(backend.counts().claimed).toBe(1);
       });
 
+      it('quarantines interrupted scheduled jobs while preserving safe first attempts and chat recovery', () => {
+        const backend = mkBackend(name, root);
+        const queue = Object.create(BotQueue.prototype) as BotQueue;
+        const interrupted = vi.fn();
+        Object.assign(queue, { backend, onInterruptedSchedule: interrupted });
+        backend.enqueue(job('scheduled-claimed', { trigger: 'cron' }));
+        backend.claim('scheduled-claimed', 0);
+        backend.enqueue(job('scheduled-fresh', { trigger: 'cron' }));
+        backend.enqueue(job('scheduled-retry', { trigger: 'cron' }));
+        backend.claim('scheduled-retry', 0);
+        backend.retry('scheduled-retry', 1, Date.now() - 1);
+        backend.enqueue(job('scheduled-continuation', { trigger: 'cron' }));
+        backend.claim('scheduled-continuation', 0);
+        backend.retry('scheduled-continuation', 0, Date.now() - 1);
+        backend.enqueue(job('chat-claimed'));
+        backend.claim('chat-claimed', 0);
+        expect(queue.resumeJobs().map((j) => j.id).sort()).toEqual(['chat-claimed', 'scheduled-fresh']);
+        expect(interrupted).toHaveBeenCalledTimes(3);
+        expect(backend.listDlq().map((j) => j.id).sort()).toEqual(['scheduled-claimed', 'scheduled-continuation', 'scheduled-retry']);
+        expect(backend.listDlq().every((j) => j.reasonCode === 'scheduled_interrupted')).toBe(true);
+        const restarted = mkBackend(name, root);
+        expect(restarted.rehydratable().map((j) => j.id).sort()).toEqual(['chat-claimed', 'scheduled-fresh']);
+      });
+
+      it('quarantines a scheduled run on quick restart before its lease expires', () => {
+        const backend = mkBackend(name, root);
+        backend.enqueue(job('scheduled-live-lease', { trigger: 'cron' }));
+        backend.claim('scheduled-live-lease', 3600);
+        backend.enqueue(job('chat-live-lease'));
+        backend.claim('chat-live-lease', 3600);
+        backend.enqueue(job('scheduled-future-retry', { trigger: 'cron' }));
+        backend.retry('scheduled-future-retry', 1, Date.now() + 3600_000);
+        const restarted = mkBackend(name, root);
+        const queue = Object.create(BotQueue.prototype) as BotQueue;
+        const pause = vi.fn();
+        Object.assign(queue, { backend: restarted, onInterruptedSchedule: pause });
+        expect(queue.resumeJobs()).toEqual([]);
+        expect(pause).toHaveBeenCalledTimes(2);
+        expect(restarted.listDlq().map((j) => j.id).sort()).toEqual(['scheduled-future-retry', 'scheduled-live-lease']);
+        expect(restarted.counts()).toMatchObject({ claimed: 1 });
+      });
+
+      it('does not discard the interrupted job when saving its routine pause fails', () => {
+        const backend = mkBackend(name, root);
+        const queue = Object.create(BotQueue.prototype) as BotQueue;
+        Object.assign(queue, { backend, onInterruptedSchedule: () => { throw new Error('Disk full'); } });
+        backend.enqueue(job('interrupted', { trigger: 'cron' }));
+        backend.claim('interrupted', 0);
+        expect(() => queue.resumeJobs()).toThrow('Disk full');
+        expect(backend.rehydratable().map((j) => j.id)).toEqual(['interrupted']);
+        expect(backend.listDlq()).toEqual([]);
+        queue.onInterruptedSchedule = vi.fn();
+        expect(queue.resumeJobs()).toEqual([]);
+        expect(backend.listDlq()[0].reasonCode).toBe('scheduled_interrupted');
+      });
+
       it('DLQ is capped with oldest-first eviction', () => {
         const backend = mkBackend(name, root, 3);
         for (let i = 0; i < 5; i++) {
@@ -213,6 +270,22 @@ describe('BotQueue backends (JSON-file + SQLite semantics)', () => {
       });
     });
   }
+
+  it('rolls back SQLite quarantine if the DLQ insert fails after removing the active row', () => {
+    const db = openSqlite(join(root, 'queue.db'))!;
+    const backend = new SqliteQueueBackend(root, 100, db);
+    openBackends.push(backend);
+    backend.enqueue(job('quarantine', { trigger: 'cron' }));
+    backend.claim('quarantine', 3600);
+    db.exec(`CREATE TRIGGER fail_dlq BEFORE INSERT ON bot_dlq BEGIN SELECT RAISE(ABORT, 'injected disk error'); END`);
+    expect(() => backend.settle('quarantine', 'dead', 'scheduled_interrupted')).toThrow('injected disk error');
+    expect(backend.interruptedSchedules().map((j) => j.id)).toEqual(['quarantine']);
+    expect(backend.listDlq()).toEqual([]);
+    db.exec('DROP TRIGGER fail_dlq');
+    backend.settle('quarantine', 'dead', 'scheduled_interrupted');
+    expect(backend.interruptedSchedules()).toEqual([]);
+    expect(backend.listDlq()[0]).toMatchObject({ id: 'quarantine', prompt: 'task quarantine', reasonCode: 'scheduled_interrupted' });
+  });
 
   it('BotQueue facade resumes expired leases and pending jobs', () => {
     const dir = join(root, 'bots');

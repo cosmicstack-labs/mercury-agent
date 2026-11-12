@@ -26,3 +26,17 @@ describe('selectActiveTools (ROADMAP P1.4)', () => {
     expect(selectActiveTools(['read_file', 'run_command'], 'anything')).toBeUndefined();
   });
 });
+
+describe('selectActiveTools: draw.io (ADR-039)', () => {
+  const WITH_DRAWIO = ['read_file', 'drawio__open_drawio_xml', 'drawio__get_page', 'spotify_play'];
+  it('leaves the diagram tools out of an unrelated turn', () => {
+    expect(selectActiveTools(WITH_DRAWIO, 'Hi')).toEqual(['read_file']);
+  });
+  it('keeps them for a diagram request, or one that follows it', () => {
+    expect(selectActiveTools(WITH_DRAWIO, 'make me a flowchart of the signup')).toEqual(['read_file', 'drawio__open_drawio_xml', 'drawio__get_page']);
+    expect(selectActiveTools(WITH_DRAWIO, 'add a box for billing', ['Here is your architecture diagram in draw.io.'])).toEqual(['read_file', 'drawio__open_drawio_xml', 'drawio__get_page']);
+  });
+  it('gates each group on its own', () => {
+    expect(selectActiveTools(WITH_DRAWIO, 'draw a diagram while the playlist plays')).toBeUndefined();
+  });
+});

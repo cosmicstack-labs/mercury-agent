@@ -1,4 +1,5 @@
 import type { MercuryConfig } from '../utils/config.js';
+import { exposure } from '../security/provenance.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
 import type { ShortTermMemory, LongTermMemory, EpisodicMemory } from '../memory/store.js';
@@ -131,6 +132,7 @@ export class SubAgentSupervisor {
       ...config,
       id,
       permissionContext: config.permissionContext ?? this.childPermissionContext(config),
+      exposure: config.exposure ?? exposure(),
     };
     this.parents.set(id, config.parentId);
 
@@ -196,7 +198,32 @@ export class SubAgentSupervisor {
     });
   }
 
+  /**
+   * Agents the owner halted (ADR-038). A halt is final: no step-budget
+   * auto-resume, no start from the wait queue, however the halt raced them.
+   * Bounded; ids are unique per spawn.
+   */
+  private readonly haltedIds = new Set<string>();
+
+  private markHalted(agentId: string): void {
+    this.haltedIds.add(agentId);
+    this.stepResumeCounts.delete(agentId);
+    if (this.haltedIds.size > 1000) {
+      const oldest = this.haltedIds.values().next().value;
+      if (oldest !== undefined) this.haltedIds.delete(oldest);
+    }
+  }
+
+  /** Was this agent halted by the owner? */
+  wasHalted(agentId: string): boolean {
+    return this.haltedIds.has(agentId);
+  }
+
   private startAgentInBackground(config: SubAgentConfig): void {
+    if (this.haltedIds.has(config.id)) {
+      logger.info({ agentId: config.id }, 'Not starting a halted sub-agent');
+      return;
+    }
     this.agentConfigs.set(config.id, config);
     const subAgent = new SubAgent(config, {
       agentConfig: this.agentConfig,
@@ -291,7 +318,7 @@ export class SubAgentSupervisor {
     if (result.status === 'paused') {
       const config = this.agentConfigs.get(agentId);
       const resumes = this.stepResumeCounts.get(agentId) ?? 0;
-      if (config && resumes < MAX_SUBAGENT_STEP_RESUMES) {
+      if (config && resumes < MAX_SUBAGENT_STEP_RESUMES && !this.haltedIds.has(agentId)) {
         this.stepResumeCounts.set(agentId, resumes + 1);
         const entry = this.taskBoard.get(agentId);
         if (entry) {
@@ -399,6 +426,7 @@ export class SubAgentSupervisor {
       return false;
     }
 
+    this.markHalted(agentId);
     agent?.abort();
 
     this.waitQueue = this.waitQueue.filter(c => c.id !== agentId);
@@ -425,6 +453,7 @@ export class SubAgentSupervisor {
 
     for (const [agentId, agent] of this.activeAgents.entries()) {
       if (!owned(agentId)) continue;
+      this.markHalted(agentId);
       agent.abort();
       halted.push(agentId);
     }
@@ -435,11 +464,40 @@ export class SubAgentSupervisor {
         remaining.push(config);
         continue;
       }
+      this.markHalted(config.id);
       this.taskBoard.update(config.id, {
         status: 'halted',
         completedAt: Date.now(),
         progress: 'Halted while queued',
       });
+      halted.push(config.id);
+    }
+    this.waitQueue = remaining;
+    return halted;
+  }
+
+  /**
+   * Halt only the agents started from one chat (ADR-037: a /stop in one chat
+   * leaves the others' delegated work running). Delegated grandchildren carry
+   * the same source chat. Returns the ids that were signalled.
+   */
+  async haltForChannel(channelId: string): Promise<string[]> {
+    const fromChannel = (config: SubAgentConfig) => config.sourceChannelId === channelId;
+    const halted: string[] = [];
+    for (const [agentId, agent] of this.activeAgents.entries()) {
+      if (!fromChannel(agent.config)) continue;
+      this.markHalted(agentId);
+      agent.abort();
+      halted.push(agentId);
+    }
+    const remaining: SubAgentConfig[] = [];
+    for (const config of this.waitQueue) {
+      if (!fromChannel(config)) {
+        remaining.push(config);
+        continue;
+      }
+      this.markHalted(config.id);
+      this.taskBoard.update(config.id, { status: 'halted', completedAt: Date.now(), progress: 'Halted while queued' });
       halted.push(config.id);
     }
     this.waitQueue = remaining;

@@ -34,6 +34,7 @@ export const PROVIDER_META: Record<ProviderName, ProviderMeta> = {
   grok: { label: 'Grok (xAI)', kind: 'cloud', blurb: 'Grok models. The same key powers Grok voice.', needsKey: true, needsBaseUrl: false, keyUrl: 'https://console.x.ai', keyHint: 'xai-…' },
   atlascloud: { label: 'Atlas Cloud', kind: 'gateway', blurb: 'Open models (Qwen, DeepSeek, Llama) on one key.', needsKey: true, needsBaseUrl: false, keyUrl: 'https://www.atlascloud.ai' },
   runcrate: { label: 'Runcrate', kind: 'gateway', blurb: 'Open models (DeepSeek, GLM, Qwen, Kimi) on one key.', needsKey: true, needsBaseUrl: false, keyUrl: 'https://www.runcrate.ai/dashboard/api-keys' },
+  cloudgpu: { label: 'CloudGPU', kind: 'gateway', blurb: 'OpenAI-compatible model API gateway.', needsKey: true, needsBaseUrl: false, keyUrl: 'https://cloudgpu.app/api/console' },
   ollamaCloud: { label: 'Ollama Cloud', kind: 'cloud', blurb: 'Large open models hosted by Ollama.', needsKey: true, needsBaseUrl: false, keyUrl: 'https://ollama.com/settings/keys' },
   ollamaLocal: { label: 'Ollama (this computer)', kind: 'local', blurb: 'Models you run yourself with Ollama. Free and private.', needsKey: false, needsBaseUrl: false },
   lmStudio: { label: 'LM Studio', kind: 'local', blurb: 'Models served by LM Studio on this computer.', needsKey: false, needsBaseUrl: false },

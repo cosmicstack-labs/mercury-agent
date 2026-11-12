@@ -5,7 +5,7 @@
    ═══════════════════════════════════════════════════════════════ */
 
 import { create } from "zustand";
-import type { BotStatus, ChatThread, PendingPrompt, BotApproval } from "~/api/types";
+import type { BotActivityEvent, BotStatus, ChatThread, PendingPrompt, BotApproval } from "~/api/types";
 
 export type View = "chat" | "artifacts" | "code" | "bots" | "brain" | "plugins" | "skills" | "settings";
 
@@ -115,6 +115,33 @@ interface BotsState {
   setBots(bots: BotStatus[], available: boolean, unread?: number): void;
   inboxChanged(unread?: number): void;
   setActivity(botId: string, label: string | null): void;
+  /** The live feed: recent bot events, oldest first, capped (LIVE_CAP). */
+  live: BotActivityEvent[];
+  /** Add events (from the stream or the history endpoint); duplicates are dropped. */
+  addLive(events: BotActivityEvent[]): void;
+}
+
+/** How many live events the app keeps (the whole fleet). */
+export const LIVE_CAP = 2000;
+
+/** One key per distinct event: the same event from history and the stream counts once. */
+export function liveKey(e: BotActivityEvent): string {
+  return `${e.jobId ?? ""}|${e.kind}|${e.stepIndex ?? 0}|${e.label}|${e.status ?? ""}|${e.at ?? 0}`;
+}
+
+/** Merge events into the feed: dedupe, keep only the latest thinking preview per run, sort by time, cap. */
+export function mergeLive(current: BotActivityEvent[], incoming: BotActivityEvent[]): BotActivityEvent[] {
+  const seen = new Set(current.map(liveKey));
+  let next = current.slice();
+  for (const e of incoming) {
+    const k = liveKey(e);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (e.kind === "thinking") next = next.filter((x) => !(x.kind === "thinking" && x.jobId === e.jobId && (x.at ?? 0) <= (e.at ?? 0)));
+    next.push(e);
+  }
+  next.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  return next.length > LIVE_CAP ? next.slice(next.length - LIVE_CAP) : next;
 }
 
 export const useBots = create<BotsState>((set) => ({
@@ -127,6 +154,8 @@ export const useBots = create<BotsState>((set) => ({
   setApprovals: (approvals) => set({ approvals }),
   setBots: (bots, available, unread) => set(unread === undefined ? { bots, available } : { bots, available, unread }),
   inboxChanged: (unread) => set((s) => ({ inboxVersion: s.inboxVersion + 1, ...(unread === undefined ? {} : { unread }) })),
+  live: [],
+  addLive: (events) => set((s) => ({ live: mergeLive(s.live, events) })),
   setActivity: (botId, label) => set((s) => {
     const activity = { ...s.activity };
     if (label === null) delete activity[botId];

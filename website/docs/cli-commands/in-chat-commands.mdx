@@ -16,6 +16,23 @@ Type these during a conversation with Mercury. Most work in both CLI and Telegra
 | `/permissions` | Change permission mode (Ask Me / Allow All) |
 | `/models` | List configured models/providers for this session |
 | `/models use <provider>` | Switch the current session model/provider |
+| `/image <prompt>` | Make an image with an image model; add `--landscape` or `--portrait`, or `--model provider::model`. Send a photo with it to edit that photo |
+| `/media` | Show the image model in use and every image model your providers offer |
+| `/media image <number\|provider::model\|auto>` | Choose the default image model, or let Mercury pick |
+| `/media refresh` | Ask your providers again which image models they have |
+| `/say <text>` | Say it out loud: a voice note in Telegram and WhatsApp, audio in the apps; add `--style "calm"` |
+| `/media speech <number\|auto>` | Choose what speaks: OpenAI, Gemini, Deepgram, ElevenLabs, or a text-to-speech model on your providers (`auto` follows Settings → Voice) |
+| `/media voice <name\|default>` | Choose the voice (OpenAI: `nova`, `coral`…; Gemini: `Kore`, `Puck`…; an ElevenLabs voice id) |
+| `/media replies <off\|mirror\|always>` | When chat-app replies also come as a voice note; `mirror` (default) answers a voice note with one |
+| `/video <shot>` | Make a short video (3–15 s; `--portrait`, `--seconds 6`). It runs in the background and arrives in the chat when ready |
+| `/music <style>` | Make a song or instrumental (`--instrumental`, `--seconds 60`); arrives when ready (`/song` works too) |
+| `/media video <number\|auto>` | Choose the video model (Gemini Omni, or a gateway's video model) |
+| `/media music <number\|auto>` | Choose the music model (Gemini Lyria, ElevenLabs Music) |
+| `/media jobs` | Videos and songs being made, and the last few made |
+| `/effort` | Show the thinking effort in this chat, where it comes from (this chat or the model's default) and the levels the model takes |
+| `/effort <level>` | Set the effort for this chat only: `auto`, `low`, `medium`, `high`, and `off`/`xhigh`/`max` where the model takes them |
+| `/effort default` | Clear this chat's effort and use the model's default again |
+| `/effort global <level>` | Change the model's default effort, used by every chat without its own (Mercury Desktop: the Effort picker's last item) |
 | `/tools` | List all currently loaded tools |
 | `/mcp` | Show [MCP servers](../integrations/mcp) and whether they are connected |
 | `/mcp tools <server>` | List an MCP server's tools and which ones the agent may use |
@@ -152,8 +169,8 @@ Persistent persona-scoped agents that run outside your conversation — each wit
 
 | Command | Description |
 |---------|-------------|
-| `/halt` | Emergency: stop all agents and clear the task queue |
-| `/stop` | Stop all agents, clear queue, release file locks, clear task board |
+| `/halt` | Emergency: stop every chat's task and all agents |
+| `/stop` | Stop this chat's task, the commands and agents it started, and the messages it had waiting. When nothing else is running, also release file locks and clear the task board |
 | `/reset` | Full reset: stop all + clear conversation context (requires confirmation) |
 
 :::tip[Fast-path commands]

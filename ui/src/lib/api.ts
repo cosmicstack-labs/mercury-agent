@@ -194,8 +194,8 @@ export const providers = {
 
 // ── Chat ──
 export const chat = {
-  send: (content: string, threadId?: string) =>
-    post<{ sent: boolean; sessionId: string }>("/api/chat/send", { content, sessionId: threadId }),
+  send: (content: string, threadId?: string, attachments?: InlineChatAttachment[]) =>
+    post<{ sent: boolean; sessionId: string; attachments?: ChatAttachment[] }>("/api/chat/send", { content, sessionId: threadId, attachments }),
   settings: {
     get: () => get<ChatSettings>("/api/chat/settings"),
     update: (data: Partial<ChatSettings>) =>
@@ -217,6 +217,7 @@ export const chat = {
   threads: {
     list: () => get<{ threads: ChatThread[] }>("/api/chat/threads"),
     create: (title?: string) => post<ChatThread>("/api/chat/threads", { title }),
+    rename: (id: string, title: string) => put<{ id: string; title: string }>(`/api/chat/threads/${encodeURIComponent(id)}/title`, { title }),
     get: (id: string) => get<ChatThread>(`/api/chat/threads/${id}`),
     delete: (id: string) => post<{ deleted: boolean; syncPending: boolean }>(`/api/chat/threads/${id}/delete`, { confirmSessionId: id }),
     addMessage: (id: string, role: string, content: string) =>
@@ -478,7 +479,7 @@ export const mcp = {
 
 export const schedules = {
   list: () => get<{ schedules: Schedule[]; total: number }>("/api/schedules"),
-  update: (id: string, data: Partial<Schedule>) =>
+  update: (id: string, data: Partial<Schedule> & { resume?: boolean }) =>
     put<{ success: boolean; schedule: Schedule }>(`/api/schedules/${id}`, data),
   delete: (id: string) => del<{ success: boolean }>(`/api/schedules/${id}`),
 };
@@ -667,12 +668,16 @@ export interface ChatThread {
   createdAt: string;
 }
 
+export interface InlineChatAttachment { name: string; mime: string; data: string }
+export interface ChatAttachment { name: string; kind: 'image' | 'document'; mime?: string; url?: string }
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: string;
   steps?: ToolStep[];
+  attachments?: ChatAttachment[];
 }
 
 export interface ToolStep {
@@ -681,7 +686,7 @@ export interface ToolStep {
   result?: string;
 }
 
-export type ReasoningLevel = "off" | "low" | "medium" | "high";
+export type ReasoningLevel = "off" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningChoice = ReasoningLevel | "auto";
 
 /** Plain-language view of a model (see src/utils/model-prefs.ts). */
@@ -903,6 +908,8 @@ export interface BotStatus {
   fleetRole?: "lead" | "crew";
   parent?: string;
   crewWorking?: number;
+  /** A custom face exists (`GET /api/bots/:id/avatar`); draw a monogram otherwise. */
+  hasAvatar?: boolean;
 }
 
 export interface BotManifest {
@@ -1036,12 +1043,16 @@ export interface McpServer {
 
 export interface Schedule {
   id: string;
+  executeAt?: string;
+  timezone?: string;
+  missedRunPolicy?: 'skip' | 'run_once';
+  paused?: boolean;
+  lastRun?: { id: string; status: 'running' | 'completed' | 'failed' | 'interrupted' | 'skipped' | 'dispatched'; startedAt: string; finishedAt?: string; error?: string };
   description: string;
   cron?: string;
   delaySeconds?: number;
   prompt?: string;
   skillName?: string;
-  lastRun?: string;
   nextRun?: string;
 }
 
@@ -1170,6 +1181,10 @@ const api = {
     message: (id: string, message: string) =>
       post<{ accepted: boolean; jobId?: string; reasonCode?: string }>(`/api/bots/${id}/message`, { message }),
     patch: (id: string, body: Partial<BotManifest>) => patch<unknown>(`/api/bots/${id}`, body),
+    /** The bot's face: base64 or a `data:` URL, 2 MB at most — the core sniffs the bytes, never the name. */
+    setAvatar: (id: string, data: string) =>
+      put<{ ok: boolean; mime: string; bytes: number }>(`/api/bots/${id}/avatar`, { data }),
+    clearAvatar: (id: string) => del<{ ok: boolean; removed: boolean }>(`/api/bots/${id}/avatar`),
     enable: (id: string) => post<{ ok: boolean }>(`/api/bots/${id}/enable`),
     disable: (id: string) => post<{ ok: boolean }>(`/api/bots/${id}/disable`),
     stop: (id: string) => post<{ ok: boolean }>(`/api/bots/${id}/stop`),

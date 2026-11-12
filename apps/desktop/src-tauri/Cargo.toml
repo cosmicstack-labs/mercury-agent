@@ -1,6 +1,6 @@
 [package]
 name = "mercury-desktop"
-version = "1.5.1"
+version = "1.5.2"
 description = "Mercury Desktop — native shell for the Mercury agent runtime"
 authors = ["Cosmic Stack"]
 license = "MIT"

@@ -44,6 +44,15 @@ describe('voice calls as chat threads', () => {
     expect(sessions.list().some((s) => s.id === threadId)).toBe(false);
   });
 
+  it('keeps a name chosen by the owner while the call is still active', () => {
+    voiceFeed.started('renamed-call');
+    const id = voiceFeed.snapshot().threadId!;
+    voiceFeed.said('renamed-call', 'owner', 'Plan our trip');
+    sessions.updateTitle(id, 'Trip planning with Mercury');
+    voiceFeed.ended('renamed-call', 'completed');
+    expect(sessions.get(id)).toMatchObject({ title: 'Trip planning with Mercury', titleSource: 'user' });
+  });
+
   it('without a live transcript (older Optimus), the question and answer are what gets saved', () => {
     voiceFeed.started('desk-3');
     const threadId = voiceFeed.snapshot().threadId!;

@@ -91,7 +91,7 @@ export function ArtifactViewer({ id, onOpenThread, onDeleted }: { id: string; on
         <Button size="sm" variant="ghost" onClick={() => { void navigator.clipboard.writeText(a.originalPath); setNote({ text: "Path copied.", ok: true }); }}><Copy size={13} /> Copy path</Button>
         {onOpenThread && a.threadExists && <Button size="sm" variant="ghost" onClick={() => onOpenThread(a.threadId)}><MessageSquareText size={13} /> Open conversation</Button>}
         <span className="flex-1" />
-        <ConfirmButton size="sm" variant="ghost" confirmLabel="Delete Mercury's copy?" onConfirm={() => void artifactsApi.remove(a.id).then(() => onDeleted?.()).catch((e) => setNote({ text: errorText(e), ok: false }))}><Trash2 size={13} /></ConfirmButton>
+        <ConfirmButton size="sm" variant="ghost" title={a.owned === false ? "Removes it from Mercury. The file in your project stays." : "Deletes the file."} confirmLabel={a.owned === false ? "Remove from Mercury? (your file stays)" : "Delete this file?"} onConfirm={() => void artifactsApi.remove(a.id).then(() => onDeleted?.()).catch((e) => setNote({ text: errorText(e), ok: false }))}><Trash2 size={13} /></ConfirmButton>
       </div>
       {note && <p className={cx("px-5 pt-2 text-xs", note.ok ? "text-accent" : "text-red")}>{note.text}</p>}
 

@@ -23,19 +23,22 @@ A skill bundles:
     └── references/   # optional
 ```
 
-On first run, Mercury seeds a `_template` directory and a curated set of built-in skills. If a seeded `SKILL.md` already exists, it is left alone — your customizations are never overwritten.
+On first run, Mercury seeds a `_template` directory and its built-in skills. Each built-in skill is installed once: if you edit it, your version is kept; if you delete it, it stays deleted (`~/.mercury/skills/.seeded-defaults.json` records what was installed).
 
-### Bundled default skills
+### Built-in skills
 
-As of `v1.1.11`, fresh installs (or `mercury doctor --seed-skills`) come with three built-in skills:
+| Skill | Use it for |
+|---|---|
+| `web-search` | Current events and anything on the web: focused searches, the best sources, answers with links. |
+| `computer-health` | Why the computer is slow or full, what's running, what uses a port, why a Docker container or service is down. It only reads until you agree to a fix. |
+| `tidy-files` | Cleaning up, sorting, deduplicating or renaming many files. It shows the plan, asks, moves files into a dated `_to-delete` folder instead of deleting, and tells you how to undo. |
+| `data-analysis` | CSV, Excel and JSON: it inspects the columns, computes every number with a script, checks the totals, then summarizes and charts. |
+| `long-documents` | Long PDFs, logs, transcripts and books: it reads in sections and answers with page or line references. |
+| `documents` | Making or converting Word, PDF, slides, spreadsheets and Markdown with pandoc or a script, checking the file opens, and sending it back. |
 
-| Skill | What it does | Tools used |
-|---|---|---|
-| `web-search` | DuckDuckGo HTML search + summarized sources with cross-referencing. | `fetch_url` |
-| `tweet-notifier` | Schedule tweets with founder approval and supporter notifications. | `schedule_task`, `send_message`, `save_memory`, `search_memory`, `fetch_url`, `github_api` |
-| `screenshot` | Full-page website screenshots via Playwright with configurable viewport (mobile/desktop/HD/custom) and dark/light color scheme. Output goes to `~/Desktop/<domain>-<timestamp>.png`. | `run_command`, `create_file`, `write_file`, `send_file`, `cd`, `send_message` |
+None of them can run commands or change files without asking: they don't list `allowed-tools` (`web-search` lists only `web_search` and `fetch_url`).
 
-The `screenshot` skill requires Playwright/Chromium (`npx playwright install chromium`). On Telegram, the captured image is sent as a photo attachment.
+Earlier versions also installed `tweet-notifier` and `screenshot`. If your copy of either is exactly as Mercury installed it, Mercury moves it to `~/.mercury/skills/_retired-<name>/` on start. Nothing is deleted, and folders starting with `_` aren't loaded. If you edited it, it's yours and stays where it is.
 
 Browse and install community skills at **[skills.mercuryagent.sh](https://skills.mercuryagent.sh)**.
 
@@ -78,13 +81,13 @@ Generates a structured summary of the user's day from chat history and memory.
 ### Required frontmatter
 
 - `name` — unique slug across installed skills
-- `description` — one-line summary used in listings and intent routing
+- `description` — one-line summary; it's what Mercury reads to decide when the skill fits
 
 ### Optional frontmatter
 
 - `version` — semver string
 - `category` / `categories` — used for grouping in the UI
-- `intents` — natural-language hints used for automatic routing
+- `intents` — example requests the skill is for (shown with the skill; Mercury doesn't route on them automatically)
 - `tags` — arbitrary labels
 - `allowed-tools` — the only tool names this skill may call when invoked (elevated permissions are granted from this list)
 
@@ -182,7 +185,8 @@ Drop a directory containing a valid `SKILL.md` into `~/.mercury/skills/` and Mer
 
 ## Invoking a skill
 
-- Ask in natural language: "Use the daily-digest skill" — intent routing matches against the skill's `intents`, `categories`, and `tags`.
+- Ask in natural language: "Use the daily-digest skill", or just describe the task. Mercury sees every installed skill with its description and picks one when it fits.
+- Pick it yourself: start your message with `#daily-digest`.
 - Schedule it: "Remind me daily at 9am to run the daily-digest skill" — see the [Schedules](../integrations/web-dashboard) page.
 
 When invoked, Mercury injects the skill's Markdown body into context as guidance, and the tools listed in `allowed-tools` are granted elevated permissions for the duration of that turn.
@@ -240,5 +244,5 @@ Edit the frontmatter (especially `name`, `description`, `intents`, and `allowed-
 
 - Keep instructions concise — every token in the body is loaded when the skill is invoked.
 - Only list the tools you actually need in `allowed-tools` (least-privilege).
-- Use `intents` to make the skill discoverable from natural language without the user having to remember the exact name.
+- Write a `description` that says plainly when the skill should be used — that's what Mercury reads to decide.
 - Use `scripts/` for reusable shell snippets and `references/` for data files the skill can read.

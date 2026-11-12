@@ -103,6 +103,23 @@ export const CHAT_COMMAND_HELP: ReadonlyArray<readonly [string, string]> = [
   ['/permissions', 'Change permission mode (Ask Me / Allow All)'],
   ['/models', 'List configured providers and their models'],
   ['/models use <provider>', 'Switch the default model (saved across restarts)'],
+  ['/image <prompt>', 'Make an image with an image model (add --landscape or --portrait)'],
+  ['/media', 'Show the image model in use and the ones your providers offer'],
+  ['/media image <number|auto>', 'Choose the default image model (or let Mercury pick)'],
+  ['/media refresh', 'Ask your providers again which image models they have'],
+  ['/say <text>', 'Say it out loud: a voice note in chat apps, audio in the apps (add --style "calm")'],
+  ['/video <shot>', 'Make a short video (3–15 s; --portrait, --seconds 6); it arrives here when ready'],
+  ['/music <style>', 'Make a song or instrumental (--instrumental, --seconds 60); it arrives here when ready'],
+  ['/media video <number|auto>', 'Choose the video model'],
+  ['/media music <number|auto>', 'Choose the music model'],
+  ['/media jobs', 'Videos and songs being made, and the last few made'],
+  ['/media speech <number|auto>', 'Choose what speaks (OpenAI, Gemini, ElevenLabs, Deepgram, or a provider model)'],
+  ['/media voice <name|default>', 'Choose the voice (e.g. nova, Kore)'],
+  ['/media replies <off|mirror|always>', 'When chat-app replies also come as a voice note (mirror: when you send one)'],
+  ['/effort', 'Show the thinking effort in this chat and the levels the model takes'],
+  ['/effort <auto|low|medium|high|xhigh|max>', 'Set the thinking effort for this chat only'],
+  ['/effort default', "Go back to the model's default effort in this chat"],
+  ['/effort global <level>', "Change the model's default effort (every chat without its own)"],
   ['/cloud models', 'List Mercury Cloud models for your tier'],
   ['/cloud use <model-id>', 'Switch to a Mercury Cloud model'],
   ['/view', 'Toggle progress view (balanced/detailed)'],
@@ -159,7 +176,7 @@ export const CHAT_COMMAND_HELP: ReadonlyArray<readonly [string, string]> = [
   ['/ws commit <message>', 'Commit staged changes (Mercury co-authored)'],
   ['/ws undo <file>', 'Revert file changes with git checkout -- <file>'],
   ['/halt', 'Emergency: stop all agents + clear queue'],
-  ['/stop', 'Stop all agents + clear queue + release locks + clear task board'],
+  ['/stop', "Stop this chat's task + the agents it started (a full stop when nothing else runs)"],
   ['/reset', 'Full reset: stop all + clear context (requires confirmation)'],
   ['/spotify', 'Show Spotify connection status'],
   ['/spotify auth', 'Connect Spotify (browser or manual code flow)'],
@@ -401,10 +418,15 @@ export function getTelegramHelp(): string {
   lines.push('/update ignore — Silence the offered update notice');
   lines.push('/permissions — Switch Ask Me / Allow All mode');
   lines.push('/models — List providers or switch AI model (saved across restarts)');
+  lines.push('/image <prompt> — Make an image with an image model');
+  lines.push('/media — Image model in use; /media image <n> to change it');
+  lines.push('/say <text> — Say it out loud (a voice note in chat apps)');
+  lines.push('/video <shot>, /music <style> — Make a video or song; it arrives when ready');
+  lines.push('/effort — Show or set how hard the current model thinks');
   lines.push('/cloud models — List Mercury Cloud models and switch');
   lines.push('/stream — Toggle text streaming on/off');
-  lines.push('/stop — Stop the current task and its agents now');
-  lines.push('/halt — Emergency: stop all agents and clear the queue');
+  lines.push("/stop — Stop this chat's task, its agents and waiting messages now (other chats keep going)");
+  lines.push("/halt — Emergency: stop every chat's task and all agents");
   lines.push('');
 
   lines.push('**Tasks**');
@@ -463,8 +485,8 @@ export function getTelegramHelp(): string {
   lines.push('/agents stop <id|all> — Stop a sub-agent');
   lines.push('/agents pause <id> — Pause a sub-agent');
   lines.push('/agents resume <id> — Resume a sub-agent');
-  lines.push('/halt — Emergency: stop all agents + clear queue');
-  lines.push('/stop — Stop all + release locks + clear task board');
+  lines.push("/halt — Emergency: stop every chat's task + all agents");
+  lines.push("/stop — Stop this chat's task + its agents (full stop + release locks when nothing else runs)");
   lines.push('/reset — Full reset (stop all + clear context)');
   lines.push('');
 
@@ -519,6 +541,11 @@ export function getDiscordHelp(): string {
   lines.push('/update ignore \u2014 Silence the offered update notice');
   lines.push('/permissions \u2014 Switch Ask Me / Allow All mode');
   lines.push('/models \u2014 List providers or switch AI model (saved across restarts)');
+  lines.push('/image <prompt> \u2014 Make an image with an image model');
+  lines.push('/media \u2014 Image model in use; /media image <n> to change it');
+  lines.push('/say <text> \u2014 Say it out loud (a voice note in chat apps)');
+  lines.push('/video <shot>, /music <style> \u2014 Make a video or song; it arrives when ready');
+  lines.push('/effort \u2014 Show or set how hard the current model thinks');
   lines.push('/cloud models \u2014 List Mercury Cloud models and switch');
   lines.push('/stop \u2014 Stop the current task and its agents now');
   lines.push('/halt \u2014 Emergency: stop all agents and clear the queue');

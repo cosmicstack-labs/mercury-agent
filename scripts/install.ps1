@@ -45,13 +45,18 @@ function Get-MercuryArch {
     Die "32-bit Windows is not supported. Mercury ships x64 and arm64 binaries only."
 }
 
-function Resolve-LatestVersion {
-    # The /releases/latest URL redirects to /releases/tag/vX.Y.Z. We follow it
-    # without hitting the JSON API (no rate limits, no auth needed).
-    $resp = Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest" `
-        -MaximumRedirection 5 -UseBasicParsing
-    $final = $resp.BaseResponse.ResponseUri.AbsoluteUri
-    if ($final -match '/tag/v?([0-9][^/]*)/?$') {
+function Resolve-LatestVersion ([uri]$LatestUri = "https://github.com/$Repo/releases/latest") {
+    # PowerShell 5.1 exposes HttpWebResponse.ResponseUri; PowerShell 7 uses
+    # HttpResponseMessage.RequestMessage.RequestUri after following redirects.
+    $resp = Invoke-WebRequest -Uri $LatestUri -MaximumRedirection 5 -UseBasicParsing
+    $final = $resp.BaseResponse.ResponseUri
+    if (-not $final) { $final = $resp.BaseResponse.RequestMessage.RequestUri }
+    $final = [uri]$final
+    $tagPrefix = $LatestUri.AbsolutePath -replace '/latest/?$', '/tag/'
+    $tagPattern = '^' + [regex]::Escape($tagPrefix) + 'v?([0-9][0-9A-Za-z.+-]*)/?$'
+    if ($final -and $final.IsAbsoluteUri -and $final.Scheme -eq $LatestUri.Scheme -and
+        $final.Authority -eq $LatestUri.Authority -and -not $final.UserInfo -and
+        -not $final.Query -and -not $final.Fragment -and $final.AbsolutePath -match $tagPattern) {
         return $Matches[1]
     }
     Die "Could not determine the latest Mercury version from $final"
@@ -218,6 +223,29 @@ try {
         Die 'Failed to extract the required web directory from web.tar.gz'
     }
 
+    $candidateBin = Join-Path $stageDir $binName
+    Move-Item -Path $binaryTmp -Destination $candidateBin
+    try {
+        $smoke = & $candidateBin --version 2>&1
+        $smokeExit = $LASTEXITCODE
+    } catch { Die "The downloaded binary could not start; the previous installation was preserved: $_" }
+    # STATUS_ILLEGAL_INSTRUCTION on CPUs without AVX2: validate the baseline
+    # too, before replacing either artifact in a working installation.
+    if ($smokeExit -ne 0 -and $asset -ne 'mercury-win-x64-baseline.exe' -and ($smokeExit -eq -1073741795 -or $smokeExit -eq 3221225501)) {
+        Write-Info 'This CPU cannot run the default build (illegal instruction) - switching to the baseline build'
+        $asset = 'mercury-win-x64-baseline.exe'
+        $expected = Get-RequiredChecksum -Checksums $checksums -Asset $asset
+        Save-VerifiedAsset -Uri "$releaseDir/$asset" -Path $candidateBin -ExpectedHash $expected -Asset $asset
+        try {
+            $smoke = & $candidateBin --version 2>&1
+            $smokeExit = $LASTEXITCODE
+        } catch { Die "The baseline binary could not start; the previous installation was preserved: $_" }
+    }
+    if ($smokeExit -ne 0) {
+        Die "Mercury $versionLabel cannot run on this machine; the previous installation was preserved: $smoke"
+    }
+    Write-Info "Smoke test passed: $binName --version -> $smoke"
+
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
     # Windows cannot overwrite a running executable. `mercury upgrade` hands
     # us its own PID in MERCURY_WAIT_PID: wait for it to exit (not a fixed
@@ -242,12 +270,47 @@ try {
                 Die ("Mercury is still running (PID {0}). Run `mercury stop` and re-run the installer." -f ($still.Id -join ', '))
             }
         }
-        Remove-Item $binPath -Force
     }
-    Move-Item -Path $binaryTmp -Destination $binPath -Force
+    # Backups stay on the installation's filesystem until both moves succeed.
+    # If recovery itself fails, retain those files and report their location.
+    $backupDir = Join-Path $binDir ('.mercury-install-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $backupDir | Out-Null
+    $previousBinary = Join-Path $backupDir 'previous-binary'
+    $previousWeb = Join-Path $backupDir 'previous-web'
     $webDir = Join-Path $binDir 'web'
-    if (Test-Path $webDir) { Remove-Item $webDir -Recurse -Force }
-    Move-Item -Path (Join-Path $stageDir 'web') -Destination $webDir
+    $binaryPromoted = $false
+    $webPromoted = $false
+    try {
+        # Finish any cross-volume copy before moving the old installation.
+        $candidateDir = Join-Path $backupDir 'candidate'
+        Move-Item -Path $stageDir -Destination $candidateDir
+        $candidateBin = Join-Path $candidateDir $binName
+        if (Test-Path $binPath) { Move-Item -Path $binPath -Destination $previousBinary }
+        if (Test-Path $webDir) { Move-Item -Path $webDir -Destination $previousWeb }
+        Move-Item -Path $candidateBin -Destination $binPath
+        $binaryPromoted = $true
+        Move-Item -Path (Join-Path $candidateDir 'web') -Destination $webDir
+        $webPromoted = $true
+    } catch {
+        $promotionError = $_
+        $restoreFailed = $false
+        foreach ($part in @(
+            @{ Target = $binPath; Backup = $previousBinary; Promoted = $binaryPromoted },
+            @{ Target = $webDir; Backup = $previousWeb; Promoted = $webPromoted }
+        )) {
+            try {
+                if ($part.Promoted) { Remove-Item -LiteralPath $part.Target -Recurse -Force }
+                if (Test-Path $part.Backup) { Move-Item -Path $part.Backup -Destination $part.Target }
+            } catch { $restoreFailed = $true }
+        }
+        if ($restoreFailed) {
+            Write-Warn2 "Could not fully restore the previous installation. Recovery files: $backupDir"
+        } else {
+            Remove-Item -LiteralPath $backupDir -Recurse -Force
+        }
+        throw $promotionError
+    }
+    Remove-Item -LiteralPath $backupDir -Recurse -Force
     Write-Info 'Web dashboard assets installed'
 }
 finally {
@@ -255,33 +318,6 @@ finally {
 }
 
 Write-Info "Installed to $binPath"
-
-# Post-install smoke. A CPU without AVX2 cannot run the default build and
-# dies with STATUS_ILLEGAL_INSTRUCTION (0xC000001D, #155): switch to the
-# baseline build in place.
-$smoke = & $binPath --version 2>&1
-$smokeExit = $LASTEXITCODE
-if ($smokeExit -ne 0 -and $asset -ne 'mercury-win-x64-baseline.exe' -and ($smokeExit -eq -1073741795 -or $smokeExit -eq 3221225501)) {
-    Write-Info 'This CPU cannot run the default build (illegal instruction) - switching to the baseline build'
-    $asset = 'mercury-win-x64-baseline.exe'
-    $tmp2 = Join-Path $env:TEMP ("mercury-" + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $tmp2 | Out-Null
-    try {
-        $expected = Get-RequiredChecksum -Checksums $checksums -Asset $asset
-        $dl = Join-Path $tmp2 $asset
-        Save-VerifiedAsset -Uri "$releaseDir/$asset" -Path $dl -ExpectedHash $expected -Asset $asset
-        Remove-Item $binPath -Force
-        Move-Item -Path $dl -Destination $binPath -Force
-        $smoke = & $binPath --version 2>&1
-        $smokeExit = $LASTEXITCODE
-    } finally {
-        Remove-Item $tmp2 -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-if ($smokeExit -ne 0) {
-    Die "Mercury $versionLabel is installed but not runnable on this machine: $smoke  (please report this at https://github.com/$Repo/issues)"
-}
-Write-Info "Smoke test passed: $binName --version -> $smoke"
 
 $pathUpdated = Update-UserPath -BinDir $binDir
 

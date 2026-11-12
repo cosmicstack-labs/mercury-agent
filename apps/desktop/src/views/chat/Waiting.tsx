@@ -8,9 +8,9 @@ import { Button } from "~/components/ui/Button";
 import { ConfirmButton } from "~/components/ui/kit";
 
 /**
- * In place of "Thinking" while this chat's message waits its turn: Mercury
- * works on one thing at a time, and another chat is ahead. Says which one and
- * what it's doing, and offers to open it or to go first (which stops it).
+ * In place of "Thinking" while this chat's message waits its turn: every
+ * slot Mercury runs chats in is taken, and another chat is ahead. Says which
+ * one and what it's doing, and offers to open it or to go first (which stops it).
  */
 export function WaitingNotice({ threadId, waiting }: { threadId: string | null; waiting: { position: number; busyWith?: string; busySessionId?: string } }) {
   const threads = useChat((s) => s.threads);
@@ -26,7 +26,9 @@ export function WaitingNotice({ threadId, waiting }: { threadId: string | null; 
     setProblem(null);
     try {
       await api.chat.queueFirst(threadId);
-      await api.chat.stop();
+      // Stop only the turn this one waits for — not every running chat, and
+      // not the messages that chat has waiting.
+      await api.chat.stop(waiting.busySessionId, { keepQueued: true });
     } catch (e) {
       setProblem(e instanceof Error ? e.message : String(e));
     } finally {
@@ -47,7 +49,7 @@ export function WaitingNotice({ threadId, waiting }: { threadId: string | null; 
       <div className="flex items-start gap-2.5">
         <Clock size={15} className="mt-0.5 shrink-0 text-ink3" aria-hidden="true" />
         <p className="text-sm text-ink2">
-          <span className="font-medium text-ink">Waiting.</span> Mercury works on one thing at a time and is finishing{" "}
+          <span className="font-medium text-ink">Waiting.</span> Mercury is busy with other chats and is finishing{" "}
           {waiting.busyWith ? <>“{waiting.busyWith}”</> : "something"} in <span className="text-ink">{otherName}</span>.{ahead}
         </p>
       </div>

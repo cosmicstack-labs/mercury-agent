@@ -9,6 +9,7 @@ import { createContext, useContext } from "react";
 import { create, type StoreApi, type UseBoundStore } from "zustand";
 import type { ChatMessage, PendingPrompt, ResearchPlanPrompt, ResearchSnapshot, ThoughtTrace } from "~/api/types";
 import type { AgentState } from "./store";
+import { newTrace } from "./trace";
 
 export type Surface = "chat" | "code";
 
@@ -26,17 +27,24 @@ export interface ConversationState {
   /** The stop button was pressed and the runtime hasn't confirmed yet. */
   stopping: boolean;
   /**
-   * This chat's message is waiting in line: Mercury runs one turn at a time
-   * and another chat's is running. Cleared when this chat's turn starts.
+   * This chat's message is waiting in line: every slot the runtime runs
+   * chats in is taken. Cleared when this chat's turn starts.
    */
   waiting: { position: number; busyWith?: string; busySessionId?: string } | null;
   setWaiting(waiting: ConversationState["waiting"]): void;
   setStopping(stopping: boolean): void;
+  /** Videos and songs being made in the background for this chat: placeholders until they arrive. */
+  pendingMedia: import("~/api/types").PendingMedia[];
+  setPendingMedia(update: (list: import("~/api/types").PendingMedia[]) => import("~/api/types").PendingMedia[]): void;
+  /** An effort picked before this chat existed: applied when its thread is created. */
+  pendingEffort?: import("~/api/types").ReasoningChoice;
+  setPendingEffort(level: import("~/api/types").ReasoningChoice | undefined): void;
   /** Text to put in the box (an undone message); the composer takes it once. */
   draft: string | null;
   setDraft(draft: string | null): void;
   /** The conversation's plan checklist (update_plan), if Mercury made one. */
-  plan: { steps: Array<{ label: string; status: "pending" | "active" | "done" }>; updatedAt: number } | null;
+  /** The plan checklist; `state` once the turn that worked on it ended without finishing it. */
+  plan: { steps: Array<{ label: string; status: "pending" | "active" | "done" }>; updatedAt: number; state?: "paused" | "stopped" } | null;
   setPlan(plan: ConversationState["plan"]): void;
   /**
    * Research in this conversation: switched on for the next message
@@ -83,6 +91,10 @@ function makeConversation(surface: Surface): ConversationStore {
     setStopping: (stopping) => set({ stopping }),
     draft: null,
     setDraft: (draft) => set({ draft }),
+    pendingMedia: [],
+    setPendingMedia: (update) => set((s) => ({ pendingMedia: update(s.pendingMedia) })),
+    pendingEffort: undefined,
+    setPendingEffort: (pendingEffort) => set({ pendingEffort }),
     plan: null,
     setPlan: (plan) => set({ plan }),
     research: null,
@@ -91,9 +103,9 @@ function makeConversation(surface: Surface): ConversationStore {
     setResearchPlan: (researchPlan) => set({ researchPlan }),
     notice: null,
     setNotice: (notice) => set({ notice }),
-    setLive: (update) => set((s) => ({ live: update(s.live ?? { reasoning: "", steps: [], startedAt: Date.now() }) })),
+    setLive: (update) => set((s) => ({ live: update(s.live ?? newTrace()) })),
     clearLive: () => set({ live: null }),
-    setActive: (activeId) => set({ activeId, prompts: [], step: null, agent: "idle", live: null, stopping: false, plan: null, research: null, researchPlan: null, notice: null }),
+    setActive: (activeId) => set({ activeId, prompts: [], step: null, agent: "idle", live: null, stopping: false, plan: null, research: null, researchPlan: null, notice: null, pendingEffort: undefined, pendingMedia: [] }),
     setMessages: (messages) => set({ messages }),
     addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
     appendStreaming: (text) => set((s) => ({ streaming: s.streaming + text })),

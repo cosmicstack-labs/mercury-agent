@@ -267,7 +267,7 @@ export class EvalHarness {
     capabilities.registerAll();
     capabilities.setCwd(workDir);
     capabilities.permissions.addTempScope(workDir, true, true);
-    capabilities.permissions.setAutoApproveAll(true);
+    capabilities.permissions.setAutoApproveAll(fixture.autoApprove ?? true);
     capabilities.setChatCommandContext(chatCommandContext(config, tokenBudget, capabilities));
 
     const type = fixture.channel?.type ?? 'telegram';
@@ -322,7 +322,7 @@ export class EvalHarness {
     const eventStart = this.channel.events.length;
     const sessionStart = this.sessionMessages().length;
     const msg: ChannelMessage = {
-      id: `eval-${this.fixture.name}-${++this.seq}`,
+      id: turn.messageId ?? `eval-${this.fixture.name}-${++this.seq}`,
       channelId: this.channelId,
       channelType: this.channelType,
       senderId: 'eval-user',
@@ -409,10 +409,11 @@ export class EvalHarness {
     while (settled < 25) {
       await tick();
       if (this.fake) vi.advanceTimersByTime(0); // zero-delay timers only (setTimeout(fn, 0))
-      settled = this.agent.lifecycle.is('idle') ? settled + 1 : 0;
+      // Turns run concurrently with their own lifecycles (ADR-037): idle = none running, none waiting.
+      settled = this.agent.isIdle() ? settled + 1 : 0;
       if (clock() > deadline) {
         const tail = this.channel.since(eventStart).map((e) => `${e.kind}: ${e.text.slice(0, 120)}`).join('\n');
-        throw new Error(`Turn did not finish within ${timeoutMs}ms (state ${this.agent.lifecycle.getState()}).\n${tail}`);
+        throw new Error(`Turn did not finish within ${timeoutMs}ms (${this.agent.activeTurnCount} running).\n${tail}`);
       }
     }
   }

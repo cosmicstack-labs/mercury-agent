@@ -14,7 +14,7 @@ import { UserMemoryStore as UserMemoryStoreImpl } from '../memory/user-memory.js
 import { BotInbox } from './inbox.js';
 import { BotApprovals, durableGrant } from './approvals.js';
 import { detectTier } from './permission-tiers.js';
-import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression } from './store.js';
+import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression, MAX_FLEET_DEPTH, BOT_SHARED_SANDBOX_DIRNAME } from './store.js';
 import { BotJournal, type BotTranscript, type BotUsage } from './journal.js';
 import { BotQueue, idempotencyKeyFor, LEASE_SECONDS, type DurableBotJob } from './queue.js';
 import { sweepSharedSandbox } from './retention.js';
@@ -36,6 +36,7 @@ import { mergePathScopes } from './registry-factory.js';
 import { synthesizeSkill, MIN_TOOLS_FOR_SYNTHESIS } from './skill-synthesis.js';
 import { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
+import { resolveToolPath, type CwdSource } from '../capabilities/filesystem/resolve-path.js';
 import type {
   BotLiveState,
   BotManifest,
@@ -112,6 +113,8 @@ export interface BotManagerDeps {
   notify?: (channelType: string, channelId: string, message: string) => Promise<void>;
 }
 
+/** How many recent events the live feed keeps in memory (the whole fleet). */
+const LIVE_EVENTS = 2000;
 const MAX_TRANSIENT_ATTEMPTS = 3;
 /** Consecutive no-outcome runs after which a work routine is paused (ADR-020). */
 export const NO_OUTCOME_PAUSE_AFTER = 3;
@@ -273,6 +276,14 @@ export class BotManager {
     this.queue = deps.queue ?? new BotQueue(this.store.botsRoot, this.config.bots?.retention?.dlqCap);
     this.tasks = new BotTaskStore(this.store.botsRoot);
     this.inbox = new BotInbox(this.store.botsRoot);
+    this.queue.onInterruptedSchedule = (job) => {
+      if (!this.store.exists(job.botId)) return;
+      const routines = this.store.readRoutineState(job.botId);
+      routines.paused['*'] = { since: new Date().toISOString(), reason: 'A scheduled run was interrupted. Inspect its effects before /bots start or manual DLQ replay.' };
+      this.store.writeRoutineState(job.botId, routines);
+      this.needsYou.add(job.botId);
+      this.inbox.add({ botId: job.botId, botName: this.store.get(job.botId)?.name ?? job.botId, runId: job.id, files: [], kind: 'needs-you', title: 'Scheduled run interrupted', summary: routines.paused['*'].reason, reasonCode: 'scheduled_interrupted' });
+    };
     // A stop survives a restart (it used to be in memory only, so a restart
     // quietly undid /bots stop).
     for (const id of this.store.readHeld()) if (this.store.exists(id)) this.held.add(id);
@@ -316,7 +327,7 @@ export class BotManager {
     for (const m of this.store.list()) {
       const drained = this.queue.drainMail(m.id);
       if (drained.length > 0) this.mailboxes.set(m.id, drained);
-      if (this.journalFor(m.id).read(m.id, 1)[0]?.needsYou) this.needsYou.add(m.id);
+      if (this.journalFor(m.id).read(m.id, 1)[0]?.needsYou || this.store.readRoutineState(m.id).paused['*']) this.needsYou.add(m.id);
     }
     // A profile relocation (re-parent or fleet-layout migration) invalidates
     // the cached journal handle (it is bound to the old dir) and the bot's
@@ -354,12 +365,53 @@ export class BotManager {
     this.activityListeners.add(listener);
     return () => this.activityListeners.delete(listener);
   }
+  /** What each running job was asked, by whom, for the live feed (set when the turn starts). */
+  private jobContext = new Map<string, { trigger: string; prompt: string; fromBot?: string }>();
+  /**
+   * The live feed's short memory: recent events across the fleet, so a
+   * screen opened mid-run shows what already happened. In memory only and
+   * capped (LIVE_EVENTS); a 'thinking' preview replaces the previous one of
+   * the same run instead of piling up.
+   */
+  private liveLog: BotActivityEvent[] = [];
+
+  /** The owner sent a bot a message: it shows in the live feed at once, before the run starts. */
+  noteOwnerMessage(botId: string, jobId: string, prompt: string): void {
+    // Already started (an idle bot picks the job up at once): the run's own start says it all.
+    if (this.liveLog.some((e) => e.jobId === jobId && e.kind !== 'queued')) return;
+    const busy = (this.running.get(botId)?.size ?? 0) > 0;
+    this.emitBotActivity({ botId, jobId, kind: 'queued', label: busy ? 'Queued: runs when the current run finishes' : 'Starting', stepIndex: 0, elapsedMs: 0, trigger: 'api', prompt: prompt.slice(0, 600) });
+  }
+
+  /** Recent live events, oldest first: for some bots (a fleet) or all, newer than `since`. */
+  recentActivity(opts: { bots?: string[]; since?: number; limit?: number } = {}): BotActivityEvent[] {
+    const want = opts.bots?.length ? new Set(opts.bots) : null;
+    const since = opts.since ?? 0;
+    const out = this.liveLog.filter((e) => (!want || want.has(e.botId)) && (e.at ?? 0) > since);
+    return out.slice(-Math.max(1, Math.min(opts.limit ?? 400, LIVE_EVENTS)));
+  }
+
   private emitBotActivity(ev: BotActivityEvent): void {
+    const ctx = ev.jobId ? this.jobContext.get(ev.jobId) : undefined;
+    ev = {
+      ...ev,
+      at: ev.at ?? Date.now(),
+      botName: ev.botName ?? this.store.get(ev.botId)?.name ?? ev.botId,
+      ...(ev.kind === 'turn-start' && ctx ? { trigger: ctx.trigger, prompt: ctx.prompt.slice(0, 600), ...(ctx.fromBot ? { fromBot: ctx.fromBot } : {}) } : {}),
+    };
+    if (ev.kind === 'turn-end' && ev.jobId) this.jobContext.delete(ev.jobId);
+    if (ev.kind === 'thinking') {
+      for (let i = this.liveLog.length - 1; i >= 0; i--) {
+        if (this.liveLog[i].kind === 'thinking' && this.liveLog[i].jobId === ev.jobId) { this.liveLog.splice(i, 1); break; }
+      }
+    }
+    this.liveLog.push(ev);
+    if (this.liveLog.length > LIVE_EVENTS) this.liveLog.splice(0, this.liveLog.length - LIVE_EVENTS);
     // Live roster label: keep the static job description until the first
     // step arrives, then follow the actual work. 'thinking' events are a
     // stream preview for threads, not a roster label — the label must stay
     // semantic (step/tool names), not the last 80 chars of reasoning.
-    if (ev.kind !== 'turn-end' && ev.kind !== 'thinking') this.activity.set(ev.botId, ev.label);
+    if (ev.kind !== 'turn-end' && ev.kind !== 'thinking' && ev.kind !== 'queued') this.activity.set(ev.botId, ev.label);
     for (const listener of this.activityListeners) {
       try { listener(ev); } catch (err: any) {
         logger.warn({ botId: ev.botId, err: err?.message }, 'Bot activity listener failed');
@@ -435,7 +487,7 @@ export class BotManager {
     return this.journalFor(botId);
   }
 
-  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string; attachments?: ChannelAttachment[] }): { jobId: string; accepted: boolean; reasonCode?: string; duplicated?: boolean } {
+  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string; attachments?: ChannelAttachment[]; manualReplay?: boolean }): { jobId: string; accepted: boolean; reasonCode?: string; duplicated?: boolean } {
     const manifest = this.store.get(botId);
     if (!manifest) return { jobId: '', accepted: false, reasonCode: 'target_unknown' };
     if (!manifest.enabled || this.disabled.has(botId)) return { jobId: '', accepted: false, reasonCode: 'target_disabled' };
@@ -447,12 +499,12 @@ export class BotManager {
     // It is skipped — never stacked — when the bot is still busy, when the
     // routine ran too recently, or when the routine was paused for
     // producing nothing. The next tick tries again.
-    if (job.trigger === 'cron') {
+    if (job.trigger === 'cron' && !job.manualReplay) {
       // A stopped bot's routines don't queue up behind the stop.
       if (this.held.has(botId)) return { jobId: '', accepted: false, reasonCode: 'stopped' };
       const key = job.routineId ?? `bot:${botId}:cron`;
       const routineState = this.store.readRoutineState(botId);
-      const pausedEntry = routineState.paused[key];
+      const pausedEntry = routineState.paused[key] ?? routineState.paused['*'];
       if (pausedEntry) {
         const until = pausedEntry.until ? Date.parse(pausedEntry.until) : Number.POSITIVE_INFINITY;
         if (Date.now() < until) return { jobId: '', accepted: false, reasonCode: 'routine_paused' };
@@ -933,6 +985,7 @@ export class BotManager {
       const taskForJob = this.tasks.byJob(job.id);
       if (taskForJob) this.tasks.update(taskForJob.id, { status: 'running', startedAt: Date.now() });
       const turn = this.buildTurn(botId, manifest, job, controller.signal);
+      this.jobContext.set(job.id, { trigger: job.trigger, prompt: job.prompt ?? '', ...(job.fromBot ? { fromBot: job.fromBot } : {}) });
       const output = await runBotTurn({
         ...turn.input,
         jobId: job.id,
@@ -953,7 +1006,7 @@ export class BotManager {
         this.providers.markAuthFailure?.(usedProvider);
         authSwitch = resolveProvider(this.providers, manifest, this.config).name !== usedProvider;
       }
-      const willRetry = output.status === 'failed' && !!output.reasonCode
+      const willRetry = job.trigger !== 'cron' && output.status === 'failed' && !!output.reasonCode
         && (isTransientFailure(output.reasonCode) || authSwitch) && job.attempts + 1 < MAX_TRANSIENT_ATTEMPTS;
       const turnLimited = output.status === 'failed' && isTurnLimitFailure(output.reasonCode);
       const routineKey = job.trigger === 'cron' ? (job.routineId ?? `bot:${botId}:cron`) : undefined;
@@ -1008,6 +1061,9 @@ export class BotManager {
         } else if (output.status === 'completed' && state.failStreak?.[routineKey]) {
           delete state.failStreak[routineKey];
         }
+        if (output.status !== 'completed') {
+          state.paused[routineKey] = { since: new Date().toISOString(), reason: 'Scheduled run did not finish. Inspect its effects before /bots start or manual DLQ replay.' };
+        }
         this.store.writeRoutineState(botId, state);
       }
 
@@ -1015,7 +1071,7 @@ export class BotManager {
       // three runs in a row is paused — the owner is told once, and
       // /bots start resumes it. This is what stops a bot that has
       // talked itself into a loop of records about records.
-      if (routineKey && this.expectationFor(manifest, job) === 'work' && output.status !== 'halted') {
+      if (routineKey && this.expectationFor(manifest, job) === 'work' && output.status === 'completed') {
         const state = this.store.readRoutineState(botId);
         if (output.outcome === 'none') {
           const streak = (state.noOutcomeStreak[routineKey] ?? 0) + 1;
@@ -1099,6 +1155,10 @@ export class BotManager {
         if (routineFailStreak <= 1) {
           await this.alertOwner(botId, `❌ **${manifest.name}** failed permanently [reason: ${output.reasonCode}] — replay with \`/bots replay ${botId} ${job.id}\``);
         }
+      } else if (output.status === 'paused' && job.trigger === 'cron') {
+        this.queue.settle(job.id, 'dead', 'scheduled_interrupted');
+        this.needsYou.add(botId);
+        this.inbox.add({ botId, botName: manifest.name, runId: job.id, files: output.deliverables, kind: 'needs-you', title: 'Scheduled run paused', summary: 'Inspect the existing effects before /bots start or manually replaying this run from the DLQ.', reasonCode: 'scheduled_interrupted' });
       } else if (output.status === 'paused') {
         // Step-budget pause: work continues next turn — same job requeues in
         // place (durable), no attempts bump.
@@ -1232,6 +1292,11 @@ export class BotManager {
       }
     } catch (err: any) {
       logger.error({ botId, jobId: job.id, err: err?.message }, 'Bot turn crashed');
+      if (job.trigger === 'cron') {
+        const state = this.store.readRoutineState(botId);
+        state.paused[job.routineId ?? `bot:${botId}:cron`] = { since: new Date().toISOString(), reason: 'Scheduled run crashed. Inspect its effects before /bots start or manual DLQ replay.' };
+        this.store.writeRoutineState(botId, state);
+      }
       this.queue.settle(job.id, 'dead', 'unknown_error');
       this.needsYou.add(botId);
       void this.alertOwner(botId, `💥 **${botId}** run ${job.id} crashed: ${String(err?.message ?? err).slice(0, 150)} — see journal; replay from DLQ.`);
@@ -1553,10 +1618,11 @@ export class BotManager {
     if (lead.fleetRole !== 'lead') {
       return { ok: false, error: `**${lead.name}** is not a fleet lead — promote it with \`/bots promote ${leadId}\` first` };
     }
-    // Multi-level guard: no cycles, bounded depth (v1 supports 3 levels —
-    // e.g. CEO → Engineering Lead → Backend). Walk the lead's parent chain.
+    // Multi-level guard: no cycles, bounded depth (MAX_FLEET_DEPTH levels — e.g.
+    // CEO → Engineering Lead → Backend, the deepest level list() and crewOf() walk).
+    // `level` is the level the NEW bot would take: one below the lead it joins.
     let ancestor: string | undefined = leadId;
-    let depth = 0;
+    let level = 1;
     const seen = new Set<string>();
     while (ancestor) {
       if (seen.has(ancestor)) return { ok: false, error: 'Fleet cycle detected in parent chain' };
@@ -1564,8 +1630,13 @@ export class BotManager {
       if (ancestor === spec.id.toLowerCase()) {
         return { ok: false, error: `Cannot add **${spec.id}** — it would become its own ancestor` };
       }
+      // Refuse the level the reader cannot reach: a bot created below this lead
+      // would exist on disk and answer by id while staying out of the roster.
+      if (level >= MAX_FLEET_DEPTH) {
+        return { ok: false, error: `Fleet nesting is capped at ${MAX_FLEET_DEPTH} levels` };
+      }
       ancestor = this.store.get(ancestor)?.parent;
-      if (++depth > 3) return { ok: false, error: 'Fleet nesting is capped at 3 levels' };
+      level += 1;
     }
     // Replay-safety BEFORE the crew cap: a re-run "build the crew" turn
     // (durable job replayed after an interrupted session) re-derives its
@@ -2086,14 +2157,20 @@ export class BotManager {
     // then reported not_found).
     const entry = this.queue.peekDlq(jobId);
     if (!entry || entry.botId !== botId) return { accepted: false, reasonCode: 'not_found' };
-    this.queue.removeFromDlq(jobId);
-    return this.enqueue(botId, {
+    const result = this.enqueue(botId, {
       trigger: entry.trigger,
+      // The owner explicitly chose this job. Bypass routine timing/pause gates
+      // for this admission only; future ticks stay paused and a new crash still
+      // has cron recovery semantics.
+      manualReplay: true,
+      attachments: entry.attachments,
       prompt: entry.prompt,
       fromBot: entry.fromBot,
       source: entry.source,
       attempts: 0,
     });
+    if (result.accepted) this.queue.removeFromDlq(jobId);
+    return result;
   }
 
   getStorage(): Array<{ id: string; bytes: number; journalBytes: number }> {
@@ -2178,7 +2255,13 @@ export class BotManager {
     const options = typeof opts === 'string' ? { saveAs: opts } : opts;
     const manifest = this.store.get(botId);
     if (!manifest) return { accepted: false, reasonCode: 'target_unknown' };
-    const candidate = resolve(filePath.replace(/^~(?=$|\/|\\)/, homedir()));
+    // Relative paths are relative to the bot's sandbox (with "_shared/…"
+    // meaning the fleet folder), never to wherever the daemon was started.
+    const sandbox = this.store.sandboxDir(botId);
+    const getCwd: CwdSource = Object.assign(() => sandbox, {
+      roots: () => [['sandbox', sandbox], [BOT_SHARED_SANDBOX_DIRNAME, this.store.sharedSandboxDir()]] as const,
+    });
+    const candidate = resolveToolPath(filePath.replace(/^~(?=$|\/|\\)/, homedir()), getCwd);
     const allowedBases = [this.store.sharedSandboxDir(), this.store.sandboxDir(botId)];
     const inside = allowedBases.some((base) => {
       const rel = relative(resolve(base), candidate);

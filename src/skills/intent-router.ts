@@ -2,26 +2,23 @@ import type { SkillDiscovery, SkillMeta, MatchedSkill } from './types.js';
 import { logger } from '../utils/logger.js';
 
 /**
- * IntentRouter — matches user input against skill intents to route requests
- * to the right skill(s) automatically.
+ * IntentRouter — the skill index: categories for the skill list, and an
+ * exact match of a message against declared intents (whole phrases) and tags
+ * (whole words). No fuzzy scoring (ADR-040): shared single words, word-pair
+ * similarity and description guessing matched unrelated requests, and Mercury
+ * no longer routes automatically anyway — the model picks skills itself.
  */
-/**
- * Generic verbs / nouns that appear in many skill intents and would otherwise
- * drag in unrelated skills on a single shared word. Indexed intents still keep
- * these words (for exact-intent matching), but the per-word keyword index skips
- * them so they cannot single-handedly score a skill at 0.70.
- */
-const KEYWORD_STOPLIST = new Set([
-  'download', 'send', 'get', 'find', 'show', 'make', 'use', 'open', 'run',
-  'start', 'stop', 'create', 'fetch', 'list', 'add', 'remove', 'update',
-  'check', 'search', 'this', 'that', 'with', 'from', 'into', 'about',
-  'http', 'https', 'www', 'com', 'org', 'net',
-]);
+
+/** `phrase` occurs in `text` as whole words. */
+function containsPhrase(text: string, phrase: string): boolean {
+  if (!phrase) return false;
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`).test(text);
+}
 
 export class IntentRouter {
   private intentIndex: Map<string, Array<{ skillName: string; intent: string }>> = new Map();
   private tagIndex: Map<string, string[]> = new Map();    // tag -> skill names
-  private keywordIndex: Map<string, string[]> = new Map(); // keyword -> skill names
   private skillMap: Map<string, { name: string; description: string; category?: string; categories?: string[]; intents?: string[]; tags?: string[] }> = new Map();
   private initialized = false;
 
@@ -32,7 +29,6 @@ export class IntentRouter {
   buildIndex(skills: SkillDiscovery[]): void {
     this.intentIndex.clear();
     this.tagIndex.clear();
-    this.keywordIndex.clear();
     this.skillMap.clear();
 
     for (const skill of skills) {
@@ -68,21 +64,6 @@ export class IntentRouter {
           this.intentIndex.set(normalized, []);
         }
         this.intentIndex.get(normalized)!.push({ skillName: meta.name, intent: normalized });
-
-        // Also index individual words from the intent for fuzzy matching.
-        // Stoplist generic verbs (download, send, get, …) so a single shared
-        // word can't pull in 10 unrelated skills.
-        const words = normalized
-          .split(/\s+/)
-          .filter(w => w.length > 3 && !KEYWORD_STOPLIST.has(w));
-        for (const word of words) {
-          if (!this.keywordIndex.has(word)) {
-            this.keywordIndex.set(word, []);
-          }
-          if (!this.keywordIndex.get(word)!.includes(meta.name)) {
-            this.keywordIndex.get(word)!.push(meta.name);
-          }
-        }
       }
     }
 
@@ -112,55 +93,20 @@ export class IntentRouter {
 
     const matches: Map<string, MatchedSkill> = new Map();
 
-    // 1. Exact intent match (highest confidence)
+    // 1. Exact intent match (highest confidence). Whole words only: "hi"
+    // used to match inside "this" or "history", and a one-word message
+    // inside any longer intent. The reverse direction (the message is part
+    // of an intent) needs at least two words.
+    const inputWordCount = input.split(/\s+/).filter(Boolean).length;
     for (const [intent, skills] of this.intentIndex.entries()) {
-      if (input.includes(intent) || intent.includes(input)) {
+      if (containsPhrase(input, intent) || (inputWordCount >= 2 && containsPhrase(intent, input))) {
         for (const s of skills) {
           this.addOrUpdateMatch(matches, s.skillName, 0.95, intent);
         }
       }
     }
 
-    // 2. Word overlap match — count how many indexed keywords are shared.
-    //    Single shared word = weak signal (0.55); ≥2 shared = strong (0.75).
-    const inputWords = input.split(/\s+/).filter(w => w.length > 3 && !KEYWORD_STOPLIST.has(w));
-    const inputBigrams = this.getBigrams(input);
-    const overlapCount: Map<string, number> = new Map();
-
-    for (const [word, skillNames] of this.keywordIndex.entries()) {
-      if (inputWords.includes(word)) {
-        for (const name of skillNames) {
-          overlapCount.set(name, (overlapCount.get(name) ?? 0) + 1);
-        }
-      }
-    }
-    for (const [name, count] of overlapCount.entries()) {
-      // Single shared content word is a weak signal. We deliberately keep it
-      // below the default ambiguity floor (0.75) so it can never be a sole
-      // contender on its own — it only helps boost an already-matched skill.
-      const conf = count >= 3 ? 0.85 : count >= 2 ? 0.75 : 0.45;
-      const current = matches.get(name);
-      const currentConf = current?.confidence ?? 0;
-      this.addOrUpdateMatch(matches, name, Math.max(currentConf, conf), undefined);
-    }
-
-    // 3. Bigram similarity — paraphrase catch. Tightened: word must be ≥4
-    //    chars and overlap ratio > 0.6 (was 0.3). Kills "research" → "NousResearch".
-    for (const [word, skillNames] of this.keywordIndex.entries()) {
-      if (word.length < 4) continue;
-      const wordBigrams = this.getBigrams(word);
-      const overlap = inputBigrams.filter(b => wordBigrams.includes(b)).length;
-      const maxLen = Math.max(inputBigrams.length, wordBigrams.length);
-      if (maxLen > 0 && overlap / maxLen > 0.6) {
-        for (const name of skillNames) {
-          const current = matches.get(name);
-          const currentConf = current?.confidence ?? 0;
-          this.addOrUpdateMatch(matches, name, Math.max(currentConf, 0.5), undefined);
-        }
-      }
-    }
-
-    // 4. Tag match — require tag ≥4 chars and matched as a whole word
+    // 2. Tag match — require tag ≥4 chars and matched as a whole word
     //    (not just substring) so short tags like "cli" don't match "clip".
     for (const [tag, skillNames] of this.tagIndex.entries()) {
       if (tag.length < 4) continue;
@@ -171,16 +117,6 @@ export class IntentRouter {
           const currentConf = current?.confidence ?? 0;
           this.addOrUpdateMatch(matches, name, Math.max(currentConf, 0.8), undefined);
         }
-      }
-    }
-
-    // 5. Description keyword match (lowest confidence)
-    for (const [name, info] of this.skillMap.entries()) {
-      if (matches.has(name)) continue; // already matched
-      const desc = info.description.toLowerCase();
-      const matchCount = inputWords.filter(w => desc.includes(w)).length;
-      if (matchCount >= 2) {
-        this.addOrUpdateMatch(matches, name, Math.min(0.5, 0.15 * matchCount), undefined);
       }
     }
 
@@ -376,14 +312,5 @@ export class IntentRouter {
         matchedIntent,
       });
     }
-  }
-
-  private getBigrams(text: string): string[] {
-    const words = text.split(/\s+/).filter(w => w.length > 0);
-    const bigrams: string[] = [];
-    for (let i = 0; i < words.length - 1; i++) {
-      bigrams.push(`${words[i]} ${words[i + 1]}`);
-    }
-    return bigrams;
   }
 }

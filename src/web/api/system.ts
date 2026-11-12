@@ -12,7 +12,7 @@ import { SkillStore } from '../../skills/store.js';
 import { PermissionManager, type PermissionsManifest } from '../../capabilities/permissions.js';
 import { getMercuryHome } from '../../utils/config.js';
 import { getStatus } from './status.js';
-import type { Scheduler } from '../../core/scheduler.js';
+import { isValidScheduleTimezone, type Scheduler } from '../../core/scheduler.js';
 import cron from 'node-cron';
 
 const system = new Hono();
@@ -226,7 +226,11 @@ system.get('/api/usage', (c) => {
       outputTokens: number;
       totalTokens: number;
       channelType: string;
+      cachedInputTokens?: number;
+      noCacheInputTokens?: number;
+      countedTokens?: number;
     }>;
+    dailySplit?: { inputTokens: number; cachedInputTokens: number; noCacheInputTokens: number; outputTokens: number };
   } = {
     dailyUsed: 0,
     dailyBudget: 0,
@@ -248,9 +252,12 @@ system.get('/api/usage', (c) => {
 
   const byProvider: Record<string, number> = {};
   const byChannel: Record<string, number> = {};
+  // What each request added to the daily total (cache hits at tokens.cachedWeight), so the
+  // breakdowns add up to dailyUsed; older rows without it counted in full.
   for (const row of data.requestLog || []) {
-    byProvider[row.provider] = (byProvider[row.provider] || 0) + (row.totalTokens || 0);
-    byChannel[row.channelType] = (byChannel[row.channelType] || 0) + (row.totalTokens || 0);
+    const counted = typeof row.countedTokens === 'number' ? row.countedTokens : (row.totalTokens || 0);
+    byProvider[row.provider] = (byProvider[row.provider] || 0) + counted;
+    byChannel[row.channelType] = (byChannel[row.channelType] || 0) + counted;
   }
 
   // The budget the runtime enforces is the live one. The tracker file carries whatever was
@@ -268,6 +275,10 @@ system.get('/api/usage', (c) => {
     requestLog: (data.requestLog || []).slice(-100).reverse(),
     byProvider,
     byChannel,
+    // Today's input/output split across every request (#296), when the tracker has it.
+    ...(data.dailySplit && typeof data.dailySplit === 'object' && data.lastResetDate === new Date().toISOString().slice(0, 10)
+      ? { split: data.dailySplit }
+      : {}),
   });
 });
 
@@ -286,6 +297,18 @@ system.put('/api/schedules/:id', async (c) => {
   if (!existing) return c.json({ success: false, error: 'Schedule not found' }, 404);
 
   const body = await c.req.json();
+  if (existing.lastRun?.status === 'running') return c.json({ success: false, error: 'Cannot edit a running schedule' }, 409);
+  if (body.resume !== undefined && typeof body.resume !== 'boolean') return c.json({ success: false, error: 'resume must be boolean' }, 400);
+  if (body.timezone !== undefined && (typeof body.timezone !== 'string' || (body.timezone !== '' && !isValidScheduleTimezone(body.timezone)))) {
+    return c.json({ success: false, error: 'Invalid timezone' }, 400);
+  }
+  if (body.missedRunPolicy !== undefined && !['skip', 'run_once'].includes(body.missedRunPolicy)) {
+    return c.json({ success: false, error: 'Invalid missed-run policy' }, 400);
+  }
+  if (body.delaySeconds !== undefined && (typeof body.delaySeconds !== 'number' || !Number.isFinite(body.delaySeconds) || body.delaySeconds <= 0)) {
+    return c.json({ success: false, error: 'delaySeconds must be a positive finite number' }, 400);
+  }
+  if (body.cron && body.delaySeconds !== undefined) return c.json({ success: false, error: 'Provide cron or delaySeconds, not both' }, 400);
   const description = typeof body.description === 'string' && body.description.trim()
     ? body.description.trim()
     : existing.description;
@@ -320,10 +343,15 @@ system.put('/api/schedules/:id', async (c) => {
     skillName,
     cron: cronExpr,
     delaySeconds,
-    executeAt: delaySeconds ? new Date(Date.now() + delaySeconds * 1000).toISOString() : undefined,
+    executeAt: delaySeconds ? existing.executeAt ?? new Date(Date.now() + delaySeconds * 1000).toISOString() : undefined,
+    timezone: cronExpr ? (body.timezone === '' ? undefined : body.timezone ?? existing.timezone) : undefined,
+    missedRunPolicy: cronExpr ? undefined : body.missedRunPolicy ?? existing.missedRunPolicy,
   };
 
-  scheduler.replaceManifest(manifest);
+  // Editing a label/policy never silently repeats failed or completed work.
+  // A new delay explicitly rearms a pending one-shot; terminal runs require resume.
+  if (body.delaySeconds !== undefined && !existing.lastRun) manifest.executeAt = new Date(Date.now() + delaySeconds! * 1000).toISOString();
+  scheduler.replaceManifest(manifest, body.resume === true);
   scheduler.persistSchedules();
   return c.json({ success: true, schedule: scheduler.getManifest(id) });
 });

@@ -35,13 +35,21 @@ import {
   clearSlackAccess,
 } from '../../utils/config.js';
 import { MAX_STEPS } from '../agent.js';
+import { displayModelName, effortFor, effortLabel, setChatEffort, setModelPref, type ReasoningLevel } from '../../utils/model-prefs.js';
+import { discoverReasoningCaps } from '../../providers/reasoning-discovery.js';
+import { mediaService } from '../../media/runtime.js';
+import { setMediaDefault, setSpeechPrefs } from '../../media/prefs.js';
+import { getSpeechService, type SpeechService } from '../../media/speech.js';
+import { mediaJobs } from '../../media/jobs.js';
+import { unusableReason, type MediaService } from '../../media/service.js';
+import type { MediaModel } from '../../media/catalog.js';
 import path from 'node:path';
 import type { ChannelType } from '../../types/channel.js';
 import { createProvider, ProviderRegistry as ProviderRegistryImpl } from '../../providers/registry.js';
 import { ProgrammingMode } from '../programming-mode.js';
 import { logger } from '../../utils/logger.js';
 import { CLIChannel } from '../../channels/cli.js';
-import { formatToolStep, formatNarrative, type NarrativeStep } from '../../utils/tool-label.js';
+import { formatToolStep, type NarrativeStep } from '../../utils/tool-label.js';
 import { getTelegramHelp, getDiscordHelp, getSlackHelp } from '../../utils/manual.js';
 import { WebChannel } from '../../channels/web.js';
 import { describePermissionMode, loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
@@ -214,18 +222,20 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
   }
 
   if (cmd === '/progress' || cmd === '/still') {
-    if (!agent.processing || !agent.currentMessage) {
+    // Here the chat itself was idle (this command is its turn), so report
+    // what the other chats are doing (ADR-037: they run at the same time).
+    const others = agent.runningTurns().filter((t) => t.channelId !== channelId);
+    if (others.length === 0) {
       await channel.send('No active foreground task.', channelId);
       return true;
     }
-    const elapsedSec = Math.round((Date.now() - agent.currentMessage.timestamp) / 1000);
-    const stepInfo = agent.completedStepCount > 0 ? ` · step ${agent.completedStepCount}/${MAX_STEPS}` : '';
-    const narrative = formatNarrative(agent.stepNarrative, agent.currentActivity, 10);
-    const narrativeBlock = narrative ? `\n${narrative}` : '';
-    await channel.send(
-      `⏳ Task in progress (${elapsedSec}s${stepInfo})${narrativeBlock}\nUse /bg current to move it to background.`,
-      channelId,
-    );
+    const lines = others.map((t) => {
+      const elapsedSec = Math.round((Date.now() - t.startedAt) / 1000);
+      const stepInfo = t.completedSteps > 0 ? ` · step ${t.completedSteps}/${MAX_STEPS}` : '';
+      const doing = (t.activity || t.content).replace(/\s+/g, ' ').trim().slice(0, 80);
+      return `• ${t.channelType} (${elapsedSec}s${stepInfo}): ${doing}`;
+    });
+    await channel.send(`Nothing is running in this chat. Running elsewhere:\n${lines.join('\n')}`, channelId);
     return true;
   }
 
@@ -278,9 +288,37 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
       `Slack access: ${getSlackAccessSummary(config)}`,
       `Budget: ${budget.getStatusText()}`,
       saverLine,
+      effortStatusLine(agent),
       `Skills: ${ctx.skillNames().length > 0 ? ctx.skillNames().join(', ') : 'none'}`,
     ];
     await channel.send(lines.join('\n'), channelId);
+    return true;
+  }
+
+  if (cmd === '/media' || cmd.startsWith('/media ') || cmd === '/image' || cmd === '/imagine' || cmd === '/img' || cmd === '/video' || cmd === '/music' || cmd === '/song') {
+    const media = mediaService();
+    if (!media) {
+      await channel.send('Media generation is not available in this process.', channelId);
+      return true;
+    }
+    const arg = cmd.startsWith('/media') ? trimmed.slice('/media'.length).trim() : '';
+    const reply = await mediaCommand(media, arg, getSpeechService());
+    await channel.send(reply.text, channelId);
+    // On an owner screen, offer the models as a picker.
+    if (reply.pick && isOwnerScreen(channel, channelType) && reply.pick.length > 1) {
+      const labels = [...reply.pick.map((m) => `${m.label} · ${m.group}`), 'Automatic', 'Keep as is'];
+      const picked = await pickOnOwnerScreen(agent, channel, channelType, channelId, 'Default image model?', labels);
+      if (picked && picked !== 'Keep as is') {
+        const chosen = picked === 'Automatic' ? null : reply.pick[labels.indexOf(picked)]?.ref ?? null;
+        setMediaDefault('image', chosen);
+        await channel.send(chosen ? `Images now use **${picked}**.` : 'Images now use the best model available automatically.', channelId);
+      }
+    }
+    return true;
+  }
+
+  if (cmd === '/effort' || cmd.startsWith('/effort ')) {
+    await channel.send(await effortCommand(agent, trimmed.slice('/effort'.length).trim().toLowerCase()), channelId);
     return true;
   }
 
@@ -1752,25 +1790,16 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     return true;
   }
 
+  // Here this chat was idle (the command is its own turn). Other chats may be
+  // running (ADR-037): /halt stops them all, /stop only what this chat started
+  // — a full stop (locks released, task board cleared) when nothing else runs.
   if (cmd === '/halt') {
-    if (!agent.supervisor) {
-      await channel.send('Sub-agents are not available.', channelId);
-      return true;
-    }
-    await agent.supervisor.haltAll();
-    await channel.send('All sub-agents halted and queue cleared.', channelId);
+    await channel.send(await agent.stopAllWork('halted'), channelId);
     return true;
   }
 
   if (cmd === '/stop') {
-    if (!agent.supervisor) {
-      await channel.send('Sub-agents are not available.', channelId);
-      return true;
-    }
-    await agent.supervisor.haltAll();
-    agent.supervisor.clearTaskBoard();
-    agent.lifecycle.transition('idle');
-    await channel.send('All sub-agents stopped, queue cleared, locks released, task board cleared. Short-term memory preserved.', channelId);
+    await channel.send(await agent.stopAllWork('stopped', { channelId }), channelId);
     return true;
   }
 
@@ -1797,3 +1826,223 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
 
   return false;
 }
+
+/**
+ * /effort (issue #188): how hard the current model thinks in this chat.
+ *   /effort                 what applies here, and the levels this model takes
+ *   /effort <level>         this chat only
+ *   /effort default         this chat back to the model's default
+ *   /effort global <level>  the model's default (every chat without its own)
+ */
+export async function effortCommand(agent: Agent, arg: string): Promise<string> {
+  const current = agent.providers.getDefault();
+  const provider = current.name;
+  const model = current.getModel();
+  const pc = (agent.config.providers as unknown as Record<string, import('../../utils/config.js').ProviderConfig | undefined>)[provider];
+  // An OpenAI-compatible server may say which models take an effort.
+  if (pc) await discoverReasoningCaps({ ...pc, model }, model).catch(() => undefined);
+  const chatKey = (agent as { currentChatKey?: () => string | undefined }).currentChatKey?.();
+  const name = displayModelName(provider, model);
+  const state = effortFor(provider, model, chatKey);
+  if (!state.levels.length) {
+    return `${name} has no effort setting Mercury can apply — it decides how much to think on its own.`;
+  }
+  const choices = ['auto', ...state.levels];
+  const usage = 'Use `/effort <level>` for this chat, `/effort default` to go back to the model\'s default, `/effort global <level>` to change that default.';
+  const [verb, value] = arg.split(/\s+/, 2);
+
+  if (!arg) {
+    const applied = effortLabel(state.effective ?? 'auto');
+    const why = state.source === 'chat' ? 'set for this chat'
+      : state.source === 'model' ? 'this model\'s default'
+      : 'the model decides';
+    return [
+      `**Effort** · ${name}: **${applied}** (${why})`,
+      `Model default: ${effortLabel(state.modelDefault)}${state.chat ? ` · This chat: ${effortLabel(state.chat)}` : ''}`,
+      ...(state.chatUnsupported ? [`This chat asked for ${effortLabel(state.chat!)}, which ${name} doesn't take, so its default applies.`] : []),
+      `Levels: ${choices.join(' · ')}`,
+      usage,
+    ].join('\n');
+  }
+  if (verb === 'default' || verb === 'reset' || verb === 'clear') {
+    if (chatKey) setChatEffort(chatKey, null);
+    return `This chat now uses ${name}'s default: **${effortLabel(state.modelDefault)}**.`;
+  }
+  if (verb === 'global') {
+    if (!value || !choices.includes(value)) return `\`/effort global <level>\` — ${name} takes: ${choices.join(', ')}.`;
+    setModelPref(provider, model, { reasoning: value === 'auto' ? null : (value as ReasoningLevel) });
+    return `Default effort for ${name}: **${effortLabel(value)}**${state.chat ? ` (this chat keeps its own: ${effortLabel(state.chat)})` : ''}.`;
+  }
+  if (!choices.includes(verb)) return `${name} takes: ${choices.join(', ')}. ${usage}`;
+  if (!chatKey) {
+    setModelPref(provider, model, { reasoning: verb === 'auto' ? null : (verb as ReasoningLevel) });
+    return `Default effort for ${name}: **${effortLabel(verb)}**.`;
+  }
+  setChatEffort(chatKey, verb as ReasoningLevel | 'auto');
+  return `Effort for this chat: **${effortLabel(verb)}** (${name}). Applies from the next message; \`/effort default\` goes back to ${effortLabel(state.modelDefault)}.`;
+}
+
+/** "Effort: High (this chat)" for /status (#188: the effective setting and where it comes from). */
+function effortStatusLine(agent: Agent): string {
+  try {
+    const current = agent.providers.getDefault();
+    const chatKey = (agent as { currentChatKey?: () => string | undefined }).currentChatKey?.();
+    const state = effortFor(current.name, current.getModel(), chatKey);
+    if (!state.levels.length) return 'Effort: not adjustable for this model';
+    const where = state.source === 'chat' ? 'this chat' : state.source === 'model' ? 'model default' : 'model decides';
+    return `Effort: ${effortLabel(state.effective ?? 'auto')} (${where})`;
+  } catch {
+    return 'Effort: —';
+  }
+}
+
+/**
+ * /media (ADR-042): which model makes images, and choosing it.
+ *   /media                 the image model in use and the ones available
+ *   /media image <n|ref|auto>  set the default (a number from the list, "provider::model", or auto)
+ *   /media refresh         ask the providers again
+ *   /image                 (no prompt) the same overview; /image <prompt> makes one
+ */
+export async function mediaCommand(media: MediaService, arg: string, speech: SpeechService | null = null): Promise<{ text: string; pick?: MediaModel[] }> {
+  const [verb, ...rest] = arg.split(/\s+/).filter(Boolean);
+  if (speech && (verb === 'speech' || verb === 'voice' || verb === 'replies')) {
+    return { text: await speechVerb(speech, verb, rest.join(' ').trim()) };
+  }
+  if (verb === 'video' || verb === 'videos' || verb === 'music' || verb === 'song') {
+    return { text: await jobKindVerb(media, verb.startsWith('video') ? 'video' : 'music', rest.join(' ').trim()) };
+  }
+  if (verb === 'jobs') return { text: jobsSummary() };
+  const refresh = verb === 'refresh';
+  const setup = await media.imageSetup({ refresh });
+  const list = setup.models;
+  const numbered = list.slice(0, 30);
+  if (verb === 'image' || verb === 'images') {
+    const value = rest.join(' ').trim();
+    if (!value) return { text: 'Usage: `/media image <number|provider::model|auto>` — see `/media` for the list.' };
+    if (/^(auto|automatic|default|clear)$/i.test(value)) {
+      setMediaDefault('image', null);
+      return { text: `Images now use the best model available automatically${setup.auto ? ` (now: **${setup.auto.label}** · ${setup.auto.group})` : ''}.` };
+    }
+    const byNumber = /^\d+$/.test(value) ? numbered[Number(value) - 1] : undefined;
+    const chosen = byNumber ?? list.find((m) => m.ref === value || m.model === value);
+    if (!chosen) return { text: `No image model "${value}". Use a number from \`/media\`, or provider::model.` };
+    setMediaDefault('image', chosen.ref);
+    return { text: `Images now use **${chosen.label}** · ${chosen.group}.` };
+  }
+  if (!list.length) {
+    return {
+      text: [
+        '**Images** · no image model found on your providers.',
+        'Image models come from providers that serve them: OpenAI (gpt-image), OpenRouter (Gemini image, FLUX, …), LiteLLM, AI/ML API, Atlas Cloud, Runcrate, Mercury Cloud, or an Ollama image model.',
+        'Add one with `mercury doctor` (or Mercury Desktop → Settings → AI), then `/media refresh`.',
+      ].join('\n'),
+    };
+  }
+  const inUse = setup.default?.available
+    ? list.find((m) => m.ref === setup.default!.ref)
+    : setup.auto;
+  const lines = [
+    `**Images** · ${inUse ? `${inUse.label} · ${inUse.group}` : 'none'} (${setup.default?.available ? 'your default' : 'automatic'})`,
+    ...(setup.default && !setup.default.available ? [`Your default (${setup.default.ref}) isn't offered right now, so the automatic pick is used.`] : []),
+    '',
+    ...numbered.map((m, i) => `${i + 1}. ${m.label} · ${m.group}${m.canEdit ? '' : ' (no edits)'}${inUse?.ref === m.ref ? ' ← in use' : ''}${unusableReason(m.ref) ? ` (skipped: ${unusableReason(m.ref)})` : ''}`),
+    ...(list.length > numbered.length ? [`…and ${list.length - numbered.length} more`] : []),
+    '',
+    'Make one: `/image <what to draw>` (add `--landscape` or `--portrait`). Change the default: `/media image <number>` or `/media image auto`.',
+    ...(speech ? ['', await speechSummary(speech)] : []),
+    '',
+    await jobKindSummary(media, 'video'),
+    '',
+    await jobKindSummary(media, 'music'),
+  ];
+  return { text: lines.join('\n'), pick: numbered };
+}
+
+const REPLY_LABEL = { off: 'never', mirror: 'when you send a voice note', always: 'on every reply' } as const;
+
+/** The Speech part of /media. */
+async function speechSummary(speech: SpeechService): Promise<string> {
+  const [target, options] = await Promise.all([speech.target(), speech.options()]);
+  const prefs = speech.prefs();
+  const replies = prefs.replies ?? 'mirror';
+  if (!target) {
+    return '**Speech** · no speech service. Add an OpenAI key (Settings → Models) or a Gemini, Deepgram or ElevenLabs key (Settings → Voice).';
+  }
+  return [
+    `**Speech** · ${target.label}${target.voice ? ` · voice ${target.voice}` : ''} (${prefs.choice ? 'your choice' : 'from Settings → Voice'})`,
+    ...options.slice(0, 20).map((o, i) => `${i + 1}. ${o.label} · ${o.group}${o.id === target.id ? ' ← in use' : ''}`),
+    `Voice-note replies in chat apps: ${REPLY_LABEL[replies]}.`,
+    'Say something: `/say <text>`. Change: `/media speech <number|auto>`, `/media voice <name>`, `/media replies off|mirror|always`.',
+  ].join('\n');
+}
+
+async function speechVerb(speech: SpeechService, verb: string, value: string): Promise<string> {
+  try {
+    if (verb === 'replies') {
+      if (!['off', 'mirror', 'always'].includes(value)) return 'Usage: `/media replies off|mirror|always` — mirror answers a voice note with a voice note.';
+      setSpeechPrefs({ replies: value as 'off' | 'mirror' | 'always' });
+      return `Voice-note replies: ${REPLY_LABEL[value as keyof typeof REPLY_LABEL]}.`;
+    }
+    if (verb === 'voice') {
+      if (!value) {
+        const target = await speech.target();
+        const option = (await speech.options()).find((o) => o.id === target?.id);
+        return `Voice: ${target?.voice ?? 'the service default'}.${option?.voices.length ? ` Voices: ${option.voices.join(', ')}.` : ''} Use \`/media voice <name>\` or \`/media voice default\`.`;
+      }
+      setSpeechPrefs({ voice: /^(default|auto|clear)$/i.test(value) ? null : value });
+      return /^(default|auto|clear)$/i.test(value) ? "Voice: the service's default." : `Voice: **${value}**.`;
+    }
+    if (!value) return 'Usage: `/media speech <number|auto>` — see `/media` for the list.';
+    if (/^(auto|default|clear)$/i.test(value)) {
+      setSpeechPrefs({ choice: null });
+      const t = await speech.target();
+      return `Speech now follows Settings → Voice${t ? ` (now: **${t.label}**)` : ''}.`;
+    }
+    const options = await speech.options();
+    const chosen = /^\d+$/.test(value) ? options[Number(value) - 1] : options.find((o) => o.id === value || o.label.toLowerCase() === value.toLowerCase());
+    if (!chosen) return `No speech service "${value}". Use a number from \`/media\`.`;
+    setSpeechPrefs({ choice: chosen.id });
+    return `Speech now uses **${chosen.label}** · ${chosen.group}.`;
+  } catch (err) {
+    return `Couldn't change that: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/** The Video / Music part of /media. */
+async function jobKindSummary(media: MediaService, kind: 'video' | 'music'): Promise<string> {
+  const setup = await media.setup(kind);
+  const title = kind === 'video' ? '**Video**' : '**Music**';
+  if (!setup.models.length) {
+    return `${title} · none found. ${kind === 'video' ? 'A Gemini key (Settings → Voice) gives Gemini Omni video; gateways (LiteLLM, Mercury Cloud) can serve others.' : 'A Gemini key (Lyria) or an ElevenLabs key (Settings → Voice) makes music.'}`;
+  }
+  const inUse = setup.default?.available ? setup.models.find((m) => m.ref === setup.default!.ref) : setup.auto;
+  return [
+    `${title} · ${inUse ? `${inUse.label} · ${inUse.group}` : 'none'} (${setup.default?.available ? 'your default' : 'automatic'})`,
+    ...setup.models.slice(0, 15).map((m, i) => `${i + 1}. ${m.label} · ${m.group}${inUse?.ref === m.ref ? ' ← in use' : ''}${unusableReason(m.ref) ? ` (skipped: ${unusableReason(m.ref)})` : ''}`),
+    kind === 'video'
+      ? 'Make one: `/video <the shot>` (`--portrait`, `--seconds 6`). Change: `/media video <number|auto>`. It arrives here when ready.'
+      : 'Make one: `/music <genre, mood, lyrics>` (`--instrumental`, `--seconds 60`). Change: `/media music <number|auto>`.',
+  ].join('\n');
+}
+
+async function jobKindVerb(media: MediaService, kind: 'video' | 'music', value: string): Promise<string> {
+  if (!value) return jobKindSummary(media, kind);
+  if (/^(auto|automatic|default|clear)$/i.test(value)) {
+    setMediaDefault(kind, null);
+    return `${kind === 'video' ? 'Videos' : 'Music'} now use the best model available automatically.`;
+  }
+  const list = await media.models(kind);
+  const chosen = /^\d+$/.test(value) ? list[Number(value) - 1] : list.find((m) => m.ref === value || m.model === value);
+  if (!chosen) return `No ${kind} model "${value}". Use a number from \`/media ${kind}\`.`;
+  setMediaDefault(kind, chosen.ref);
+  return `${kind === 'video' ? 'Videos' : 'Music'} now use **${chosen.label}** · ${chosen.group}.`;
+}
+
+/** /media jobs: videos and songs being made, and the last few made. */
+function jobsSummary(): string {
+  const list = mediaJobs()?.list(undefined, 10) ?? [];
+  if (!list.length) return 'No videos or songs made yet. `/video <shot>` or `/music <style>` makes one.';
+  const ago = (t: number) => { const s = Math.round((Date.now() - t) / 1000); return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; };
+  return ['**Media jobs**', ...list.map((j) => `• ${j.kind === 'video' ? '🎬' : '🎵'} ${j.prompt.slice(0, 60)}${j.prompt.length > 60 ? '…' : ''} — ${j.status === 'running' ? `making (started ${ago(j.createdAt)})` : j.status === 'done' ? `ready ${ago(j.finishedAt ?? j.createdAt)}` : `failed: ${(j.error ?? '').slice(0, 80)}`}`)].join('\n');
+}
+

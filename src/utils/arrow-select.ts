@@ -1,6 +1,19 @@
 import readline from 'node:readline';
+import { stripVTControlCharacters } from 'node:util';
+import stringWidth from 'string-width';
 import { closeAsk } from '../cli/ask.js';
 import chalk from 'chalk';
+
+/**
+ * How many terminal rows these lines take: a line wider than the terminal
+ * wraps onto more rows. Counting one row per line under-moved the cursor
+ * on a redraw and overwrote part of a long title — a device token from
+ * /server showed cut off.
+ */
+export function screenRows(lines: string[], columns: number): number {
+  const cols = Math.max(1, columns);
+  return lines.reduce((rows, line) => rows + Math.max(1, Math.ceil(stringWidth(stripVTControlCharacters(line)) / cols)), 0);
+}
 
 export interface ArrowSelectOption {
   value: string;
@@ -49,7 +62,8 @@ export async function selectWithArrowKeys(
     ),
   );
   let activeIndex = 0;
-  let renderedLineCount = 0;
+  /** Rows the last render took on screen (wrapped lines count for each row they fill). */
+  let renderedRows = 0;
   let windowStart = 0;
 
   const topIndicator = (hasHiddenAbove: boolean) => (
@@ -60,18 +74,15 @@ export async function selectWithArrowKeys(
   );
 
   const writeLines = (lines: string[]) => {
-    if (renderedLineCount > 0) {
-      readline.moveCursor(stdout, 0, -(renderedLineCount - 1));
+    // Back to the top of what was drawn, clear it all, draw again: a redraw
+    // never leaves pieces of a longer frame, nor eats into a wrapped title.
+    if (renderedRows > 0) {
+      readline.moveCursor(stdout, 0, -(renderedRows - 1));
     }
-
-    for (let index = 0; index < lines.length; index += 1) {
-      readline.cursorTo(stdout, 0);
-      readline.clearLine(stdout, 0);
-      stdout.write(lines[index]);
-      if (index < lines.length - 1) {
-        stdout.write('\n');
-      }
-    }
+    readline.cursorTo(stdout, 0);
+    readline.clearScreenDown(stdout);
+    stdout.write(lines.join('\n'));
+    renderedRows = screenRows(lines, stdout.columns || 80);
   };
 
   const render = () => {
@@ -85,7 +96,8 @@ export async function selectWithArrowKeys(
     const hasHiddenAbove = windowStart > 0;
     const hasHiddenBelow = windowStart + maxVisibleOptions < options.length;
     const lines = [
-      chalk.bold.white(`  ${title}`),
+      // A title can span lines (a token to copy, an explanation): each is its own row, never cut.
+      ...title.split('\n').map((line) => (line ? chalk.bold.white(`  ${line}`) : '')),
       chalk.dim(`  ${helperText}`),
       '',
       topIndicator(hasHiddenAbove),
@@ -101,7 +113,6 @@ export async function selectWithArrowKeys(
     ];
 
     writeLines(lines);
-    renderedLineCount = lines.length;
   };
 
   return await new Promise<string>((resolve, reject) => {

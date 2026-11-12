@@ -1,9 +1,11 @@
 import { commandTouchesMercuryCredentials, commandTouchesMercuryPrograms, commandTouchesOtherAppCredentials, isMercuryCredentialPath, isMercuryProgramPath, isOtherAppCredentialPath } from '../security/protected-paths.js';
+import { ownerApprovedThisCall } from '../security/call-approval.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, lstatSync } from 'node:fs';
 import { join, resolve, sep, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
+import { isReadOnlySegment, shellPaths, stripHeredocs } from './shell-paths.js';
 import { logger } from '../utils/logger.js';
 import { redactSecrets } from '../utils/redact.js';
 import { BLOCKED_COMMANDS } from './shell/blocklist.js';
@@ -18,13 +20,32 @@ import {
   makeContext,
   withChanges,
   permissionContextStore,
+  newTurnOverlay,
+  TURN_OWNED_FIELDS,
   type PermissionContext,
   type ContextScope,
+  type TurnOverlay,
 } from './permission-context.js';
 
-import type { McpGateRequest, McpGateResult } from './mcp/types.js';
+/** `ctx` with an internal turn's allow-all grant applied (origin `turn` unless the owner already allowed all). */
+function applyTurnGrant(ctx: PermissionContext, grant: { scopes: ContextScope[] } | null): PermissionContext {
+  if (!grant) return ctx;
+  return withChanges(ctx, {
+    autoApprove: true,
+    autoApproveOrigin: ctx.autoApprove ? ctx.autoApproveOrigin : 'turn',
+    scopes: [...ctx.scopes, ...grant.scopes],
+  });
+}
+
+import type { McpGateRequest, McpGateResult, McpResourceGateRequest } from './mcp/types.js';
+import { MCP_LIST_RESOURCES_TOOL, MCP_READ_RESOURCE_TOOL } from './mcp/naming.js';
 
 export type { PermissionContext } from './permission-context.js';
+
+/** Owner-only approvals must not be answered by a channel's Allow All mode. */
+export interface AskOptions {
+  alwaysAsk?: boolean;
+}
 
 /**
  * Arguments as the owner sees them in an approval prompt. Up to 4,000
@@ -134,6 +155,8 @@ export interface PermissionsManifest {
     filesystem: FsPermissions;
     shell: ShellPermissions;
     git: GitPermissions;
+    /** Installed-browser read-only rendering is opt-in; no engine is bundled. */
+    browser?: { enabled: boolean; executable?: string };
   };
 }
 
@@ -390,7 +413,8 @@ export function splitShellSegments(command: string): string[] {
 export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
-  private askHandler?: (prompt: string) => Promise<string>;
+  private askHandler?: (prompt: string, options?: AskOptions) => Promise<string>;
+  private approvedMcpResourcesByContext = new Map<string, Set<string>>();
   private turnAnswers: Array<{ action: string; answer: 'yes' | 'no' | 'always' }> = [];
   /**
    * The main agent's (root) context: replaced, never mutated, by the
@@ -427,7 +451,6 @@ export class PermissionManager {
    * everything else denies. Never combined with autoApproveAll.
    */
   private failClosed = false;
-  private unattendedTurn = false;
 
   /**
    * Bot-scoped shell allow-list (fail-closed runtimes): patterns the bot's
@@ -474,22 +497,39 @@ export class PermissionManager {
    */
   currentContext(): PermissionContext {
     const cell = permissionContextStore.getStore();
-    if (cell && cell.owner === this) return cell.ctx;
+    if (cell && cell.owner === this) return cell.turn ? this.turnContext(cell.turn) : cell.ctx;
     return this.rootContext();
   }
 
   private rootContext(): PermissionContext {
     if (this.rootCache) return this.rootCache;
-    let ctx = this.session;
-    if (this.turnGrant) {
-      ctx = withChanges(ctx, {
-        autoApprove: true,
-        autoApproveOrigin: ctx.autoApprove ? ctx.autoApproveOrigin : 'turn',
-        scopes: [...ctx.scopes, ...this.turnGrant.scopes],
-      });
-    }
+    const ctx = applyTurnGrant(this.session, this.turnGrant);
     this.rootCache = ctx;
     return ctx;
+  }
+
+  /** A concurrent turn's view: the live session with the turn's own identity and grant over it. */
+  private turnContext(turn: TurnOverlay): PermissionContext {
+    if (turn.cache && turn.cache.session === this.session) return turn.cache.ctx;
+    const ctx = applyTurnGrant(withChanges(this.session, turn.fields), turn.grant);
+    turn.cache = { session: this.session, ctx };
+    return ctx;
+  }
+
+  /** The calling code's turn overlay, when it runs in a main-agent turn of this manager. */
+  private currentTurn(): TurnOverlay | null {
+    const cell = permissionContextStore.getStore();
+    return cell && cell.owner === this && cell.turn ? cell.turn : null;
+  }
+
+  /**
+   * Run one main-agent turn (and everything it awaits or spawns) with its
+   * own identity, elevation, internal grant and plugin grants (ADR-037), so
+   * concurrent turns never see each other's. Sub-agents started inside get
+   * their own context as before (`withContext`).
+   */
+  withTurn<T>(fn: () => T): T {
+    return permissionContextStore.run({ owner: this, ctx: this.session, turn: newTurnOverlay() }, fn);
   }
 
   private ctx(): PermissionContext {
@@ -504,6 +544,25 @@ export class PermissionManager {
    */
   private updateContext(patch: (base: PermissionContext) => Partial<PermissionContext>): void {
     const cell = permissionContextStore.getStore();
+    if (cell && cell.owner === this && cell.turn) {
+      // A concurrent turn: identity/elevation stay with the turn; everything
+      // else (Allow All, scopes the owner approved) is the shared session's,
+      // exactly as it was with one turn at a time. The base never includes
+      // the turn grant, so a grant is never baked into the session.
+      const turn = cell.turn;
+      const changes = patch(withChanges(this.session, turn.fields));
+      const shared: Partial<PermissionContext> = {};
+      for (const [key, value] of Object.entries(changes) as Array<[keyof PermissionContext, unknown]>) {
+        if ((TURN_OWNED_FIELDS as readonly string[]).includes(key)) (turn.fields as Record<string, unknown>)[key] = value;
+        else (shared as Record<string, unknown>)[key] = value;
+      }
+      if (Object.keys(shared).length > 0) {
+        this.session = withChanges(this.session, shared);
+        this.rootCache = null;
+      }
+      turn.cache = null;
+      return;
+    }
     if (cell && cell.owner === this) {
       cell.ctx = withChanges(cell.ctx, patch(cell.ctx));
       return;
@@ -529,11 +588,24 @@ export class PermissionManager {
    * user's Allow All) untouched.
    */
   beginTurnGrant(grant: { scopes?: Array<{ path: string; read: boolean; write: boolean }> } = {}): void {
-    this.turnGrant = { scopes: (grant.scopes ?? []).map((s) => ({ ...s, path: resolve(s.path) })) };
+    const next = { scopes: (grant.scopes ?? []).map((s) => ({ ...s, path: resolve(s.path) })) };
+    const turn = this.currentTurn();
+    if (turn) {
+      turn.grant = next;
+      turn.cache = null;
+      return;
+    }
+    this.turnGrant = next;
     this.rootCache = null;
   }
 
   endTurnGrant(): void {
+    const turn = this.currentTurn();
+    if (turn) {
+      turn.grant = null;
+      turn.cache = null;
+      return;
+    }
     this.turnGrant = null;
     this.rootCache = null;
   }
@@ -549,8 +621,8 @@ export class PermissionManager {
     this.updateContext(() => ({ channelType: type }));
   }
 
-  setCurrentContext(type: string, id: string): void {
-    this.updateContext(() => ({ channelType: type, channelId: id }));
+  setCurrentContext(type: string, id: string, sessionId?: string): void {
+    this.updateContext(() => ({ channelType: type, channelId: id, sessionId }));
   }
 
   getCurrentChannelType(): string {
@@ -570,14 +642,17 @@ export class PermissionManager {
   }
 
   setUnattendedTurn(value: boolean): void {
-    this.unattendedTurn = value;
+    this.updateContext(() => ({ unattended: value }));
   }
 
-  onAsk(handler: (prompt: string) => Promise<string>): void {
+  onAsk(handler: (prompt: string, options?: AskOptions) => Promise<string>): void {
     // Every answer the owner gives is evidence for the Owner Model (autonomy,
     // risk per action type); the learning loop drains it once per turn.
-    this.askHandler = async (prompt: string) => {
-      const answer = await handler(prompt);
+    this.askHandler = async (prompt: string, options?: AskOptions) => {
+      // The owner already said yes to this very call at the injection guard
+      // (ADR-044): the tool's own approval doesn't ask a second time.
+      if (ownerApprovedThisCall()) return 'yes';
+      const answer = await (options ? handler(prompt, options) : handler(prompt));
       if (answer === 'yes' || answer === 'no' || answer === 'always') {
         const action = prompt.split('\n')[0].replace(/:.*$/, '').trim().slice(0, 40) || 'action';
         this.turnAnswers.push({ action, answer });
@@ -594,13 +669,13 @@ export class PermissionManager {
     return out;
   }
 
-  async requestApproval(prompt: string): Promise<boolean> {
+  async requestApproval(prompt: string, options?: AskOptions): Promise<boolean> {
     const ctx = this.ctx();
     // No one can answer on the internal channel: only an allow-all context
     // (the internal turn's own grant) approves; a child of it does not.
     if (ctx.channelType === 'internal') return ctx.autoApprove;
     if (!this.askHandler) return false;
-    const result = await this.askHandler(prompt);
+    const result = await (options ? this.askHandler(prompt, options) : this.askHandler(prompt));
     return result === 'yes' || result === 'always';
   }
 
@@ -618,14 +693,21 @@ export class PermissionManager {
   /** Plugin tools pre-approved for the current turn only (a scheduled task's allowTools). */
   private turnPluginGrants = new Set<string>();
 
+  /** Did the owner pre-approve this plugin tool for the current turn (a scheduled task's allowTools)? */
+  hasTurnPluginGrant(toolKey: string): boolean {
+    return (this.currentTurn()?.pluginGrants ?? this.turnPluginGrants).has(toolKey);
+  }
+
   setTurnPluginGrants(tools: string[]): void {
-    this.turnPluginGrants = new Set(tools);
+    const turn = this.currentTurn();
+    if (turn) turn.pluginGrants = new Set(tools);
+    else this.turnPluginGrants = new Set(tools);
   }
 
   async approvePluginTool(toolKey: string, prompt: string): Promise<boolean> {
     const ctx = this.ctx();
     if (this.failClosed) return true;
-    if (this.turnPluginGrants.has(toolKey)) return true;
+    if ((this.currentTurn()?.pluginGrants ?? this.turnPluginGrants).has(toolKey)) return true;
     if (ctx.channelType === 'internal') return ctx.autoApprove;
     if (this.isGlobalAutoApproveActive()) return true;
     if (this.approvedPluginToolsByContext.get(ctx.channelId)?.has(toolKey)) return true;
@@ -1005,10 +1087,10 @@ export class PermissionManager {
       return { allowed: false, reason: 'Blocked: gws sign-in commands are for the owner. Run it yourself in a terminal.', needsApproval: false };
     }
     if (gwsCommands.some((c) => c.kind === 'sensitive')) {
-      if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed || this.unattendedTurn) {
+      if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed || ctx.unattended) {
         return { allowed: false, reason: 'Sending, sharing, uploading or deleting in Google Workspace needs you to approve it, and nobody can be asked here.', needsApproval: false };
       }
-      const answer = await this.askHandler(`Run command (sends, shares, uploads or deletes in Google Workspace, so it always asks): ${trimmed}`);
+      const answer = await this.askOwner(`Run command (sends, shares, uploads or deletes in Google Workspace, so it always asks): ${trimmed}`);
       return answer === 'yes' || answer === 'always'
         ? { allowed: true, needsApproval: false, lane: 'shell' }
         : { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
@@ -1023,7 +1105,7 @@ export class PermissionManager {
       if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed) {
         return { allowed: false, reason: 'Changing MCP servers or mercury.yaml from a shell command needs the owner; run it yourself in a terminal', needsApproval: false };
       }
-      const answer = await this.askHandler(`Run command (changes Mercury's MCP servers or config, so it always asks): ${trimmed}`);
+      const answer = await this.askOwner(`Run command (changes Mercury's MCP servers or config, so it always asks): ${trimmed}`);
       return answer === 'yes' || answer === 'always'
         ? { allowed: true, needsApproval: false, lane: 'shell' }
         : { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
@@ -1045,12 +1127,16 @@ export class PermissionManager {
     }
 
     if (shell.cwdOnly) {
-      for (const segment of segments) {
-        const hasPathTraversal = this.hasPathBeyondCwd(segment);
-        if (hasPathTraversal) {
-          const scopeCheck = await this.checkFsAccess(hasPathTraversal, 'write');
-          if (!scopeCheck.allowed && !this.isExecuteScoped(hasPathTraversal)) {
-            return { allowed: false, reason: `No permission to access ${hasPathTraversal}. Use approve_scope tool with path="${hasPathTraversal}" and mode="write" to request access.`, needsApproval: false };
+      // The files the command touches, read as the shell reads it (shell-paths.ts):
+      // heredoc bodies are data, quotes are honoured, /dev/null is not a file,
+      // and `ls dir` is a read, not a write.
+      for (const segment of splitShellSegments(stripHeredocs(trimmed))) {
+        for (const { path: raw, mode } of shellPaths(segment)) {
+          const target = resolve(cwd, raw.replace(/^~(?=\/|$)/, homedir()));
+          if (target.startsWith(this.cwd)) continue;
+          const scopeCheck = await this.checkFsAccess(target, mode);
+          if (!scopeCheck.allowed && !this.isExecuteScoped(target)) {
+            return { allowed: false, reason: `No permission to ${mode} ${target}. Use approve_scope tool with path="${target}" and mode="${mode}" to request access.`, needsApproval: false };
           }
         }
       }
@@ -1109,9 +1195,17 @@ export class PermissionManager {
     // approval-gated: an unscoped `npm install` mutates cwd and can reach
     // anywhere via the network, so it is not covered by a directory grant.
     if (this.failClosed) {
-      const pathTokens = segments.flatMap(s => this.extractPathTokens(s));
-      if (pathTokens.length > 0 && pathTokens.every(t => this.isExecuteScoped(t))) {
-        logger.info({ cmd: trimmed, paths: pathTokens.length }, 'Shell command allowed by execute scope');
+      const pathSegments = splitShellSegments(stripHeredocs(trimmed));
+      const paths = pathSegments.flatMap((s) => shellPaths(s)).map((p) => ({ ...p, path: resolve(cwd, p.path.replace(/^~(?=\/|$)/, homedir())) }));
+      if (paths.length > 0 && paths.every((p) => this.isExecuteScoped(p.path))) {
+        logger.info({ cmd: trimmed, paths: paths.length }, 'Shell command allowed by execute scope');
+        return { allowed: true, needsApproval: false, lane: 'shell' };
+      }
+      // Only reading, only where it may read (`ls … | grep`, `find … 2>/dev/null | head`):
+      // no question. These used to ask the owner every time a pipe or redirect was used.
+      if (pathSegments.length > 0 && pathSegments.every(isReadOnlySegment)
+        && paths.every((p) => p.path.startsWith(this.cwd) || this.isWithinScope(this.canonicalizePath(p.path), 'read'))) {
+        logger.info({ cmd: trimmed, paths: paths.length }, 'Shell command allowed: read-only within granted scopes');
         return { allowed: true, needsApproval: false, lane: 'shell' };
       }
     }
@@ -1158,7 +1252,7 @@ export class PermissionManager {
         reason: `MCP tool ${label} needs approval; add "${toolName}" to tools.autoApprove for server "${serverId}" to run it unattended`,
       };
     }
-    const answer = await this.askHandler(
+    const answer = await this.askOwner(
       `MCP tool call\nServer: ${serverId}\nTool:   ${toolName}\nArguments:\n${formatMcpArgs(request.args)}`,
     );
     if (answer === 'yes') return { allowed: true };
@@ -1169,6 +1263,46 @@ export class PermissionManager {
       return { allowed: true };
     }
     return { allowed: false, reason: `User denied MCP tool ${label}` };
+  }
+
+  async checkMcpResource(request: McpResourceGateRequest): Promise<McpGateResult> {
+    const { operation, signal } = request;
+    if (signal?.aborted) return { allowed: false, reason: 'MCP resource request was cancelled' };
+    const ctx = this.ctx();
+    if (ctx.senderRole === 'member' || this.failClosed) {
+      return { allowed: false, reason: 'MCP resources are unavailable to members and fail-closed agents' };
+    }
+    const toolName = operation === 'read' ? MCP_READ_RESOURCE_TOOL : MCP_LIST_RESOURCES_TOOL;
+    if (ctx.allowedTools && !ctx.allowedTools.includes(toolName)) {
+      return { allowed: false, reason: `MCP resource helper ${toolName} is not allowed in this context` };
+    }
+    // Local server enumeration needs no owner prompt, but retained helpers
+    // must still respect the current caller's role and exact tool allowlist.
+    if (operation === 'servers') return { allowed: true };
+    const { serverId, uri } = request;
+    if (operation === 'read' && uri && request.autoApprove) return { allowed: true };
+    // Resource grants never collide with tool grants, other protocols, or
+    // another URI on the same server. The caller's scoped source channel is
+    // used, so concurrent turns retain their own approval identity.
+    const channel = JSON.stringify([ctx.channelType, ctx.channelId]);
+    const key = JSON.stringify([serverId, operation, operation === 'read' ? uri : null]);
+    if (ctx.rememberApprovals && this.approvedMcpResourcesByContext.get(channel)?.has(key)) return { allowed: true };
+    if (!this.askHandler || ctx.channelType === 'internal') {
+      return { allowed: false, reason: 'MCP resources need owner approval; unattended reads require the exact URI in resources.autoApprove' };
+    }
+    const answer = await this.askHandler(
+      `MCP resource ${operation}\nServer: ${serverId}${operation === 'read' ? `\nURI: ${JSON.stringify(redactSecrets(uri ?? ''))}` : '\nList the allowed resource names and URIs (contents are not read).'}`,
+      { alwaysAsk: true },
+    );
+    if (signal?.aborted) return { allowed: false, reason: 'MCP resource request was cancelled' };
+    if (answer === 'always' && ctx.rememberApprovals) {
+      const approved = this.approvedMcpResourcesByContext.get(channel) ?? new Set<string>();
+      approved.add(key);
+      this.approvedMcpResourcesByContext.set(channel, approved);
+    }
+    return answer === 'yes' || answer === 'always'
+      ? { allowed: true }
+      : { allowed: false, reason: `User denied MCP resource ${operation} on ${serverId}` };
   }
 
   private isProtectedConfigPath(path: string): boolean {
@@ -1189,11 +1323,15 @@ export class PermissionManager {
         reason: `Permission denied: ${resolved} is a Mercury config file and can only be changed with the owner's confirmation`,
       };
     }
-    const answer = await this.askHandler(
+    const answer = await this.askOwner(
       `Write to Mercury config file: ${resolved}\n(it controls MCP servers, permissions and secrets)`,
     );
     if (answer === 'yes' || answer === 'always') return { allowed: true };
     return { allowed: false, reason: `User denied write to ${path}` };
+  }
+
+  private askOwner(prompt: string): Promise<string> {
+    return this.askHandler ? this.askHandler(prompt, { alwaysAsk: true }) : Promise.resolve('no');
   }
 
   /**
@@ -1358,36 +1496,10 @@ export class PermissionManager {
     }
   }
 
-  private static readonly PATH_PATTERNS = [
-    /(?:^|\s)(\/[^\s]+)/,
-    /(?:^|\s)(~\/[^\s]+)/,
-    /(?:^|\s)\.\.\/([^\s]+)/,
-    /(?:^|\s)([A-Za-z]:\\[^\s]+)/,
-    /(?:^|\s)(\\\\[^\s]+)/,
-  ];
-
-  /** Every path-like token in a command segment, resolved (tilde expanded). */
-  private extractPathTokens(text: string): string[] {
-    const out: string[] = [];
-    for (const pattern of PermissionManager.PATH_PATTERNS) {
-      for (const match of text.matchAll(new RegExp(pattern.source, 'g'))) {
-        out.push(resolve(match[1].replace(/^~/, homedir())));
-      }
-    }
-    return out;
-  }
-
   /** A resolved path is covered by an explicit execute grant. */
   private isExecuteScoped(resolvedPath: string): boolean {
     if (this.findScope(resolvedPath)?.execute) return true;
     return this.findTempScope(resolvedPath)?.execute === true;
-  }
-
-  private hasPathBeyondCwd(command: string): string | null {
-    for (const candidate of this.extractPathTokens(command)) {
-      if (!candidate.startsWith(this.cwd)) return candidate;
-    }
-    return null;
   }
 
   private mergeDefaults(parsed: Partial<PermissionsManifest>): PermissionsManifest {
@@ -1399,6 +1511,10 @@ export class PermissionManager {
 
     return {
       capabilities: {
+        ...(parsed.capabilities?.browser ? { browser: {
+          enabled: parsed.capabilities.browser.enabled === true,
+          ...(typeof parsed.capabilities.browser.executable === 'string' ? { executable: parsed.capabilities.browser.executable } : {}),
+        } } : {}),
         filesystem: {
           enabled: parsed.capabilities?.filesystem?.enabled ?? DEFAULT_MANIFEST.capabilities.filesystem.enabled,
           scopes: parsed.capabilities?.filesystem?.scopes ?? DEFAULT_MANIFEST.capabilities.filesystem.scopes,

@@ -269,3 +269,27 @@ export function wakeUpPrompt(taskHint?: string): string {
     'Your very next response MUST begin with a mutating tool call — create_file, write_file, edit_file, or run_command. ZERO prose before the call. Pick the smallest real piece of the task (even scaffolding or a stub) and DO it. Only after the call lands may you write text.',
   ].join(' ');
 }
+
+/** Tools whose success means a chat turn produced something worth checking. */
+const CHAT_DELIVERABLE_TOOLS: ReadonlySet<string> = new Set(['create_file', 'write_file', 'edit_file', 'run_command', 'send_file']);
+
+/** A planned chat turn made something (a file, a render, a sent file): check it before calling it done. */
+export function chatNeedsCheck(toolsSucceeded: ReadonlyMap<string, boolean>): boolean {
+  return [...toolsSucceeded].some(([tool, ok]) => ok && CHAT_DELIVERABLE_TOOLS.has(tool));
+}
+
+/**
+ * The chat version of the verification round: not "run the tests" but "look
+ * at what you made". It exists because a chat could make a black MP4 with
+ * ffmpeg, send it, and announce "Video created & sent! pixel-perfect".
+ */
+export function chatCheckPrompt(taskHint?: string): string {
+  const hint = taskHint?.trim();
+  return [
+    '[SYSTEM: CHECK BEFORE DONE] Before you tell the user this is finished, look at what you actually produced.',
+    hint ? `The request: "${hint.slice(0, 200)}".` : '',
+    'For each deliverable: confirm it exists and is what was asked — open or read the file, probe a video (e.g. ffprobe, or extract a frame and look), check a page renders, check sizes and durations.',
+    'If it is wrong or incomplete, fix it now. If you could not do what was asked the way it was asked (a tool failed, a requirement is missing), say so plainly and what is needed — do not present a workaround or a different method as the result.',
+    'Then reply with only what you verified.',
+  ].filter(Boolean).join(' ');
+}

@@ -207,8 +207,36 @@ standard MCP `image` content:
 - **Kept out of history.** The images go to the model with that one tool
   result. Chat history, logs and memory only ever see the text.
 - **Text-only models** get the text plus a note that an image was left out.
+- **Models whose API takes images only from the user** (OpenAI-compatible chat:
+  OpenRouter, LiteLLM, Mercury Cloud, Ollama, LM Studio) get the image in a
+  message right after the tool result. Only the newest two screenshots are kept.
 
 Require `"pluginApi": "^1.2.0"` to use it.
+
+### Screenshots sized for the model
+
+Models are billed for an image by its pixels, by rules that differ per family.
+A tool that takes screenshots can let Mercury choose the size for the model in
+use by declaring a `mercury_screenshot` parameter in its input schema (or
+`"screenshots": true` on the tool in the manifest):
+
+```json
+"mercury_screenshot": { "type": "object", "description": "Set by Mercury; leave it out.",
+  "properties": { "include": { "type": "boolean" }, "max_width": { "type": "integer" }, "max_height": { "type": "integer" } } }
+```
+
+Mercury hides the parameter from the model and fills it on every call:
+
+- `max_width` × `max_height`: fit the screenshot in this box (never enlarge it).
+  For example, Claude and OpenAI get 1024×640, Gemini 768×480, and open vision
+  models 896×560. Shrink the capture yourself, so the coordinates the model
+  clicks stay in the picture it saw.
+- `include: false`: the model can't see images. Don't capture; say in text
+  what is on screen (for example, the active window).
+
+An older Mercury shows the parameter as optional, so the model may leave it out.
+Treat a missing value as your own default. The owner can set one size for
+every model with `MERCURY_SCREENSHOT_BOX=1280x800`.
 
 ## Chat channels (plugin API 1.1)
 

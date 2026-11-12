@@ -21,6 +21,8 @@ export interface CompletionMetaLike {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Input tokens served from the provider's prompt cache (#296), when known. */
+  cachedInputTokens?: number;
   budgetUsed: number;
   budgetTotal: number;
   budgetPercentage: number;
@@ -76,6 +78,8 @@ interface CliTaskChannel extends Channel {
 
 interface WebTaskChannel extends Channel {
   sendError(message: string, targetId?: string): boolean;
+  /** The final reply, with what it cost (older web channels ignore `usage`). */
+  send(content: string, targetId?: string, elapsedMs?: number, usage?: Record<string, unknown>): Promise<void>;
 }
 
 const hasFn = (obj: unknown, name: string): boolean => typeof (obj as Record<string, unknown> | null)?.[name] === 'function';
@@ -116,8 +120,17 @@ export function createTaskSurface(channel: Channel | undefined, channelType: Cha
     return {
       kind: 'web',
       begin() {},
-      async done({ finalText, elapsedMs }) {
-        await web.send(finalText, channelId, elapsedMs);
+      async done({ finalText, elapsedMs, stepCount, meta }) {
+        // What the reply cost, so a screen can show it as soon as it lands.
+        await web.send(finalText, channelId, elapsedMs, {
+          provider: meta.provider,
+          model: meta.model,
+          inputTokens: meta.inputTokens,
+          cachedInputTokens: meta.cachedInputTokens ?? 0,
+          outputTokens: meta.outputTokens,
+          steps: stepCount,
+          elapsedMs,
+        });
       },
       async pause(banner) {
         await web.send(banner, channelId).catch(warnSend);

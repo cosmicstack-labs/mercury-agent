@@ -12,16 +12,32 @@ import { compact } from "~/views/bots/Usage";
  * in, and the caps for bots. Saves apply at once, no restart.
  */
 
+/** Today's input/output split (runtimes from #296 on). */
+export interface DailySplit { inputTokens: number; cachedInputTokens: number; noCacheInputTokens: number; outputTokens: number }
+
 export interface BudgetState {
-  daily: { budget: number; used: number; remaining: number; percentage: number };
+  daily: { budget: number; used: number; remaining: number; percentage: number; split?: DailySplit; cachedWeight?: number };
   saver: { state: "off" | "on" | "auto"; autoEnabled: boolean; autoThreshold: number; savedToday: number; savedLifetime: number };
   bots: { enabled: boolean; perBot: number; fleet: number };
 }
 
-type BudgetPatch = { dailyBudget?: number; saver?: { manual?: boolean; autoEnabled?: boolean; autoThreshold?: number }; bots?: { perBot?: number; fleet?: number } };
+type BudgetPatch = { dailyBudget?: number; cachedWeight?: number; saver?: { manual?: boolean; autoEnabled?: boolean; autoThreshold?: number }; bots?: { perBot?: number; fleet?: number } };
 
 const DAILY_PRESETS = [500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000];
 const THRESHOLDS = ["50", "75", "90"] as const;
+/** How much a prompt-cache hit counts toward the daily budget. */
+const CACHE_WEIGHTS = [
+  { value: "1", label: "In full" },
+  { value: "0.5", label: "Half" },
+  { value: "0.1", label: "At cost" },
+] as const;
+
+/** "122k in (102k from cache · 83%) · 18k new · 4.4k out", or null before anything ran today. */
+export function splitLine(split: DailySplit | undefined): string | null {
+  if (!split || (split.inputTokens <= 0 && split.outputTokens <= 0)) return null;
+  const pct = split.inputTokens > 0 ? Math.round((split.cachedInputTokens / split.inputTokens) * 100) : 0;
+  return `${compact(split.inputTokens)} in (${compact(split.cachedInputTokens)} from cache · ${pct}%) · ${compact(split.noCacheInputTokens)} new · ${compact(split.outputTokens)} out`;
+}
 
 /** "2M", "750k", "1,500,000" → tokens; null when it isn't a number. */
 export function parseTokens(text: string): number | null {
@@ -75,6 +91,7 @@ export function BudgetsSettings() {
           <div className="h-1.5 overflow-hidden rounded-full bg-ink/[0.07]" role="meter" aria-valuemin={0} aria-valuemax={daily.budget} aria-valuenow={daily.used} aria-label="Tokens used today">
             <div className={cx("h-full rounded-full", ratio >= 0.9 ? "bg-red" : ratio >= 0.75 ? "bg-amber" : "bg-accent")} style={{ width: `${ratio * 100}%` }} />
           </div>
+          {splitLine(daily.split) && <div className="font-mono text-xs text-ink3">Today: {splitLine(daily.split)}</div>}
           <TokenField
             id="budget-daily"
             label="Tokens a day"
@@ -86,6 +103,21 @@ export function BudgetsSettings() {
           />
         </div>
       </section>
+
+      {daily.cachedWeight !== undefined && (
+        <section className="flex flex-col gap-3">
+          <h3 className="text-sm font-medium text-ink">Prompt cache</h3>
+          <div className="flex flex-col divide-y divide-line rounded-lg border border-line bg-surface">
+            <Row title="Cache hits count" hint="Every model call in a turn counts. Providers charge far less for the part of a request they already have cached; “At cost” counts it at about its price.">
+              <Segmented
+                value={CACHE_WEIGHTS.find((w) => Number(w.value) === daily.cachedWeight)?.value ?? ("" as (typeof CACHE_WEIGHTS)[number]["value"])}
+                onChange={(v) => void save({ cachedWeight: Number(v) })}
+                options={CACHE_WEIGHTS.map((w) => ({ value: w.value, label: w.label }))}
+              />
+            </Row>
+          </div>
+        </section>
+      )}
 
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-medium text-ink">Token Saver</h3>

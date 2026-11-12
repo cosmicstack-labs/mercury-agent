@@ -20,7 +20,12 @@ const VALID_TRANSITIONS: Transition[] = [
 ];
 
 export class Lifecycle {
-  private state: AgentState = 'unborn';
+  private state: AgentState;
+
+  /** A turn's own lifecycle starts at 'idle' (ADR-037); the runtime's at 'unborn'. */
+  constructor(initial: AgentState = 'unborn') {
+    this.state = initial;
+  }
 
   getState(): AgentState {
     return this.state;

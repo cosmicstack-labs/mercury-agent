@@ -101,6 +101,28 @@ User message → Agent loads system prompt (soul + guardrails + persona)
   → Agent sends final response via channel
 ```
 
+## Concurrent Sessions
+
+Several chats are answered at once (ADR-037). A turn mostly waits on the model provider, so turns share one process and one event loop. There are no threads; worker threads would copy the heap per turn without making a turn faster, which matters on Termux.
+
+```
+message → lane (a session id, else channel + conversation; the terminal is one lane)
+  → waiting line (first come, first served; voice-call questions and "do mine first" go ahead)
+  → admitted when its lane is free AND the turn governor has room
+  → runs inside its own turn scope (AsyncLocalStorage)
+```
+
+| Piece | File | Role |
+|---|---|---|
+| Lanes + pump | `src/core/agent.ts` (`laneKeyFor`, `processQueue`, `startTurn`) | One turn per lane at a time; lanes run concurrently |
+| Turn state | `src/core/agent.ts` (`TurnState`) | Message, abort, activity, steps, work key, lifecycle, programming mode — per turn |
+| Turn scope | `src/utils/turn-scope.ts` | `ScopedValue`: per-turn working directory, tools switch, image switch |
+| Permission overlay | `src/capabilities/permissions.ts` (`withTurn`) | Per-turn channel, session, sender role, skill elevation, internal grant, plugin grants; Allow All and approved scopes stay shared |
+| Turn governor | `src/core/turn-governor.ts` | Concurrency limit (auto from heap/RAM/platform, `concurrency.maxTurns`), admission, one process-wide heap watch that stops the newest turn under pressure |
+| Conversation lock | `src/core/agent.ts` (`lockSession`) | Two lanes reaching one stored conversation take it one at a time |
+
+`/stop` stops the chat it was typed in (and the sub-agents it started); `/halt` stops every chat.
+
 ## Permission System
 
 ### Filesystem Permissions (folder-level scoping)

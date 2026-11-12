@@ -111,6 +111,37 @@ describe('fail-closed execute scopes (bots)', () => {
   });
 });
 
+describe('bots reading where they may read: no question (real false alarms)', () => {
+  function bot() {
+    const permissions = new PermissionManager();
+    const m = permissions.getManifest();
+    m.capabilities.shell.enabled = true;
+    m.capabilities.filesystem.scopes = [{ path: '/tmp/fleet/_shared', read: true, write: false }, { path: '/tmp/fleet/me', read: true, write: true }];
+    permissions.setAutoApproveAll(false);
+    permissions.setFailClosed(true);
+    permissions.setCurrentContext('bot', 'worker');
+    const asked: string[] = [];
+    permissions.onAsk(async (q: string) => { asked.push(q); return "no"; });
+    return { permissions, asked };
+  }
+
+  it('ls / find with pipes and 2>/dev/null inside readable folders run without asking', async () => {
+    const { permissions, asked } = bot();
+    await expect(permissions.checkShellCommand('ls -lrt "/tmp/fleet/_shared/" 2>/dev/null | tail -20')).resolves.toMatchObject({ allowed: true });
+    await expect(permissions.checkShellCommand('find "/tmp/fleet/_shared" -name "*project*" -o -name "*curated*" 2>/dev/null')).resolves.toMatchObject({ allowed: true });
+    expect(asked).toEqual([]);
+  });
+
+  it('reading outside, writing, and running other things still ask', async () => {
+    const { permissions, asked } = bot();
+    await expect(permissions.checkShellCommand('find ~ -name "wrangler.toml" 2>/dev/null | head -3')).resolves.toMatchObject({ allowed: false });
+    await expect(permissions.checkShellCommand('ls /tmp/fleet/_shared > /tmp/elsewhere.txt')).resolves.toMatchObject({ allowed: false });
+    await expect(permissions.checkShellCommand('find /tmp/fleet/_shared -delete')).resolves.toMatchObject({ allowed: false });
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.some((q) => /Write to file: \/(dev\/null|\*)?$/.test(q))).toBe(false);
+  });
+});
+
 describe('fail-closed skill elevation', () => {
   it('elevateForSkill is a no-op in fail-closed mode (skills never re-permission a bot)', async () => {
     const permissions = new PermissionManager();

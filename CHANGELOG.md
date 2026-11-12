@@ -12,6 +12,246 @@
 ### Skills
 - **`mercury skills install --from` accepts a SKILL.md without an `id`**, such as the gws project's skills, and installs it under its name the way `/skills install` does.
 
+## 1.5.2 — bots you can watch, approvals one at a time, complex work done properly
+
+### Chat: complex work done the way Mercury Code does it
+A real chat ("install the HyperFrames skills, then make an intro video with an ElevenLabs beat") went wrong in a chain:
+- the HyperFrames CLI refused to run ("requires Node.js >= 22");
+- Mercury tried to upgrade Node with brew, then switched to an AI video model, which hit its quota;
+- it made a black MP4 with ffmpeg and announced "Video created & sent!";
+- it wrote six summary documents nobody asked for.
+
+Each link is fixed:
+- **Commands use Mercury's own Node.** A service PATH often lists an old system Node (`/usr/local/bin`) before a newer one, so every Node tool the model ran used Node 18 even though Mercury runs on 22. The Node that runs Mercury now comes first in a command's PATH, so `npx`, `hyperframes` and other Node CLIs get the right version.
+- **A video that never rendered isn't sent as if it worked.** Before `send_file` sends a video, ffmpeg's own detectors look at it once. If it's black for most of its length, or the same frame the whole time (the animation never ran), it isn't sent, and the model is told why, so it fixes the render or says plainly that it couldn't. Without ffmpeg, files are sent as before.
+- **Mercury Code's discipline, in chat, when the work is real.** It applies when the model makes a plan of three or more steps, which is its own sign that this is multi-step work. Quick questions and ordinary chats don't change.
+  - **Working rules with the plan:**
+    - act, don't announce;
+    - a step is done when its result exists and was checked;
+    - when a tool or requirement fails, fix the cause or ask: never switch to a method you didn't ask for, or present a workaround as the result;
+    - no summaries nobody asked for.
+  - **One check before "done":** if the turn made something (files, renders, sent files), the model gets one round to look at what it produced and fix it, then reports only what it verified. It's the chat version of Mercury Code's verification gate.
+- **Always:** never call something done without checking it, and no unrequested summary or README files.
+
+### Plans that keep up
+- **A plan no longer freezes mid-way.** The checklist moved only when the model ticked a step, and models often finish the work and forget the last tick. Stopping a task also left its step "in progress" for good. In one owner's chats, 7 of 21 plans were stuck like that (✓✓✓✓◐). Now, when a turn ends:
+  - **finished, only the last step unticked:** it's marked done, since the reply is that step;
+  - **a reply with several steps still open:** "Plan paused" at the first open step, with "say continue to pick it up";
+  - **stopped by you, or failed:** "Plan stopped", with no guessed ticks.
+
+  Only the turn that worked on a plan settles it, so a quick question asked in between leaves it alone. The plan tool also reminds the model to tick its finished steps before its final reply. The terminal's checklist gets the same end-of-turn tidy.
+- **An open plan in an idle chat never looks in progress.** No pulsing step while nothing runs, plans saved before this release included.
+
+### Desktop: "Needs you", one at a time
+- **Approvals look like the rest of the app.** A question Mercury is waiting on (allow a command, write a file, use an MCP tool, keep going, pick one) used to be an amber box in the conversation, with the raw request dumped in monospace and one box stacked under another. It's now a card pinned above the message box, in the same style as the plan:
+  - a plain title ("Run a command", "Write a file", "Use create_issue", "Suspicious request: schedule a task");
+  - the exact command or path underneath, folded when long;
+  - what it read and any warning in a quiet line;
+  - the main answer as the primary button, and Deny quietly on the right.
+- **Several questions are a carousel:** "1 of 4", ‹ › or ←/→ to move between them. Answering one shows the next, and the card leaves when none are left. Y / N and 1–9 still answer from the keyboard.
+- **Bots ask the same way:** their questions use the same card on every bot screen, and in Live it sits above the message box, with how long the bot will wait.
+
+### Bots: watch them live, talk to them, fewer false alarms
+- **Live, the first tab of every bot and fleet.** What the bots are doing as it happens, one card per run:
+  - who started it (you, a schedule, another bot) and what was asked;
+  - each step as it runs: tool, running → done or failed, with the error;
+  - what the bot is writing as it writes it;
+  - how it ended.
+
+  A run's status comes from its latest event, so it can't go stale: "Waiting for you" appears only while a question for that very run is pending, and a run cut short by a restart says it ended instead of "working" forever. Long runs fold their earlier steps, and a fleet shows every member's runs together. Opening the screen mid-run shows what already happened: the runtime keeps a short, capped log of recent events, in memory only. The old Activity tab is now History.
+- **Talk to them from the same place.** The box under the feed messages the bot, or any crew member in a fleet. A message to a busy bot shows as queued and runs after the current one. A bot's question sits inside its run with its buttons, and every finished run has Reply, which answers with that run quoted.
+- **Far fewer "needs you" questions that weren't needed.** A bot's shell command used to be scanned for anything that looked like a path, and each one was asked about as a file to write. Now the scan reads the command the way the shell does:
+  - code inside a heredoc no longer counts (it used to ask to write to "/", "/*" and "/\s+");
+  - quoted paths with spaces stay whole;
+  - `/dev/null` is not a file;
+  - `ls`, `find`, `cat` and `grep` read, they don't write;
+  - `-o` only means an output file to `curl`, `wget` and `sort` (to `find` it means "or").
+
+  A read-only command (with pipes and `2>/dev/null`) that touches only folders the bot may read now runs without asking. Writes, the network and anything that can run other commands still ask.
+- **Bot faces always have colour.** A face shown in two places shared one colour gradient. If the first copy sat in a hidden tab, macOS drew the others black, or as bare white eyes. Each face now has its own gradient, written in notation every engine reads, with a solid colour under it.
+
+### Voice: only the words are spoken
+- **Directions stay out of the audio.** Asking for a natural reading ("keep it natural, don't make it sound like it was shared by AI") could put that request into the recording itself. The cause was Gemini, which takes the style as words in front of the text ("Say this …:") and reads anything that isn't a short description of a voice out loud.
+  - Only a short tone goes to Gemini now ("calm and warm", "like a news anchor"). Requests about the audio itself are dropped, since they shape how the words are written, not how they're read.
+  - Anything that still slips into the script is taken out before it's spoken and used as the style instead: an opener like "Here's the script:", "Tone:" lines, "Narrator:" labels, "[soft music]" and "(pause)" cues, titles and markdown. A plain script, a poem with real parentheses for example, is left exactly as written.
+- **The voice service you name is used.** "Read it with ElevenLabs" uses ElevenLabs (likewise OpenAI, Gemini, Deepgram). If it isn't set up, Mercury tells you instead of quietly using another.
+
+### Skills: the one you name is the one used, for the whole chat
+- **Skills installed for other agents work in Mercury.** Mercury now also reads the shared skill folders `~/.agents/skills` (where `npx skills add` installs) and `~/.claude/skills`, so asking for HyperFrames finds the official HyperFrames skills: how to build, animate and render the video. Before, Mercury only had satellite pieces, rendered a composition whose animation never ran (solid colours), then reached for an AI video model instead.
+  - **Kept small:** a family of related skills is one line, so the shared list adds about 3 KB to the cached prompt.
+  - **Safe:** shared skills are read-only, and they can't raise Mercury's permissions. Mercury's own skills win on a name clash. Set `MERCURY_SHARED_SKILLS=0` to turn this off.
+- **Named means that one.** "Use hyperframes", "via Hyper Frames", "beats with ElevenLabs": Mercury loads the matching skill, even written loosely, and follows it to the finished file. It passes the named service to the media tools, which now accept a service by name ("elevenlabs", "lyria", "veo"). It never swaps in a different method on its own. An AI video model is not a HyperFrames render, and Google is not ElevenLabs. If the named one isn't there or fails, Mercury says so and asks.
+- **Remembered for the chat.** Skills and services you named or used in a chat are re-stated on every later turn of that chat, so "where is the video?" or "try again" continues with HyperFrames instead of drifting.
+  - A skill's instructions are loaded again when the work continues.
+  - A skill named like an everyday word ("documents") counts only when it's clearly picked: next to "skill", after "use", "using", "via" or "through", or as `#documents`.
+- **Skills can use their own files.** Loading a skill now says where its folder is, so the references and scripts it mentions can be read.
+
+### Second Brain: one copy of each thing, real people
+- **No more copies.** The same fact was being saved again under each new wording: "Heer is my wife", "User's wife is Heer", "User is married to someone named Heer", "Heer is user's spouse"… The match only looked at beliefs of the same kind with near-identical words. Now one check sees past wording:
+  - you count as one person however you're named ("I", "my", "the user's", your name);
+  - "wife", "husband", "spouse" and "married" are one relation, and "buy" and "purchase" are one action;
+  - the kind no longer has to match ("fact" vs "relationship").
+  
+  A second wording now supports the first instead of being saved as a new belief. When it adds a little detail ("…, married since 2019"), the belief takes the fuller wording, unless the original is in your own words.
+- **Copies already saved are folded once,** after a backup (`second-brain.pre-tidy-1.db`), and again after each reflection pass. The belief that's kept takes over the copies' evidence and support. It's chosen in this order: your own word, then the best established, then the one that says the most.
+- **What it never folds:**
+  - claims with different numbers ("married in 2019" vs "married on October 9, 2025": that's a conflict to settle, not a copy);
+  - a claim and its negation;
+  - a longer claim that adds a relation or feeling ("…, about to become a father", "Zaid dislikes Shehzen");
+  - anything into a shorter one that would lose what the longer one says.
+- **One person, one entry.** A short name that is the start of exactly one other person's name is the same person ("Shehzen" / "Shehzen Sidiq Malla"), and the two merge, keeping the full name as an alias. Ambiguous first names and anyone you edited yourself are left alone.
+- **Names nobody checked get checked.** Names saved before the "is it a person?" check existed were never checked, which is how "Calcutta", "Kobo" and "Password" got onto the people list. They're queued once for the same slow check: 20 names a call, under the daily cap.
+
+### Security: prompt injection
+- **Text Mercury reads can no longer steer what it does.** A report showed a weather page with an HTML comment telling the AI to create a schedule and keep it from the user: big models refused, a small one (on Mercury Free Router) created the cron job. Mercury now enforces this in code, whatever the model:
+  - **Untrusted reads raise the bar, in every mode.** Once a turn has read anything from outside the chat (a file, web page, search result, command output, attachment, GitHub issue, or someone else's message), certain actions need your explicit yes, even under Allow All: creating schedules, writing memory, creating or installing skills, granting permissions, sending messages or files, pushing or opening issues and PRs, and plugin actions that change something. The approval shows what was read and the full action.
+  - **Hidden instructions are found and flagged.** Mercury looks for instructions aimed at an AI in HTML comments, hidden markup, zero-width text and wording like "ignore previous instructions". When it finds some, it tells you in the chat, notes it after the content for the model, and asks before commands, file writes, fetches and delegation too.
+  - **Unattended runs refuse instead of asking.** Scheduled runs and bots can still deliver a scheduled task's results to you.
+  - **Schedules are always visible.** Every new scheduled task is announced by Mercury itself with the prompt it will run, and its approval shows that prompt rather than a short description. A task that asks to keep something from you is always asked about, even under Allow All.
+  - **Delegation doesn't reset it.** Sub-agents inherit what their parent read. Each bot turn keeps its own record.
+- **Data can't leave quietly through a web address.** A page doesn't need a hidden instruction to leak something: it can ask, in plain words, for "https://…?key=<your key>" to be opened. After reading outside content, Mercury checks the request itself before opening a page, searching, or running a command. It asks you first, showing what would leave, when the request carries something like a key or token, an encoded blob, a long value, or a long subdomain. Commands that upload data (`curl -d`, piping into `curl` or `nc`, `scp` to another host) are checked the same way. Opening links that were in what Mercury read, or in your message, never asks, and neither do plain lookups.
+- **Memory only learns from you.** After a turn that read outside content, Mercury's learning pass uses only your own words: its reply is left out, and anything it would learn must quote you. A turn that found hidden instructions learns nothing. Pasted text written to an AI, messages from other people and group chats are never learned as yours, including in the background reflection pass.
+- **Fewer false alarms.** Documentation about AI isn't an attack. Mercury's own ARCHITECTURE.md ("Agent loads system prompt") was flagged, and from then on every command in the turn asked for approval. In visible text, only the two signatures of an attack now count: "ignore previous instructions" and "don't tell the user". Wording like "system prompt", "the agent should" or "assistant:" counts only when it's hidden (HTML comments, invisible markup, zero-width text). Across Mercury's own docs, false alarms fell from 36 files to 4, and those 4 quote attack phrases on purpose.
+- **Approvals depend on the model.** Large models notice and refuse planted instructions; the report that started this was a small model obeying them. So with a strong model (Claude Sonnet/Opus, GPT-4o/4.1/5, o1/o3, Gemini Pro, Grok 4, DeepSeek V3/R1 and similar), Mercury no longer asks before actions after reading outside content, even when it found hidden instructions. It still:
+  - warns you in the chat when hidden instructions were found;
+  - notes after the content that it is data, not a request;
+  - asks before data leaves in an address or a command (a key, a token, an encoded blob), whatever the model.
+
+  Small, local and unknown models (mini, nano, flash, Haiku, 7B/8B, Free Router "auto") keep every approval, and so does any model the rule doesn't recognise.
+- **No cost when nothing outside is read:** turns that read nothing from outside the chat behave exactly as before. The checks are pattern scans, with no extra model calls.
+
+### Desktop: a new chat that knows you
+- **Ready to type.** The cursor goes to the message box when you start a new chat, switch to another chat, or come back to the chat view, so there's no need to click into it first.
+- **Suggestions made for you.** A new chat opens with a greeting for the time of day, a line about what you're up to, and four things you might want next. They're grounded in what Mercury knows: your recent chats and what you last asked, your goals and projects, your scheduled tasks, what it made for you, and the day of the week.
+  - Click one to put it in the message box. Edit it, or press Enter to send it. **More ideas** shows others.
+  - **Different each time.** Each new chat shows the ones you've seen least lately. One you use leaves the list, and recent ones aren't suggested again soon.
+  - **Lightweight.** The suggestions are remade at most every 6 hours, and only after you've used Mercury since the last time. That takes one small call on the learning model, in the background and never while you wait. When learning is paused or the budget is low, simple rules make them at no cost.
+  - Nothing runs by itself: the text you send is the text you saw.
+- **It never breaks a new chat.** If suggestions can't load (an older runtime, a fresh install, a failure), the page shows the greeting and the box; a crash in the page shows a plain greeting, never an error.
+
+### Desktop: batches of images
+- **Several images for one ask are one group.** While they're being made, the chat shows one placeholder grid (pairs for two or four, rows of three for three or five or more), and each tile turns into a tick as its image is ready. The finished images land in the same grid, so nothing jumps, with the prompt under it.
+- **Progress shows in one place.** Before, each image call added its own step row, its own placeholder and its own timer, stacked one under another. Now the turn's status line says it once: "Creating 5 images · 4 of 5 ready · Adding detail".
+- **Fixed: a batch showed one image.** All the images were made and saved, but only the first reached the chat and Artifacts. The image tool lists each file on its own line, and chat folders are named after the chat ("2026-11-11 Go to the GitHub training"). The space in that name cut each path short, and only the first image, quoted in the tool's "to edit it" hint, was found. A list line that holds one path is now read to its end, so every image arrives.
+- **Slide through them.** Clicking an image opens it full screen:
+  - arrows, ← → keys or a swipe to move between images, a "3 / 5" counter, and a strip of thumbnails to jump to any of them;
+  - behind each image, a blurred copy of it fills the screen with its colours;
+  - **Info** opens the details (save, copy path, delete).
+  
+  In Artifacts, a batch's preview has the same arrows and keys, and a full-screen button.
+- **Artifacts keeps a batch together.** Images made together are one card with a mosaic and a count. Opening it lets you step through them.
+
+### Artifacts: deleting for real, and cleaning up
+- **Deleting an artifact deletes it.** Before, delete removed only Mercury's own copy, which is usually a hard link to the file in your output folder. The file stayed in `~/mercury-artifacts` and no space came back. Now the file goes too when it's Mercury's own (its output folder, a generated image, video, sound or voice). A file Mercury wrote into one of your projects is never deleted; only Mercury's copy goes, and the button says so.
+- **Clean up, behind the ⋯ menu in Artifacts.** It shows the space artifacts take, counted the way the disk counts it, and has:
+  - **Clean up…:** space per kind with a bar, delete a whole kind, delete everything older than 7, 30 or 90 days, or delete all. After each action it says how much was freed.
+  - **Select…:** tick several cards (a batch counts as one) and delete them together.
+- A delete made in one Mercury process (the desktop app's server, Mercury Code, the CLI) is no longer undone when another process saves an older copy of the artifact list.
+
+### Optimus: screenshots per model
+- **Cheaper screenshots.** Optimus took every screenshot at 1280×800, whatever the model. Mercury now asks for the size each model is billed least for:
+  - Claude and OpenAI: 1024×640, about 30–35% fewer image tokens.
+  - Gemini: 768×480, about 75% fewer.
+  - Open vision models: 896×560.
+
+  Optimus 0.5.2 follows this, and the model still clicks in the picture it saw. Use `zoom` for a closer look at small text. Set `MERCURY_SCREENSHOT_BOX=1280x800` to keep one size for every model.
+- **Vision models on OpenAI-compatible APIs can see the screen.** Before, a screenshot reached the model only on Claude and the OpenAI API. OpenRouter, LiteLLM, Mercury Cloud, Ollama and LM Studio vision models got no image at all and used Optimus blind. The screenshot now follows the tool result as an image.
+- **Models that can't see images** no longer cause a screenshot to be taken. With Optimus 0.5.2, `look` and `act` say which window is in front instead.
+- Vision models named "…-vl" (`nemotron-…-vl`, `kimi-vl`, InternVL, MiniCPM-V and others) are recognised as seeing images.
+
+### Fixed
+- The device token from `/server token` showed cut off on a terminal. The menu that shows it counted the token as one screen row while the terminal wrapped it over several, so redrawing the menu overwrote part of it. It is now shown whole.
+
+### Video and music
+- **Mercury makes videos and music.** Ask in your own words, use the desktop chat box's **Create** menu (it replaces the Image button; image, video or music), or type `/video <the shot>` (`--portrait`, `--seconds 6`) or `/music <style, mood, lyrics>` (`--instrumental`, `--seconds 60`).
+  - They take a minute or a few. Mercury says it has started and posts the clip or song into the same chat when it's ready, even if you've moved on. The desktop app shows it as a new message with a player, Telegram and WhatsApp receive the file, and the terminal shows where it was saved.
+  - `/media jobs` lists what's being made. Stop also stops the video or song that chat is making.
+- **Where they come from:**
+  - **Video:** Gemini Omni (3–15 s with sound, from a Gemini key in Settings → Voice), or video models on gateways that serve the OpenAI Videos API (LiteLLM, Mercury Cloud once it adds it).
+  - **Music:** Gemini Lyria (clips and full songs), or ElevenLabs Music (from an ElevenLabs key).
+  - **Images too:** a Gemini key also brings Gemini's image models (Nano Banana).
+  - **Choosing:** pick defaults in Settings → AI → Media or with `/media video <n>` and `/media music <n>`.
+- **No dead ends.** When a provider says your account has no quota for a model (a free tier, no billing), Mercury skips that model in automatic picks for a day and uses the next one. `/media` marks it as skipped.
+- If Mercury restarts while a video or song is being made, that chat is told to ask again, instead of waiting forever.
+
+### Speech and voice notes
+- **Voice notes both ways in Telegram.** Send Mercury a voice note and it's transcribed and answered, as WhatsApp already did. Replies come back as a voice note too, as Telegram's real voice-note bubble, not an audio file. By default this happens when you sent a voice note; `/media replies always` speaks every reply, `/media replies off` never does. The text reply always comes as well. WhatsApp follows the same setting.
+- **`/say <text>`** speaks it, as a voice note in chat apps and as audio in the apps (add `--style "calm"`). Or just ask: "send me a voice note", "read this out loud", "narrate this".
+- **Choose what speaks and in which voice** in Settings → AI → **Media** (the Images page, renamed), or with `/media speech <number>` and `/media voice <name>`.
+  - The choices are OpenAI, Gemini, Deepgram, ElevenLabs, or a text-to-speech model found on your providers (OpenAI's `tts-1`/`gpt-4o-mini-tts`, LiteLLM, Mercury Cloud).
+  - A style ("warm", "excited") is followed by OpenAI's newer voices and Gemini.
+  - Reading replies aloud in the apps uses the same choice. With none set, everything follows Settings → Voice, as before.
+- Gemini and ElevenLabs audio is turned into a voice note with ffmpeg when it is installed. Without ffmpeg it is sent as an audio file.
+
+### Images
+- **Mercury makes real images.** Ask for a picture in your own words, use the new **Image** button in the Mercury Desktop chat box (square, landscape or portrait), or type `/image <what to draw>` in the terminal, Telegram, WhatsApp, Discord, Slack or Signal. An image model draws it; Mercury no longer writes an SVG when you asked for a picture (it still does when you ask for SVG, a diagram or a chart).
+- **Edit what you made.** "Make it blue", or send a photo with `/image make this a watercolor`: the earlier image (or yours) goes to the model as a reference.
+- **Found on your providers, automatically.**
+  - OpenAI (gpt-image, DALL·E), OpenRouter (Gemini image, FLUX, Seedream…), LiteLLM, AI/ML API, Atlas Cloud, Runcrate and Ollama image models are listed without any setup.
+  - Mercury Cloud models appear once its model list says which ones make images.
+  - Pick the default in Settings → AI → **Images**, or with `/media` (`/media image 2`, `/media image auto`). Automatic prefers the provider you chat with.
+  - If a model fails, the next one is tried.
+- **Delivered where you asked.**
+  - The desktop app shows the image in the reply and keeps it in Artifacts.
+  - Telegram, WhatsApp, Discord, Slack and Signal receive it as a photo.
+  - The terminal prints where it was saved: the chat's artifacts folder, or `~/mercury-artifacts/Images`.
+- Telegram no longer tries to send SVG or BMP files, or photos over 10 MB, as photos (Telegram rejects them); they go as files, and GIFs as animations.
+
+### Seeing Mercury work
+- **A reply reads top to bottom as it happens.** In Mercury Desktop the thinking, each tool it runs, the answer and any notes appear in order at the bottom of the chat, where you already are. Before, the activity sat above the answer and scrolled out of view as the answer grew.
+- **Tools show while they run.** Each tool appears when it starts, with a live timer, and gets a tick or an error with the real duration when it ends. Before, a tool appeared only after it had finished, so a long command showed nothing. Failures show their reason, and long runs fold earlier steps away.
+- **A status line under the running reply** always says what's happening ("Running npm test", "Thinking", "Calling anthropic") and how long the reply has taken. If the model sends nothing for 20 seconds it says it's waiting on the model, and after two minutes it suggests stopping and trying again.
+- **No more flicker.** The status no longer flips back to "Thinking" every few seconds. A reply no longer appears to end while Mercury keeps working, and notes like "Checking my work…" stay inside the reply.
+- **Thinking you can read.**
+  - **Claude:** Claude 5 models (Opus, Sonnet and Haiku 5.x, Fable) already think, but showed nothing; Mercury now asks for a readable summary.
+  - **ChatGPT:** ChatGPT sign-in models now send a reasoning summary.
+  - **Other servers:** Ollama, LM Studio, vLLM, LiteLLM and other OpenAI-compatible servers had their thinking dropped. It now shows.
+  - **While and after:** thinking stays open while it streams and folds to "Thought for 12s" when the model moves on. Reopened chats keep their thinking and steps.
+- **Choose how hard the model thinks, per chat** (#188). An Effort picker next to the model in the composer (Auto, Low, Medium, High, plus Off, Extra high and Max where the model takes them) sets the effort for that chat. "Model default" goes back to the model's own setting, which the picker's last item (or `/effort global <level>`) changes for every chat without its own. In the terminal and chat apps: `/effort`, `/effort high`, `/effort default`. `/status` shows the effort in use and where it comes from. On Claude 4.6–4.8, thinking turns on when a level is picked and stays off on Auto, as before.
+- **Effort on OpenAI-compatible servers.**
+  - **Ollama** is asked which models can think, and only those get a picker. gpt-oss gets Low/Medium/High; other thinking models get Off/High.
+  - **LiteLLM** reports each model's `supports_reasoning`.
+  - **OpenRouter** lists each model's supported parameters, and the effort is sent in its own `reasoning` field.
+  - **Other servers** (LM Studio, vLLM, custom endpoints) get a picker for known reasoning models: o-series, GPT-5, gpt-oss, Gemini 2.5+, Claude 4.6+ and Grok 3 mini.
+  - **If a server rejects the effort,** the request is resent without it and Mercury stops sending it to that model, instead of the reply failing.
+
+### Mercury Desktop
+- **See which chats are working.** A spinner in the sidebar marks a chat Mercury is working on, and a clock marks one waiting for a free slot. The status bar shows how many chats are running (for example 2/4), and clicking it lists them so you can open one.
+- **Choose how many chats run at once** in Settings → AI → Chats at once. Automatic picks a number from your computer's memory. A change applies right away.
+- **Stop clears what was waiting.** When Stop drops a chat's waiting messages, that chat stops showing "Waiting…" and tells you they weren't sent.
+- **What each reply cost.** Hover a reply to see its tokens, how much came from the prompt cache, its steps and how long it took. The tooltip shows the exact numbers and the model.
+- **Today's token split** (cached, new and output) appears in Settings → Budgets and in the status bar's token panel. A new "Prompt cache" setting lets cache hits count at their real price. The provider and source breakdowns now add up to the daily total.
+
+### Skills
+- **Six useful built-in skills.** Alongside `web-search`: `computer-health` (why the computer is slow or full, what's running, why a container is down), `tidy-files` (clean up and sort folders safely), `data-analysis` (spreadsheets and CSVs, computed and checked), `long-documents` (long PDFs and logs, with page references) and `documents` (make or convert Word, PDF and slides). None of them can act without asking. Each is installed once: delete one and it stays deleted.
+- **`tweet-notifier` and `screenshot` are no longer installed or reinstalled on start.** If your copy is exactly as Mercury installed it, it's moved to `~/.mercury/skills/_retired-<name>/` (nothing is deleted). A copy you edited stays as it is.
+- **No more guessing which skill you meant.** Mercury no longer matches your message to skills by similar words. The model picks a skill when its description fits, or you pick one with `#skill-name`.
+- **No default skill can run commands without asking.** The old `screenshot` skill let shell commands and file writes skip approval while it was in use.
+
+### Token usage
+- **Token usage is now counted correctly** (#296, thanks @parz1val-t). Mercury used to record only the last model call of each turn, under-reporting usage by about 6–12×. Every call is now counted, including the steps of a turn that ended early (a failed provider, a pause), so `dailyBudget` fills up and Token Saver kicks in much sooner than before. If you hit the budget earlier than expected, raise `tokens.dailyBudget`, or set `tokens.cachedWeight` (0–1, e.g. `0.1`) to count prompt-cache hits at a discount. `/budget` now shows today's cached, uncached and output split. Usage from past days is not recalculated.
+- **Each provider is billed for its own steps** when a turn moves from one provider to another.
+
+### Faster, cheaper requests
+- **Repeat turns hit the prompt cache.** The parts of Mercury's instructions that change between turns (what it knows about you, bot status, the clock, the folder) now come after the cached part. A new message reuses most of the previous request on Anthropic, OpenAI, DeepSeek, Gemini and others, instead of about 900 tokens.
+- **Long screen tasks cost far less.** Only the two newest screenshots are sent on each step. On Anthropic, each step reads the conversation so far from cache instead of paying for it again.
+- **No more "Starting" for minutes.** If a provider accepts a request and then sends nothing for 150 seconds, Mercury moves to the next provider. Set `MERCURY_FIRST_RESPONSE_TIMEOUT_MS` to change the wait.
+- **No more invented skill picks.** Mercury no longer stops to ask which skill you meant, or tells the model you chose a skill (often `web-search`) when you didn't. Matching skills are suggested and the model decides; `#skill-name` still picks one directly.
+- **Smaller requests.** The draw.io tools are only sent when you're working on a diagram.
+
+### Chats at the same time
+- **Mercury answers several chats at once.** A long research run or coding task in one chat no longer makes the terminal, Telegram, the desktop app or a scheduled task wait. Each chat still handles its own messages in order.
+- **Sized to your machine.** Up to 4 chats run at once, 3 under 8 GB of RAM, and 2 on Termux or under 4 GB. When memory runs short, new chats wait for a free slot, and if memory keeps growing the most recently started task stops while the rest carry on. Set `concurrency.maxTurns` in `mercury.yaml` (or `MERCURY_MAX_CONCURRENT_TURNS`) to choose the limit; `1` restores one chat at a time.
+- **Stop really stops.** A stopped task no longer comes back a few seconds later. Before, it could resume through an automatic retry after a tool had run, through a stall retry, or through the next message waiting in that chat. Stop also ends everything a running command started (`npm run build` and the like keep going no more) and drops the messages that chat had waiting. A stopped sub-agent stays stopped.
+- **No more "(no text response)".** When Mercury Code (or a sub-agent or bot) finishes by writing files or running commands without a closing message, you now get what it did: the files it wrote or edited, and each command with whether it succeeded.
+- **`/stop` stops the chat you're in.** Esc in the terminal, the Stop button in Mercury Desktop and `/stop` in Telegram stop that chat's task and the sub-agents it started. `/halt` still stops everything.
+
+### Providers
+- **Remote Ollama behind a username and password.** Set `username` and `password` on Ollama Local, OpenAI-compatible, LM Studio, LiteLLM or Atomic Chat in `mercury.yaml`. Mercury sends them as HTTP Basic auth for chat and for model lists, instead of a Bearer key.
+
+### MCP
+- MCP text resources can be enabled per server: list bounded catalog pages and read sourced documents or schemas, with separate URI permissions and exact unattended approvals. Resource reads still ask under Web Allow All; cancellation and reconnect never replay a read.
+
 ## 1.5.1 — speech uses the voice you chose, Gemini included
 
 ### Speech
@@ -56,7 +296,12 @@
 
 
 ### MCP servers (ADR-029)
-- **MCP servers: Mercury can use tools from Model Context Protocol servers.** Add a local server (`mercury mcp add files --stdio npx -- -y @modelcontextprotocol/server-filesystem ~/Documents`) or a remote one (`--http <url>`), allow the tools you want (`mercury mcp allow`), and the agent can call them next to its built-in tools. Every MCP call asks first in Ask Me mode, and Allow All does not cover MCP tools; only tools you list in `autoApprove` run without a prompt, and only those run in scheduled tasks. Secrets stay in `.env` as `${env:NAME}` references and are masked everywhere they could appear. Local servers get a minimal environment, never Mercury's API keys, and remote servers go through the SSRF guard. Check health with `mercury mcp test`, `mercury doctor --mcp`, `/mcp` in chat, or the new read-only **MCP** dashboard page. The agent's file tools now always ask before writing `mercury.yaml`, `permissions.yaml` or `.env`, even under Allow All. See [MCP Servers](https://mercuryagent.sh/docs/integrations/mcp) and ADR-029.
+- **MCP servers: Mercury can use tools from Model Context Protocol servers.** Add a local server (`mercury mcp add files --stdio npx -- -y @modelcontextprotocol/server-filesystem ~/Documents`) or a remote one (`--http <url>`), allow the tools you want (`mercury mcp allow`), and the agent can call them next to its built-in tools. Every MCP call asks first in Ask Me mode, and Allow All does not cover MCP tools; only tools you list in `autoApprove` run without a prompt, and only those run when nobody can be asked. Secrets stay in `.env` as `${env:NAME}` references and are masked everywhere they could appear. Local servers get a minimal environment, never Mercury's API keys, and remote servers go through the SSRF guard. Check health with `mercury mcp test`, `mercury doctor --mcp`, `/mcp` in chat, or the new read-only **MCP** dashboard page. The agent's file tools now always ask before writing `mercury.yaml`, `permissions.yaml` or `.env`, even under Allow All. See [MCP Servers](https://mercuryagent.sh/docs/integrations/mcp) and ADR-029.
+- **Allow All in the terminal, the web dashboard and Mercury Cloud no longer skips MCP prompts.** The terminal attached to the background service (what `mercury` opens), the dashboard and Cloud sessions share one web channel, and in Allow All it answered every approval with yes on its own. So MCP tool calls, shell commands that change MCP setup, and writes to `mercury.yaml`, `permissions.yaml` or `.env` ran without asking there. They now ask in every channel, as documented. Other prompts still follow the session's mode.
+- **MCP tools can show the model pictures.** Up to 4 images per call (PNG, JPEG, WebP or GIF) from an MCP server now reach the model as images, the same way plugin screenshots do, when the model and provider can take images in tool results (Anthropic, and OpenAI's Responses API). Elsewhere the model is told an image was left out. Chat history and logs keep only the text, never the base64.
+
+### Plugins
+- **Plugin images reach the model only where the provider can take them.** On Chat Completions providers (Mercury Cloud, GitHub Copilot, Ollama, LM Studio, LiteLLM, AI/ML API and other OpenAI-compatible endpoints) the AI SDK sent a plugin's screenshot as JSON text, so the model got megabytes of base64 instead of a picture. Images in tool results now go only to Anthropic and to OpenAI's Responses API; every other provider, Grok and ChatGPT Web included until they are verified, gets the usual "this model can't view images" note.
 
 ## 1.4.2 — search that finds things, and a research prompt that asks only when you mean it
 

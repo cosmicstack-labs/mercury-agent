@@ -1,4 +1,10 @@
 import { readFileSync, writeFileSync, existsSync, statSync, chmodSync } from 'node:fs';
+import { MediaJobs, setMediaJobs } from './media/jobs.js';
+import { mediaKeySources } from './media/key-sources.js';
+import { SpeechService, setSpeechService } from './media/speech.js';
+import { MediaService } from './media/service.js';
+import { setMediaService } from './media/runtime.js';
+import { outputRoot } from './artifacts/output-dir.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
@@ -46,6 +52,7 @@ import {
   clearSlackAccess,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
+import { autoTurnLimit, machineFacts, resolveTurnLimit } from './core/turn-governor.js';
 import type { ProviderName } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { devBuildLabel, isDevBuild } from './utils/dev-build.js';
@@ -97,9 +104,10 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
+import { withBaseUrl } from './providers/basic-auth.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setResearchControls as setWebResearchControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setTurnControls as setWebTurnControls, setResearchControls as setWebResearchControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
 import { validateApiKey, validateBaseUrl, validateModelName } from './providers/provider-meta.js';
 import { setFirstProviderHandler, setProvidersReload } from './web/api/providers.js';
 import { setCloudReload } from './web/api/cloud.js';
@@ -108,6 +116,7 @@ import { recordVoiceCalls } from './plugins/voice-calls.js';
 import { setChannelRuntime } from './web/api/channels.js';
 import { setSkillBuilder } from './web/api/system.js';
 import { setArtifactOutputDir, setArtifactSessions } from './web/api/artifacts.js';
+import { setSuggestionEngine } from './web/api/suggestions.js';
 import { artifactStore } from './artifacts/store.js';
 import { isWebAuthInitialized, setWebPassword, writeAttachToken, initWebAuth } from './web/auth.js';
 import { startLoopLagMonitor } from './utils/loop-lag.js';
@@ -207,6 +216,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'atlascloud', label: 'Atlas Cloud' },
   { key: 'runcrate', label: 'Runcrate' },
+  { key: 'cloudgpu', label: 'CloudGPU' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
   { key: 'atomicChat', label: 'Atomic Chat' },
@@ -469,10 +479,7 @@ async function promptOllamaLocalModelSelection(config: MercuryConfig, isReconfig
 
   console.log(chalk.dim('  Fetching Ollama Local models...'));
   try {
-    const catalog = await fetchProviderModelCatalog('ollamaLocal', {
-      ...existingConfig,
-      baseUrl,
-    });
+    const catalog = await fetchProviderModelCatalog('ollamaLocal', withBaseUrl(existingConfig, baseUrl));
     const model = await chooseProviderModel(
       'Ollama Local',
       catalog.recommendedModel,
@@ -527,10 +534,7 @@ async function promptLmStudioModelSelection(config: MercuryConfig, isReconfig: b
 
   console.log(chalk.dim('  Fetching LM Studio models...'));
   try {
-    const catalog = await fetchProviderModelCatalog('lmStudio', {
-      ...existingConfig,
-      baseUrl,
-    });
+    const catalog = await fetchProviderModelCatalog('lmStudio', withBaseUrl(existingConfig, baseUrl));
     const model = await chooseProviderModel(
       'LM Studio',
       catalog.recommendedModel,
@@ -586,10 +590,7 @@ async function promptAtomicChatModelSelection(config: MercuryConfig, isReconfig:
 
   console.log(chalk.dim('  Fetching Atomic Chat models...'));
   try {
-    const catalog = await fetchProviderModelCatalog('atomicChat', {
-      ...existingConfig,
-      baseUrl,
-    });
+    const catalog = await fetchProviderModelCatalog('atomicChat', withBaseUrl(existingConfig, baseUrl));
     const model = await chooseProviderModel(
       'Atomic Chat',
       catalog.recommendedModel,
@@ -638,8 +639,7 @@ async function promptOpenAICompatSetup(config: MercuryConfig, isReconfig: boolea
   console.log(chalk.dim('  Fetching models from server...'));
   try {
     const catalog = await fetchProviderModelCatalog('openaiCompat', {
-      ...existingConfig,
-      baseUrl,
+      ...withBaseUrl(existingConfig, baseUrl),
       apiKey: resolvedApiKey,
     });
     const model = await chooseProviderModel(
@@ -1513,6 +1513,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.runcrate.apiKey = result.apiKey;
           config.providers.runcrate.model = result.model;
           config.providers.runcrate.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'cloudgpu') {
+        const mask = isReconfig && config.providers.cloudgpu.apiKey ? ` [${maskKey(config.providers.cloudgpu.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'cloudgpu',
+          'CloudGPU',
+          chalk.white(`  CloudGPU API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.cloudgpu.apiKey = result.apiKey;
+          config.providers.cloudgpu.model = result.model;
+          config.providers.cloudgpu.enabled = true;
         }
         continue;
       }
@@ -2713,6 +2730,76 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     setGitHubToken(process.env.GITHUB_TOKEN);
   }
 
+  // Image generation (ADR-042): image models on the configured providers.
+  const media = new MediaService({
+    sources: () => [
+      ...providers.listAvailable().flatMap((name) => {
+        const p = providers.get(name);
+        return p ? [{ name, baseUrl: p.getBaseUrl(), endpoint: () => p.mediaEndpoint() }] : [];
+      }),
+      // Keys saved for voice (Settings → Voice) make media too: Gemini (images, Omni video, Lyria music), ElevenLabs (music).
+      ...mediaKeySources(),
+    ],
+    currentProvider: () => providers.getDefault()?.name,
+  });
+  setMediaService(media);
+  const mediaOutputDir = () => {
+    // A chat works in its own artifacts folder; the terminal's media go to Images/ there, not into a project.
+    const root = outputRoot(config.artifacts?.outputDir);
+    const cwd = capabilities.getCwd();
+    return cwd.startsWith(root) ? cwd : join(root, 'Images');
+  };
+  const deliverMedia = async (files: string[]): Promise<string> => {
+    const { channelId, channelType } = capabilities.getChannelContext();
+    if (channelType === 'web') return 'It is shown in the app.';
+    if (channelType === 'cli') return 'The terminal shows its path; it is also in Mercury Desktop → Artifacts.';
+    if (channelType === 'internal') return 'Saved.';
+    const channel = channels.get(channelType as Parameters<typeof channels.get>[0]);
+    if (!channel) return 'Saved (this chat can\'t receive files).';
+    for (const file of files) await channel.sendFile(file, channelId);
+    return 'Sent to this chat.';
+  };
+  const speech = new SpeechService(media.sourcesForSpeech());
+  setSpeechService(speech);
+  capabilities.setSpeechGeneration({
+    speech,
+    outputDir: mediaOutputDir,
+    inChatApp: () => !['web', 'cli', 'internal'].includes(capabilities.getChannelContext().channelType),
+    deliver: deliverMedia,
+  });
+  capabilities.setImageGeneration({ media, outputDir: mediaOutputDir, deliver: deliverMedia });
+  // Videos and songs take minutes: background jobs, posted to the chat when ready (phase 3).
+  // `agent` is created below; jobs only finish after it exists.
+  const jobs = new MediaJobs(
+    (job, note) => agentRef.current ? agentRef.current.deliverMediaJob(job, note) : Promise.resolve(),
+    undefined,
+    // The apps hold a placeholder for it until it arrives.
+    (job) => { if (job.chat.channelType === 'web') (channels.get('web') as WebChannel | undefined)?.sendMediaPending(job, job.chat.channelId); },
+  );
+  setMediaJobs(jobs);
+  const agentRef: { current: Agent | null } = { current: null };
+  capabilities.setMediaJobs({
+    media,
+    jobs,
+    outputDir: mediaOutputDir,
+    chat: () => {
+      const { channelId, channelType } = capabilities.getChannelContext();
+      const sessionId = agentRef.current?.currentChatKey();
+      return { channelType, channelId, ...(channelType === 'web' && sessionId ? { sessionId } : {}) };
+    },
+  });
+
+  // Mercury's own word to the owner in the current chat (a new schedule, ADR-044): never left to the model.
+  capabilities.setOwnerNotice((text) => {
+    const { channelId, channelType } = capabilities.getChannelContext();
+    const target = channelType === 'internal' ? channels.getNotificationChannel() : channels.get(channelType as Parameters<typeof channels.get>[0]);
+    if (!target) return;
+    if (target instanceof WebChannel) { target.sendProgressNote(text, channelId); return; }
+    const cli = target as unknown as { sendSystemNotice?: (t: string) => void };
+    if (channelType === 'cli' && typeof cli.sendSystemNotice === 'function') { cli.sendSystemNotice(text); return; }
+    void target.send(text, channelType === 'internal' ? undefined : channelId).catch(() => {});
+  });
+
   capabilities.registerAll();
 
   const mcpConfig = validateMcpConfig(config.mcp);
@@ -2722,6 +2809,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   // terminal attached to a live daemon must not start every stdio server twice.
   const mcpManager = daemonOwnsRuntime ? undefined : new McpManager(mcpConfig.servers, {
     gate: (request) => capabilities.permissions.checkMcpTool(request),
+    resourceGate: (request) => capabilities.permissions.checkMcpResource(request),
   });
   if (mcpManager) {
     capabilities.attachMcp(mcpManager);
@@ -2729,7 +2817,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     void mcpManager.connectAll();
   }
 
-  const agent = new Agent(
+  const agent = agentRef.current = new Agent(
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler, sessions,
     async ({ userMessage, assistantMessage, providerName }) => {
       const provider = providers.get(providerName) ?? providers.getDefault();
@@ -2738,8 +2826,12 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     },
   );
 
+  // Videos or songs cut off by the last restart: tell their chats (once the channels are up).
+  // Only the process that runs them: a terminal attached to the daemon must not touch the daemon's jobs.
+  if (!daemonOwnsRuntime) setTimeout(() => { void jobs.recover().catch(() => {}); }, 10_000).unref?.();
   agent.setSkillLoader(skillLoader);
   agent.terminalOnly = daemonOwnsRuntime;
+  setSuggestionEngine(agent.suggestions, sessions);
 
   if (supervisor) {
     agent.setSupervisor(supervisor);
@@ -2806,7 +2898,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     // label is updated inside the manager itself.
     const botCliChannel = channels.get('cli');
     bot.onBotActivity((ev) => {
-      if (botCliChannel instanceof CLIChannel) botCliChannel.setBotLiveActivity(ev.botId, ev);
+      if (botCliChannel instanceof CLIChannel && ev.kind !== 'queued') botCliChannel.setBotLiveActivity(ev.botId, { ...ev, kind: ev.kind });
       webChannel.broadcastBotActivity(ev);
     });
     if (config.bots?.webhookSecret) {
@@ -2890,8 +2982,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         })) ?? [],
       });
       bootCli.startStatusPoller(2000);
-      // Esc during a turn: the same stop routine `/stop` runs.
-      bootCli.setInterruptHandler(() => agent.stopAllWork('stopped'));
+      // Esc during a turn: the same stop routine `/stop` runs — for the
+      // terminal's own task; with none, whatever the terminal is showing.
+      bootCli.setInterruptHandler(() => agent.stopAllWork('stopped', agent.turnForChannel('cli') ? { channelId: 'cli' } : undefined));
       bootCli.mountTUI((inputText: string) => {
         bootCli.sendUserMessage(inputText);
       }, spotifyClient, () => {
@@ -3342,9 +3435,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             cloudClient!.sendStream({ conversationId, requestId, event: 'error', data: { message: 'Stop requires the session the task belongs to.' } });
             return;
           }
-          // Same semantics as the local /stop fast-path command: abort the
-          // foreground task, cancel its work-ledger entry, halt sub-agents.
-          const note = await agent.stopAllWork('stopped');
+          // Same semantics as the local /stop fast-path command: abort this
+          // session's task, cancel its work-ledger entry, halt its sub-agents.
+          const note = await agent.stopAllWork('stopped', { sessionId: suppliedSessionId });
           cloudClient!.sendStream({
             conversationId,
             sessionId: suppliedSessionId,
@@ -3552,9 +3645,23 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   // Settings-free skill builder: the default model writes a skill from the owner's description.
   setSkillBuilder({ provider: () => providers.getDefault(), tools: () => Object.keys(capabilities.getTools()).sort() });
   setCloudReload(() => agent.reloadProviders());
-  setWebStop(() => agent.stopAllWork('stopped'));
+  setWebStop((target) => agent.stopAllWork('stopped', target));
   setWebSessionBusy((sessionId) => agent.isBusyWith(sessionId));
   setWebQueueControls({ state: (id) => agent.queueStateFor(id), prioritize: (id) => agent.prioritize(id) });
+  setWebTurnControls({
+    running: () => agent.runningTurns().map((t) => ({
+      ...(t.sessionId ? { sessionId: t.sessionId } : {}),
+      channelType: t.channelType, channelId: t.channelId, startedAt: t.startedAt, activity: t.activity, steps: t.completedSteps,
+    })),
+    waiting: () => agent.waitingChats(),
+    live: (id) => agent.liveTurn(id),
+    limit: () => ({ limit: agent.governor.limit(), configured: config.concurrency?.maxTurns ?? 0, auto: autoTurnLimit(machineFacts()) }),
+    setLimit: (configured) => {
+      config.concurrency = { ...(config.concurrency ?? {}), maxTurns: configured };
+      saveConfig(config);
+      agent.setConcurrentTurnLimit(resolveTurnLimit(configured, machineFacts()));
+    },
+  });
   setWebResearchControls({
     state: (id) => agent.researchMode.stateFor(id),
     finish: (id) => agent.finishResearch(id),
@@ -3773,7 +3880,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     setWebSpotify(spotifyClient);
   }
 
-  capabilities.permissions.onAsk(async (prompt: string) => {
+  capabilities.permissions.onAsk(async (prompt: string, options) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
     const { channelId } = capabilities.getChannelContext();
     if (channelType === 'telegram' && tgChannel) {
@@ -3783,7 +3890,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       return (channels.get('signal') as SignalChannel).askPermission(prompt, channelId);
     }
     if (channelType === 'web' && webChannel) {
-      return webChannel.askPermission(prompt, channelId);
+      return webChannel.askPermission(prompt, channelId, options);
     }
     // Any other channel that can ask (plugin channels such as WhatsApp).
     const asking = channels.get(channelType as Parameters<typeof channels.get>[0]) as { askPermission?: (p: string, id?: string) => Promise<string> } | undefined;

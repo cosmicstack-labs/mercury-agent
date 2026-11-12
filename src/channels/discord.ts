@@ -1012,6 +1012,7 @@ export class DiscordChannel extends BaseChannel {
           { name: 'memory', description: 'View and manage second brain memory (admin only)' },
           { name: 'permissions', description: 'Change permission mode' },
           { name: 'models', description: 'List providers or switch AI model' },
+          { name: 'media', description: 'Image model in use, and choosing one' },
           { name: 'unpair', description: 'Reset all Discord DM access (admin only)' },
         ],
         guildId,

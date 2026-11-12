@@ -42,7 +42,14 @@ const SECRET_PATTERNS: RegExp[] = [
   // Bearer / authorization headers
   /\b(?:Bearer|token|authorization)\s+[:=]?\s*[A-Za-z0-9._~+/-]{24,}/gi,
   // Generic key=value secrets in config output
-  /\b(api[_-]?key|secret|password|access[_-]?token|refresh[_-]?token)\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{12,}/gi,
+  /\b(api[_-]?key|secret|access[_-]?token|refresh[_-]?token)\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{12,}/gi,
+];
+
+// Masked whole: a password has no recognizable prefix worth keeping, and a short
+// one would be mostly shown by maskMatch. Covers yaml/env values and Basic headers.
+const FULL_MASK_PATTERNS: RegExp[] = [
+  /(?<=\bpassword\s*[:=]\s*["']?)[^\s"']+/gi,
+  /(?<=\bBasic\s+)[A-Za-z0-9+/]{8,}={0,2}/g,
 ];
 
 const JSON_SECRET = /("(?:api[_-]?key|client[_-]?secret|secret|password|token|access[_-]?token|refresh[_-]?token|id[_-]?token|private[_-]?key)"\s*:\s*")((?:[^"\\]|\\.){8,})"/gi;
@@ -68,7 +75,10 @@ export function redactSecrets(text: string): string {
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, maskMatch);
   }
-  return out.replace(JSON_SECRET, (_match, key: string, value: string) => `${key}${maskMatch(value)}"`);
+  for (const pattern of FULL_MASK_PATTERNS) {
+    out = out.replace(pattern, '****');
+  }
+  return out.replace(JSON_SECRET, (_match, key: string, value: string) => `${key}${/password/i.test(key) ? '****' : maskMatch(value)}"`);
 }
 
 /**

@@ -31,3 +31,37 @@ web:
 The sign-in password is set during `mercury setup` (or `mercury web-reset-password`) and stored as a bcrypt hash, never in this file. The port can also come from `MERCURY_PORT`.
 
 Remote access (other devices, the IP allow-list, device limits) is managed with `/server` in the terminal or `mercury server`.
+
+## Chats at the same time
+
+Mercury answers several chats at once: your terminal, a Telegram chat, two desktop conversations and a scheduled task can all run together. Each chat still handles its own messages one after another, in order.
+
+How many run at once is set automatically from memory and platform: up to 4, 3 on machines under 8 GB of RAM, and 2 on Termux or under 4 GB. If memory gets tight, new chats wait for a free slot. If it keeps growing, Mercury stops the most recently started task and leaves the others running. To set the limit yourself, add this to `~/.mercury/mercury.yaml` and restart Mercury:
+
+```yaml
+concurrency:
+  maxTurns: 3   # 1 = one chat at a time; 0 = automatic (default); at most 16
+```
+
+Or set `MERCURY_MAX_CONCURRENT_TURNS`. `/stop` stops the chat you type it in, and `/halt` stops all of them.
+
+## Slow providers
+
+If a provider accepts a request but sends nothing back for 150 seconds, Mercury moves on to the next provider you have set up. To change the wait, set `MERCURY_FIRST_RESPONSE_TIMEOUT_MS` (in milliseconds; `0` turns it off). Raise it if you use a model that thinks for minutes before writing anything.
+
+## Optional tool discovery
+
+If you have many plugin or MCP tools, you can load their schemas only when the main agent needs them. Add this to `~/.mercury/mercury.yaml` and restart Mercury:
+
+```yaml
+toolDiscovery:
+  enabled: true
+```
+
+Or set `MERCURY_TOOL_DISCOVERY=true` when no YAML override is present. It is **off by default**. Built-in tools retain their existing exposure; bots and sub-agents keep their existing tool behavior.
+
+When enabled, the main agent gets a `discover_tools` tool instead of every optional integration schema. It searches tool names and descriptions by service or task keywords, then loads up to ten matching schemas for the next model step (five by default). An empty search browses the catalog with pagination; exact tool names can also be loaded. Loaded tools stay available through provider fallback and continuation in the current turn, then reset on the next user turn. Integrations connected during a model request become discoverable in the next request.
+
+Discovery does not approve an action. MCP allow/deny rules, plugin approvals, scheduled grants, sender roles, plan mode, and channels with no tool access still apply. Disabling a plugin also prevents execution of its previously loaded tool. Results and schemas from integrations remain untrusted content.
+
+This option trades an extra discovery step for smaller repeated tool schemas. It uses keyword search, so a model may need to rephrase a query or browse when its first query misses. Scripted real-agent tests verify search → schema loading → execution and permission denial. The synthetic schema benchmark in `src/core/tool-discovery.test.ts` measures JSON bytes; it does not estimate model tokens, latency, cost, or live-model task success. Try it with your own model and integrations before enabling it broadly; set `enabled: false` to restore eager exposure.

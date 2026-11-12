@@ -837,6 +837,37 @@ export class SecondBrainDB {
     return true;
   }
 
+  /** Every person's names: the canonical one and each alias, normalised. */
+  personNames(userKey: string): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    const rows = this.db.prepare(`
+      SELECT p.id AS id, p.canonical_name AS name FROM persons p WHERE p.user_key = ?
+      UNION SELECT a.person_id, a.normalized_alias FROM person_aliases a JOIN persons p ON p.id = a.person_id WHERE p.user_key = ?
+    `).all(userKey, userKey) as Array<{ id: string; name: string }>;
+    for (const r of rows) {
+      const list = out.get(r.id) ?? [];
+      if (r.name && !list.includes(r.name)) list.push(r.name);
+      out.set(r.id, list);
+    }
+    return out;
+  }
+
+  /**
+   * A consistent copy of the whole database (recent writes in the WAL
+   * included) at `path`. Never overwrites an existing file. False if it
+   * could not be made.
+   */
+  backupTo(path: string): boolean {
+    if (existsSync(path)) return true;
+    try {
+      this.db.exec(`VACUUM INTO '${path.replace(/'/g, "''")}'`);
+      return true;
+    } catch (err) {
+      logger.warn({ err, path }, 'Second Brain: backup failed');
+      return false;
+    }
+  }
+
   // ── The model check queue (new names only) ────────────────────────────────
 
   pendingPersonChecks(userKey: string, limit: number): Array<{ person_id: string; name: string; context: string | null }> {

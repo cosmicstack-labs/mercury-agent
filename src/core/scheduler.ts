@@ -1,5 +1,6 @@
 import cron from 'node-cron';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import type { MercuryConfig } from '../utils/config.js';
@@ -11,7 +12,20 @@ export interface ScheduledTask {
   cron: string;
   handler: () => Promise<void>;
   description: string;
+  timezone?: string;
 }
+
+export type ScheduledRunStatus = 'running' | 'completed' | 'failed' | 'interrupted' | 'skipped' | 'dispatched';
+export interface ScheduledRun {
+  id: string;
+  status: ScheduledRunStatus;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+}
+
+/** Queued main-agent work completes via finishRun; bots own a separate work ledger. */
+export type ScheduledDispatch = void | 'queued' | 'dispatched' | 'skipped';
 
 export interface ScheduledTaskManifest {
   id: string;
@@ -22,6 +36,12 @@ export interface ScheduledTaskManifest {
   delaySeconds?: number;
   executeAt?: string;
   createdAt: string;
+  /** IANA timezone for cron; omitted means the host timezone for legacy schedules. */
+  timezone?: string;
+  /** Overdue one-shots default to skip, preserving the legacy no-replay behavior. */
+  missedRunPolicy?: 'skip' | 'run_once';
+  paused?: boolean;
+  lastRun?: ScheduledRun;
   sourceChannelId?: string;
   sourceChannelType?: string;
   /** Set for Mercury Bot routines — the run routes to the bot, not the main agent. */
@@ -46,7 +66,7 @@ export function loadSchedules(): ScheduledTaskManifest[] {
   try {
     const raw = readFileSync(path, 'utf-8');
     const data = parseYaml(raw) as { tasks?: ScheduledTaskManifest[] };
-    return data.tasks || [];
+    return Array.isArray(data?.tasks) ? data.tasks : [];
   } catch (err) {
     logger.warn({ err }, 'Failed to load schedules.yaml');
     return [];
@@ -55,12 +75,36 @@ export function loadSchedules(): ScheduledTaskManifest[] {
 
 export function saveSchedules(tasks: ScheduledTaskManifest[]): void {
   const path = getSchedulesPath();
-  const dir = getMercuryHome();
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+  mkdirSync(getMercuryHome(), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  let fd: number | undefined;
+  try {
+    fd = openSync(temp, 'wx', 0o600);
+    writeFileSync(fd, stringifyYaml({ tasks }), 'utf-8');
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temp, path);
+    // Directory fsync is unavailable on some platforms (notably Windows).
+    try {
+      fd = openSync(getMercuryHome(), 'r');
+      fsyncSync(fd);
+    } catch { /* the file itself has already been synced */ }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    if (existsSync(temp)) unlinkSync(temp);
   }
-  writeFileSync(path, stringifyYaml({ tasks }), 'utf-8');
 }
+
+export function isValidScheduleTimezone(timezone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: timezone }).format();
+    return true;
+  } catch { return false; }
+}
+
+const MAX_TIMER_MS = 2 ** 31 - 1;
+const MAX_FINISHED_ONESHOTS = 100;
 
 export class Scheduler {
   private tasks: Map<string, cron.ScheduledTask> = new Map();
@@ -72,12 +116,12 @@ export class Scheduler {
 
   constructor(
     config: MercuryConfig,
-    private onScheduledTask?: (manifest: ScheduledTaskManifest) => Promise<void>,
+    private onScheduledTask?: (manifest: ScheduledTaskManifest, runId: string) => Promise<ScheduledDispatch>,
   ) {
     this.heartbeatIntervalMinutes = config.heartbeat.intervalMinutes;
   }
 
-  setOnScheduledTask(handler: (manifest: ScheduledTaskManifest) => Promise<void>): void {
+  setOnScheduledTask(handler: (manifest: ScheduledTaskManifest, runId: string) => Promise<ScheduledDispatch>): void {
     this.onScheduledTask = handler;
   }
 
@@ -108,56 +152,93 @@ export class Scheduler {
   }
 
   addTask(task: ScheduledTask): void {
-    if (this.tasks.has(task.id)) {
-      this.removeTask(task.id);
-    }
+    this.tasks.get(task.id)?.stop();
+    let running = false;
     const scheduled = cron.schedule(task.cron, async () => {
+      if (running) return; // Cron ticks never build an overlapping backlog.
+      running = true;
       try {
         await task.handler();
       } catch (err) {
         logger.error({ task: task.id, err }, 'Scheduled task error');
-      }
-    });
+      } finally { running = false; }
+    }, { timezone: task.timezone });
     this.tasks.set(task.id, scheduled);
-    logger.info({ id: task.id, cron: task.cron, desc: task.description }, 'Task scheduled');
+  }
+
+  private validate(manifest: ScheduledTaskManifest): void {
+    if (manifest.timezone !== undefined && !isValidScheduleTimezone(manifest.timezone)) {
+      throw new Error('Invalid schedule timezone');
+    }
+    if (manifest.missedRunPolicy !== undefined && !['skip', 'run_once'].includes(manifest.missedRunPolicy)) {
+      throw new Error('Invalid missed-run policy');
+    }
+    if (manifest.cron && cron.validate(manifest.cron) && manifest.delaySeconds === undefined) return;
+    if (!manifest.cron && Number.isFinite(manifest.delaySeconds) && manifest.delaySeconds! > 0
+      && (!manifest.executeAt || Number.isFinite(Date.parse(manifest.executeAt)))) return;
+    throw new Error('Manifest requires a valid cron or positive finite delaySeconds');
   }
 
   addPersistedTask(manifest: ScheduledTaskManifest): void {
-    this.taskManifests.set(manifest.id, manifest);
+    this.validate(manifest);
+    // Registering a bot's declared routine again must not erase interrupted state.
+    const previous = this.taskManifests.get(manifest.id);
+    const next = { ...manifest, lastRun: manifest.lastRun ?? previous?.lastRun, paused: manifest.paused ?? previous?.paused };
+    this.removeTask(manifest.id);
+    this.taskManifests.set(manifest.id, next);
+    if (next.paused) return;
     this.addTask({
-      id: manifest.id,
-      cron: manifest.cron!,
-      description: manifest.description,
-      handler: async () => {
-        logger.info({ task: manifest.id }, 'Scheduled task firing');
-        if (this.onScheduledTask) {
-          await this.onScheduledTask(manifest);
-        }
-      },
+      id: next.id, cron: next.cron!, description: next.description, timezone: next.timezone,
+      handler: () => this.runTask(next.id),
     });
   }
 
   addDelayedTask(manifest: ScheduledTaskManifest): void {
-    this.taskManifests.set(manifest.id, manifest);
-    const delayMs = (manifest.delaySeconds || 60) * 1000;
+    this.validate(manifest);
+    const next = { ...manifest, executeAt: manifest.executeAt ?? new Date(Date.now() + manifest.delaySeconds! * 1000).toISOString() };
+    this.removeTask(next.id);
+    this.taskManifests.set(next.id, next);
+    if (!next.paused && !next.lastRun) this.armDelayedTask(next);
+  }
 
-    const timer = setTimeout(async () => {
-      try {
-        logger.info({ task: manifest.id }, 'Delayed task firing');
-        if (this.onScheduledTask) {
-          await this.onScheduledTask(manifest);
-        }
-      } catch (err) {
-        logger.error({ task: manifest.id, err }, 'Delayed task error');
-      } finally {
-        this.delayedTasks.delete(manifest.id);
-        this.taskManifests.delete(manifest.id);
-        this.persistSchedules();
+  private armDelayedTask(manifest: ScheduledTaskManifest): void {
+    const remaining = Date.parse(manifest.executeAt!) - Date.now();
+    const timer = setTimeout(() => {
+      this.delayedTasks.delete(manifest.id);
+      if (this.taskManifests.get(manifest.id) !== manifest) return;
+      if (Date.parse(manifest.executeAt!) > Date.now()) {
+        this.armDelayedTask(manifest); // Node timers longer than ~24 days otherwise fire immediately.
+      } else {
+        void this.runTask(manifest.id).catch((err) => logger.error({ err, task: manifest.id }, 'Could not persist scheduled run'));
       }
-    }, delayMs);
-
+    }, Math.min(MAX_TIMER_MS, Math.max(0, remaining)));
     this.delayedTasks.set(manifest.id, timer);
-    logger.info({ id: manifest.id, delaySeconds: manifest.delaySeconds }, 'Delayed task scheduled');
+  }
+
+  private async runTask(id: string): Promise<void> {
+    const manifest = this.taskManifests.get(id);
+    if (!manifest || manifest.paused || manifest.lastRun?.status === 'running') return;
+    const runId = randomUUID();
+    manifest.lastRun = { id: runId, status: 'running', startedAt: new Date().toISOString() };
+    // Fail closed: no handler runs unless the intent is durable first.
+    this.persistSchedules();
+    try {
+      if (!this.onScheduledTask) throw new Error('Scheduled task handler unavailable');
+      const outcome = await this.onScheduledTask(manifest, runId);
+      if (outcome !== 'queued') this.finishRun(id, runId, outcome ?? 'completed');
+    } catch (err) {
+      this.finishRun(id, runId, 'failed', err instanceof Error ? err.message : String(err));
+      logger.error({ err, task: id }, 'Scheduled task failed; review before resuming');
+    }
+  }
+
+  /** A run identity prevents a late completion from changing an edited/deleted task. */
+  finishRun(id: string, runId: string, status: Exclude<ScheduledRunStatus, 'running'>, error?: string): void {
+    const manifest = this.taskManifests.get(id);
+    if (!manifest || manifest.lastRun?.id !== runId || manifest.lastRun.status !== 'running') return;
+    manifest.lastRun = { ...manifest.lastRun, status, finishedAt: new Date().toISOString(), ...(error ? { error: error.slice(0, 1000) } : {}) };
+    if (status === 'failed' || status === 'interrupted') manifest.paused = true;
+    this.persistSchedules();
   }
 
   removeTask(id: string): void {
@@ -182,45 +263,53 @@ export class Scheduler {
     return this.taskManifests.get(id) || null;
   }
 
-  replaceManifest(manifest: ScheduledTaskManifest): void {
-    this.removeTask(manifest.id);
-    if (manifest.delaySeconds) {
-      const delay = Math.max(1, manifest.delaySeconds);
-      manifest.delaySeconds = delay;
-      manifest.executeAt = new Date(Date.now() + delay * 1000).toISOString();
-      this.addDelayedTask(manifest);
-    } else if (manifest.cron) {
-      this.addPersistedTask(manifest);
-    } else {
-      throw new Error('Manifest requires cron or delaySeconds');
+  replaceManifest(manifest: ScheduledTaskManifest, resume = false): void {
+    this.validate(manifest);
+    if (this.getManifest(manifest.id)?.lastRun?.status === 'running') throw new Error('Cannot edit a running schedule');
+    const next = { ...manifest };
+    if (resume) {
+      next.paused = false;
+      next.lastRun = undefined;
+      if (next.delaySeconds) next.executeAt = new Date(Date.now() + next.delaySeconds * 1000).toISOString();
     }
+    this.removeTask(next.id);
+    if (next.cron) this.addPersistedTask(next);
+    else this.addDelayedTask(next);
   }
 
   restorePersistedTasks(): void {
     const persisted = loadSchedules();
-    for (const manifest of persisted) {
-      if (manifest.delaySeconds) {
-        const executeAt = manifest.executeAt ? new Date(manifest.executeAt) : null;
-        const now = Date.now();
-        if (executeAt && executeAt.getTime() > now) {
-          const remainingMs = executeAt.getTime() - now;
-          manifest.delaySeconds = Math.ceil(remainingMs / 1000);
-          this.addDelayedTask(manifest);
-        } else {
-          logger.info({ id: manifest.id }, 'Delayed task already expired, skipping');
+    for (const stored of persisted) {
+      const manifest = { ...stored };
+      try {
+        this.validate(manifest);
+        if (manifest.lastRun?.status === 'running') {
+          manifest.lastRun = { ...manifest.lastRun, status: 'interrupted', finishedAt: new Date().toISOString(), error: 'Mercury stopped before this run was confirmed. Check its effects before resuming.' };
+          manifest.paused = true;
         }
-      } else if (manifest.cron && cron.validate(manifest.cron)) {
-        this.addPersistedTask(manifest);
-      } else {
-        logger.warn({ id: manifest.id, cron: manifest.cron }, 'Skipping invalid task');
+        if (manifest.cron) {
+          this.addPersistedTask(manifest);
+        } else {
+          // Old schedules without executeAt cannot safely be inferred as pending.
+          const overdue = !manifest.executeAt || Date.parse(manifest.executeAt) <= Date.now();
+          if (!manifest.lastRun && overdue && (manifest.missedRunPolicy ?? 'skip') === 'skip') {
+            manifest.lastRun = { id: randomUUID(), status: 'skipped', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), error: 'Missed while Mercury was offline (policy: skip).' };
+          }
+          if (overdue && !manifest.lastRun) manifest.executeAt = new Date().toISOString();
+          this.addDelayedTask(manifest);
+        }
+      } catch (err) {
+        logger.warn({ err, id: manifest.id }, 'Skipping invalid task');
       }
     }
-    if (persisted.length > 0) {
-      logger.info({ count: persisted.length }, 'Restored persisted scheduled tasks');
-    }
+    if (persisted.length > 0) this.persistSchedules();
   }
 
   persistSchedules(): void {
+    // Keep active work and all unresolved failures. Bound successful/skipped one-shot history.
+    const finished = this.getManifests().filter((m) => !m.cron && m.lastRun && ['completed', 'skipped', 'dispatched'].includes(m.lastRun.status))
+      .sort((a, b) => (b.lastRun!.finishedAt ?? '').localeCompare(a.lastRun!.finishedAt ?? ''));
+    for (const manifest of finished.slice(MAX_FINISHED_ONESHOTS)) this.removeTask(manifest.id);
     saveSchedules(this.getManifests());
   }
 

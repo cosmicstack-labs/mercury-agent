@@ -1,10 +1,15 @@
-import { Bookmark, BookmarkMinus, Search, SquarePen, Trash2, X } from "lucide-react";
+import { Bookmark, BookmarkMinus, Clock, Pencil, Search, SquarePen, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
 import type { ChatThread } from "~/api/types";
-import { refreshThreads, setThreadSaved } from "~/app/events";
+import { refreshThreads, renameThread, setThreadSaved } from "~/app/events";
 import { useNotify } from "~/app/notify/store";
+import { turnStates, usePulse } from "~/app/pulse";
+import { Spinner } from "~/components/ui/bits";
+import { Dialog } from "~/components/ui/Dialog";
+import { Button } from "~/components/ui/Button";
+import { Input } from "~/components/ui/Input";
 
 const PAGE = 40;
 
@@ -31,8 +36,17 @@ export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchL
 }) {
   const unread = useNotify((s) => s.unread);
   const waiting = useNotify((s) => s.waiting);
+  // Chats run at once: which are working now, which wait for a free slot.
+  const turns = usePulse((s) => s.turns);
+  const { running, queued } = useMemo(() => turnStates(turns), [turns]);
   const [limit, setLimit] = useState(PAGE);
   const [query, setQuery] = useState("");
+  const [renameTarget, setRenameTarget] = useState<ChatThread | null>(null);
+  const [title, setTitle] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const normalizedTitle = title.replace(/\s+/g, " ").trim();
+  const titleLength = Array.from(normalizedTitle).length;
   const sentinel = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
@@ -63,6 +77,18 @@ export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchL
       if (activeId === t.id) onNew();
       void refreshThreads();
     } catch { /* keep */ }
+  }
+
+  async function saveTitle(event: React.FormEvent) {
+    event.preventDefault();
+    if (!renameTarget || saving || !titleLength || titleLength > 120) return;
+    setSaving(true);
+    setRenameError(null);
+    try {
+      await renameThread(renameTarget.id, normalizedTitle);
+      setRenameTarget(null);
+    } catch (error) { setRenameError(error instanceof Error ? error.message : "Could not save the chat name."); }
+    finally { setSaving(false); }
   }
 
   return (
@@ -118,9 +144,17 @@ export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchL
                     <span className={cx("min-w-0 flex-1 truncate", activeId === t.id ? "text-ink" : unread[t.id] ? "font-medium text-ink" : "text-ink2 group-hover:text-ink")}>{(t.title || "Untitled").replace(/^Code · /, "")}</span>
                     {t.id in waiting
                       ? <span className="h-2 w-2 shrink-0 rounded-full bg-amber" aria-label="Waiting for you" title="Waiting for your answer" />
-                      : unread[t.id] && activeId !== t.id ? <span className="h-2 w-2 shrink-0 rounded-full bg-blue" aria-label="New" title="Something new" /> : null}
+                      : running.has(t.id) ? <span className="shrink-0 text-accent" aria-label="Working" title="Working on it"><Spinner size={11} /></span>
+                        : queued.has(t.id) ? <span className="shrink-0 text-ink4" aria-label="In line" title="Waiting for a free slot"><Clock size={12} aria-hidden="true" /></span>
+                          : unread[t.id] && activeId !== t.id ? <span className="h-2 w-2 shrink-0 rounded-full bg-blue" aria-label="New" title="Something new" /> : null}
                   </span>
                   {renderMeta?.(t)}
+                </button>
+                <button
+                  onClick={() => { setRenameTarget(t); setTitle(t.title || ""); setRenameError(null); }}
+                  className={cx("mr-1 rounded p-1 text-ink4 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100", activeId === t.id ? "opacity-100" : "opacity-0")}
+                  aria-label={`Rename ${t.title || "chat"}`} title="Rename chat">
+                  <Pencil size={15} />
                 </button>
                 {savedOnly ? (
                   <button onClick={() => void setThreadSaved(t.id, false).catch(() => {})} className="mr-1 hidden rounded p-1 text-ink4 hover:text-ink group-hover:block" aria-label="Unsave" title="Unsave">
@@ -137,6 +171,20 @@ export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchL
         ))}
         <div ref={sentinel} className="h-px" aria-hidden="true" />
       </div>
+      <Dialog open={renameTarget !== null} onOpenChange={open => { if (!open && !saving) setRenameTarget(null); }} title="Rename chat" description="Choose a name up to 120 characters. Mercury will keep the name you choose.">
+        <form onSubmit={saveTitle} className="space-y-4">
+          <div className="space-y-2">
+            <label htmlFor="chat-title" className="text-sm font-medium">Chat name</label>
+            <Input id="chat-title" value={title} disabled={saving} autoFocus onFocus={event => event.target.select()} onChange={event => setTitle(event.target.value)} aria-describedby="chat-title-length" />
+            <p id="chat-title-length" className={cx("text-xs", titleLength > 120 ? "text-red" : "text-ink3")}>{titleLength}/120 characters</p>
+            {renameError && <p role="alert" className="text-sm text-red">{renameError}</p>}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" disabled={saving} onClick={() => setRenameTarget(null)}>Cancel</Button>
+            <Button type="submit" disabled={saving || !titleLength || titleLength > 120}>{saving ? "Saving…" : "Save"}</Button>
+          </div>
+        </form>
+      </Dialog>
     </aside>
   );
 }

@@ -1,8 +1,7 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import path from 'node:path';
-import { homedir } from 'node:os';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
-import { getHeapStatistics } from 'node:v8';
+import { homedir, tmpdir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
@@ -12,7 +11,7 @@ import type { ChannelRegistry } from '../channels/registry.js';
 import type { MercuryConfig, ProviderName } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
-import type { ScheduledTaskManifest } from './scheduler.js';
+import type { ScheduledDispatch, ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
 import { ArtifactCollector } from '../artifacts/collector.js';
 import { artifactStore, type Artifact } from '../artifacts/store.js';
@@ -24,15 +23,19 @@ import { setApprovalRoutes } from '../web/owner-gate.js';
 import { onDeviceNewLocation } from '../web/middleware.js';
 import { artifactKindLabel, artifactRef, formatBytes } from '../artifacts/ref.js';
 import { getMercuryHome } from '../utils/config.js';
+import { SuggestionEngine, type SuggestionContext } from '../learning/suggestions.js';
 import { createProvider } from '../providers/registry.js';
 import type { BaseProvider } from '../providers/base.js';
 import { Lifecycle } from './lifecycle.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { runInTurnScope } from '../utils/turn-scope.js';
+import { claimToolImagesForTurn } from '../capabilities/tool-images.js';
+import { TurnGovernor, machineFacts, resolveTurnLimit, type GovernedTurn } from './turn-governor.js';
 import { Scheduler } from './scheduler.js';
 import { ProgrammingMode, scopedProgrammingState, type ProgrammingSnapshot } from './programming-mode.js';
 import { ResearchMode } from './research-mode.js';
 import { SaverMode, NORMAL_HISTORY_WINDOW } from './saver-mode.js';
 import { BackgroundTaskManager } from './background-tasks.js';
-import { SkillBatcher } from '../skills/batcher.js';
 import type { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
 import { refinePersona } from '../bots/persona-template.js';
@@ -51,6 +54,7 @@ import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import { classifyResearchIntent } from './research-intent.js';
+import { settlePlan } from './plan.js';
 import { closePlan, coverageSection, parsePlanLines, reportBody, reportFileName, RESEARCH_PLAN_SYSTEM, RESEARCH_WRITE_SYSTEM, sourcesAppendix, unansweredFrom, type ResearchRun } from './research-run.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { fallbackSessionTitle, isThinOpening, normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
@@ -92,18 +96,20 @@ import { WorkLedger, type WorkEntry } from './work-ledger.js';
 import { MAX_PROVIDER_ATTEMPT_MS, MAX_AUTOMATIC_CONTINUATIONS, needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
 import { requiresFinalSend } from './response-delivery.js';
 import { updateCliProviderStatus } from './provider-status.js';
-import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
-import { compactConversation, memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
+import { compactConversation } from './memory-governor.js';
+import { writeCrashFlag } from './crash-flag.js';
+import { summarizeSilentTurn, type TurnAction } from './silent-turn.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
-import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
+import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt, chatNeedsCheck, chatCheckPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
-import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, toModelMessage, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult, detectRepetitionLoop } from './context-window.js';
-import { buildSystemPrompt as assembleSystemPrompt, budgetContext } from './system-prompt.js';
+import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, buildModelHistory, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult, detectRepetitionLoop } from './context-window.js';
+import { buildSystemPrompt as assembleSystemPrompt, buildSystemPromptParts, budgetContext, type SystemPromptInputs } from './system-prompt.js';
 import { buildStatusVerbPrompt, parseStatusVerbs, shouldRefreshStatusVerbs } from './status-verbs.js';
 import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
 import { setProgressPulse } from './progress-pulse.js';
 import { selectActiveTools } from './tool-exposure.js';
+import { ToolDiscovery } from './tool-discovery.js';
 import { createTaskSurface, type DoneInput } from './task-surface.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
 import { whatsNewText } from '../utils/whats-new.js';
@@ -111,7 +117,8 @@ import { handleBotsCommand as handleBotsCommandImpl } from './commands/bots-comm
 import { modelSeesImages, withAttachments } from './attachments.js';
 import { attachmentRefs } from '../web/api/uploads.js';
 import { AlertGate } from './alert-gate.js';
-import { setPluginImagesAllowed } from '../plugins/tool-bridge.js';
+import { setToolVision } from '../capabilities/tool-images.js';
+import { visionProfile } from './vision-profile.js';
 import { handleCallCommand } from '../plugins/call-schedule.js';
 import { handlePluginsCommand, tryPluginCommand, hasPluginDialog, answerPluginDialog } from '../plugins/commands.js';
 import { handleGoogleCommand } from '../google/chat-command.js';
@@ -134,6 +141,16 @@ const NOTE_COOLDOWN_MS = 3 * 60 * 1000;
 import { runReflection } from '../learning/reflection.js';
 import { createOwnerSectionsMemo } from '../learning/owner-brief.js';
 import type { ApplyResult } from '../memory/beliefs.js';
+import { TurnTrace, toolSummary } from './turn-trace.js';
+import { applyMediaIntent } from '../media/intent.js';
+import { getSpeechService, speakableText, voiceReplyWanted } from '../media/speech.js';
+import { loadMediaPrefs } from '../media/prefs.js';
+import { mediaJobs, type MediaJob } from '../media/jobs.js';
+import { claimEffortChat } from '../utils/model-prefs.js';
+import { claimExposureForTurn, exposure, noteTurnModel, type Exposure } from '../security/provenance.js';
+import { chatChoices, chatChoicesNote } from '../skills/chat-choices.js';
+import { noteMessageExposure } from '../security/message-exposure.js';
+import { TurnUsage, billingEntries, type SourceUsageTotals, type StepUsageLike, type TurnUsageTotals } from './turn-usage.js';
 
 /**
  * Step-aware text stream for the TUI. The SDK's textStream concatenates
@@ -158,9 +175,19 @@ export function stepAwareTextStream(
       // fired — every step's narration ran into the next as word salad
       // ("…in this project.Found the situation…") in the live tail.
       if (part.type === 'start-step' || part.type === 'step-start') {
+        // A new step's thinking is its own block on screen.
+        if (reasoningBuf) {
+          reasoningBuf = '';
+          onReasoning?.(null);
+        }
         if (!firstStep && sawTextInStep) yield '\n\n';
         firstStep = false;
         sawTextInStep = false;
+        continue;
+      }
+      if ((part.type === 'tool-call' || part.type === 'tool-input-start') && reasoningBuf) {
+        reasoningBuf = '';
+        onReasoning?.(null);
         continue;
       }
       if (part.type === 'reasoning-delta' && part.text) {
@@ -478,6 +505,8 @@ const HEARTBEAT_MAX_MS = 60000;
 const TYPING_REFRESH_MS = 4000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
 const MAX_STALL_MS = 4 * 60 * 1000;
+/** No chunk at all from a provider within this window → next provider (ADR-039). */
+const FIRST_RESPONSE_TIMEOUT_MS = 150_000;
 const MAX_SELF_CHECKS = 3; // max AI self-checks per request before hard-aborting
 
 /**
@@ -573,25 +602,228 @@ export function looksLikeCodingTask(text: string): boolean {
 }
 
 
-export class Agent {
+export type AbortReason = 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted';
+/** Aborts that come from the owner: final for the turn, never retried or resumed (ADR-038). */
+export type CancelReason = 'stopped' | 'halted' | 'backgrounded';
+
+/** What the chat is told when the owner ended its turn. */
+export function stopNoteFor(reason: CancelReason): string {
+  if (reason === 'backgrounded') return 'This task was moved to the background and will report back when it finishes.';
+  return `⏹ Task ${reason}. Its work entry was cancelled — a restart will not resume it. Send the request again or ask me to continue if you change your mind.`;
+}
+const CANCEL_REASONS: ReadonlySet<AbortReason> = new Set<AbortReason>(['stopped', 'halted', 'backgrounded']);
+
+/** One running turn (ADR-037): everything that used to be a single field on the agent. */
+interface TurnState {
+  readonly id: string;
+  readonly laneKey: string;
+  readonly message: ChannelMessage;
+  readonly startedAt: number;
+  abort: AbortController | null;
+  abortReason: AbortReason | null;
+  /**
+   * Set once the owner stops this turn (/stop, /halt, Stop button, /bg
+   * current) and never cleared (ADR-038). Internal recovery (stall retry,
+   * provider fallback, continuation rounds, durable retry) checks it and
+   * gives up; a new abort controller is born aborted.
+   */
+  cancelled: CancelReason | null;
+  activity: string;
+  completedStepCount: number;
+  stepNarrative: import('../utils/tool-label.js').NarrativeStep[];
+  workKey: string | null;
+  lastProgressAt: number;
+  lastTypingAt: number;
+  injectedBeliefIds: string[];
   readonly lifecycle: Lifecycle;
+  /** A desktop Code session's own programming mode; null = the global one. */
+  programming: ProgrammingMode | null;
+  /** Set once the turn has fully ended (late timers check it). */
+  done: boolean;
+  /** What the turn thought and ran, in order: kept with the reply (turn-trace.ts). */
+  readonly trace: TurnTrace;
+}
+
+/** The canonical session a message names, if any. */
+function sessionOf(msg: ChannelMessage): string | undefined {
+  return msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
+}
+
+/**
+ * The lane a message runs in: one turn at a time per lane, lanes run
+ * concurrently (ADR-037). A canonical session id when the message names
+ * one; else the channel's conversation. The terminal is one lane.
+ */
+export function laneKeyFor(msg: ChannelMessage): string {
+  if (msg.channelType === 'cli') return 'cli';
+  const sessionId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
+  if (sessionId) return `session:${sessionId}`;
+  if (msg.channelType === 'internal') {
+    const task = typeof msg.metadata?.scheduledTaskId === 'string' ? msg.metadata.scheduledTaskId : msg.channelId;
+    return `internal:${task}`;
+  }
+  const conversation = typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
+  return `${msg.channelType}:${conversation}`;
+}
+
+export class Agent {
+  private readonly globalLifecycle: Lifecycle;
   readonly scheduler: Scheduler;
   readonly capabilities: CapabilityRegistry;
   private running = false;
+  /** Messages waiting for their chat's lane (and a free slot), in order (ADR-037). */
   private messageQueue: Array<{ message: ChannelMessage; workKey?: string }> = [];
   private queuedWorkKeys = new Set<string>();
-  processing = false;
+  /**
+   * Concurrent sessions (ADR-037). One running turn per lane (a chat /
+   * session); different lanes run at once, as many as the governor admits.
+   * Each turn's state lives in its own TurnState, carried through
+   * everything the turn awaits by `turnStore`; the fields below
+   * (currentMessage, currentAbort, …) read and write the CALLING turn's.
+   */
+  private readonly activeTurns = new Map<string, TurnState>();
+  private readonly turnStore = new AsyncLocalStorage<TurnState>();
+  readonly governor: TurnGovernor;
+  private turnSeq = 0;
+  private lastAdmitRefusal: string | null = null;
+  /** Each chat's working directory between its turns (the terminal's is the registry-wide one). */
+  private readonly laneCwd = new Map<string, string>();
   telegramStreaming: boolean;
-  currentMessage: ChannelMessage | null = null;
-  currentAbort: AbortController | null = null;
-  currentAbortReason: 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted' | null = null;
-  private lastProgressAt = 0;
-  currentActivity = '';
-  completedStepCount = 0;
-  stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
+
+  /** The calling turn, if the calling code runs inside one. */
+  private turn(): TurnState | undefined {
+    return this.turnStore.getStore();
+  }
+
+  /**
+   * The chat the calling code runs in (the turn's lane: a desktop thread
+   * id, "cli", or a channel conversation); undefined outside a turn. Keys a
+   * chat's own settings, such as its effort override.
+   */
+  currentChatKey(): string | undefined {
+    return this.turn()?.laneKey;
+  }
+
+  /** Is any turn running? (Use isLaneBusy / turnForChannel for one chat.) */
+  get processing(): boolean {
+    return this.activeTurns.size > 0;
+  }
+
+  /** How many turns are running right now. */
+  get activeTurnCount(): number {
+    return this.activeTurns.size;
+  }
+
+  /** The calling turn's message (null outside a turn). */
+  get currentMessage(): ChannelMessage | null {
+    return this.turn()?.message ?? null;
+  }
+
+  get currentAbort(): AbortController | null {
+    return this.turn()?.abort ?? null;
+  }
+  set currentAbort(value: AbortController | null) {
+    const t = this.turn();
+    if (!t) return;
+    t.abort = value;
+    // A stopped turn never gets a live controller back: a retry that makes a
+    // fresh one (stall recovery) finds it already aborted.
+    if (t.cancelled && value && !value.signal.aborted) value.abort(new Error(`Task ${t.cancelled} by the user`));
+  }
+
+  /** The calling turn's abort reason; once the owner stopped it, always that (ADR-038). */
+  get currentAbortReason(): AbortReason | null {
+    const t = this.turn();
+    return t?.cancelled ?? t?.abortReason ?? null;
+  }
+  set currentAbortReason(value: AbortReason | null) {
+    const t = this.turn();
+    if (!t) return;
+    // Internal handling (stall, time limit, memory) may set or clear its own
+    // reason; it can never overwrite or clear the owner's stop.
+    if (t.cancelled) return;
+    t.abortReason = value;
+  }
+
+  /** Has the owner stopped the calling turn? Every retry/continue path asks this. */
+  private turnCancelled(): boolean {
+    return this.turn()?.cancelled != null;
+  }
+
+  private get lastProgressAt(): number {
+    return this.turn()?.lastProgressAt ?? 0;
+  }
+  private set lastProgressAt(value: number) {
+    const t = this.turn();
+    if (t) t.lastProgressAt = value;
+  }
+
+  get currentActivity(): string {
+    return this.turn()?.activity ?? '';
+  }
+  set currentActivity(value: string) {
+    const t = this.turn();
+    if (t) t.activity = value;
+  }
+
+  get completedStepCount(): number {
+    return this.turn()?.completedStepCount ?? 0;
+  }
+  set completedStepCount(value: number) {
+    const t = this.turn();
+    if (t) t.completedStepCount = value;
+  }
+
+  get stepNarrative(): import('../utils/tool-label.js').NarrativeStep[] {
+    return this.turn()?.stepNarrative ?? [];
+  }
+  set stepNarrative(value: import('../utils/tool-label.js').NarrativeStep[]) {
+    const t = this.turn();
+    if (t) t.stepNarrative = value;
+  }
+
+  private get currentWorkKey(): string | null {
+    return this.turn()?.workKey ?? null;
+  }
+  private set currentWorkKey(value: string | null) {
+    const t = this.turn();
+    if (t) t.workKey = value;
+  }
+
+  private get lastTypingAt(): number {
+    return this.turn()?.lastTypingAt ?? 0;
+  }
+  private set lastTypingAt(value: number) {
+    const t = this.turn();
+    if (t) t.lastTypingAt = value;
+  }
+
+  /** Beliefs injected into the calling turn's prompt (set by retrieveMemoryContext, ADR-026). */
+  get lastInjectedBeliefIds(): string[] {
+    return this.turn()?.injectedBeliefIds ?? [];
+  }
+  set lastInjectedBeliefIds(value: string[]) {
+    const t = this.turn();
+    if (t) t.injectedBeliefIds = value;
+  }
+
+  /**
+   * The calling turn's lifecycle (thinking → responding → idle); outside a
+   * turn, the runtime's own (birth, sleep, idle).
+   */
+  get lifecycle(): Lifecycle {
+    return this.turn()?.lifecycle ?? this.globalLifecycle;
+  }
+
+  /**
+   * The calling turn's programming mode: a desktop Code session's own one
+   * inside its turns, else the terminal's (global) one.
+   */
+  get programmingMode(): ProgrammingMode {
+    return this.turn()?.programming ?? this.globalProgrammingMode;
+  }
   supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   botManager?: import('../bots/bot-manager.js').BotManager;
-  private lastTypingAt = 0;
   /** Bot awaiting a persona from the next message (post-create setup flow). */
   /**
    * A terminal beside a live daemon (ADR-024): the daemon owns persisted
@@ -615,11 +847,11 @@ export class Agent {
   readonly lastNotedBeliefId = new Map<string, string>();
   /** When the last "☿ Noted" went out per channel: at most one every few minutes, so an upgrade's backlog never floods a chat. */
   private readonly lastNotedAt = new Map<string, number>();
-  readonly programmingMode: ProgrammingMode;
+  /** The terminal's programming mode (and every turn's that isn't a desktop Code session). */
+  readonly globalProgrammingMode: ProgrammingMode;
   readonly researchMode: ResearchMode;
   readonly saverMode: SaverMode;
   spotifyClient?: SpotifyClient;
-  private skillBatcher: SkillBatcher | null = null;
   private skillLoader?: SkillLoader;
   readonly backgroundTasks: BackgroundTaskManager;
   private titleGenerationInFlight = new Set<string>();
@@ -630,16 +862,13 @@ export class Agent {
   private statusVerbsDisabled = false;
   sessionSyncEnabled = false;
   private readonly workLedger: WorkLedger;
-  private currentWorkKey: string | null = null;
   private outboxRetryTimer: ReturnType<typeof setInterval> | null = null;
   private replayingOutbox = false;
-  /** Beliefs injected into the current turn's prompt (set by retrieveMemoryContext, ADR-026). */
-  lastInjectedBeliefIds: string[] = [];
   /** "About {owner}" / "How to work with {owner}", recomputed only when the beliefs change (keeps the prompt prefix cacheable). */
   private readonly ownerSections = createOwnerSectionsMemo();
   private reflectionInFlight: Promise<void> | null = null;
-  /** Beliefs the previous turn acted on; credited as "acted on without objection" once the next owner message shows no correction. */
-  private pendingActedOn: { ids: string[]; sessionId?: string } | null = null;
+  /** Per session: beliefs its previous turn acted on; credited as "acted on without objection" once the owner's next message there shows no correction. */
+  private readonly pendingActedOn = new Map<string, string[]>();
 
   constructor(
     public config: MercuryConfig,
@@ -656,13 +885,21 @@ export class Agent {
     public sessions: SessionRepository,
     private generateTitle?: (input: { userMessage: string; assistantMessage: string; providerName: string }) => Promise<string>,
   ) {
-    this.lifecycle = new Lifecycle();
+    this.globalLifecycle = new Lifecycle();
     this.scheduler = scheduler;
     this.capabilities = capabilities;
+    this.capabilities.setSessionRepository(sessions);
     this.installProgressPulse();
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
-    this.programmingMode = new ProgrammingMode();
+    this.globalProgrammingMode = new ProgrammingMode();
     this.researchMode = new ResearchMode();
+    // Research runs are per chat: inside a turn, "the" run is that chat's.
+    this.researchMode.setScope(() => this.turn()?.message.channelId ?? null);
+    this.governor = new TurnGovernor({
+      limit: resolveTurnLimit(config.concurrency?.maxTurns, machineFacts()),
+      onExit: (heapUsed) => this.exitForMemory(heapUsed),
+    });
+    logger.info({ maxTurns: this.governor.limit() }, 'Concurrent turns: limit set');
     this.saverMode = new SaverMode(config);
     this.wireResearchModeToCapabilities();
     this.backgroundTasks = new BackgroundTaskManager();
@@ -672,7 +909,7 @@ export class Agent {
       this.notifyBackgroundTaskComplete(task);
     });
 
-    this.scheduler.setOnScheduledTask(async (manifest) => this.handleScheduledTask(manifest));
+    this.scheduler.setOnScheduledTask(async (manifest, runId) => this.handleScheduledTask(manifest, runId));
 
     this.channels.onIncomingMessage((msg) => this.enqueueMessage(msg));
     this.wireOwnerApprovals();
@@ -694,9 +931,6 @@ export class Agent {
 
   setSkillLoader(skillLoader: SkillLoader): void {
     this.skillLoader = skillLoader;
-    if (this.supervisor) {
-      this.skillBatcher = new SkillBatcher(this.supervisor, this.backgroundTasks);
-    }
   }
 
   /** Wire the Mercury Bots runtime (see bots/bot-manager.ts, BOTS-ARCHITECTURE.md). */
@@ -798,9 +1032,6 @@ export class Agent {
 
   setSupervisor(supervisor: import('../core/supervisor.js').SubAgentSupervisor): void {
     this.supervisor = supervisor;
-    if (this.skillLoader) {
-      this.skillBatcher = new SkillBatcher(supervisor, this.backgroundTasks);
-    }
     supervisor.setSaverMode(this.saverMode);
     supervisor.setNotifyCallback(async (channelType, channelId, message) => {
       const channel = this.channels.get(channelType as any);
@@ -970,18 +1201,22 @@ export class Agent {
       }
     }
 
-    // /stop is asynchronous: the abort lands, the turn unwinds, THEN
-    // processing clears. A command typed in that window used to be answered
+    // /stop is asynchronous: the abort lands, the turn unwinds, THEN the
+    // chat's lane frees. A command typed in that window used to be answered
     // "Agent is busy" — wait for the stop to finish and route it normally.
-    if (this.processing && trimmed.startsWith('/') && this.currentAbortReason && !msg.metadata?.waitedForStop) {
-      void this.waitUntilIdle(5000).then(() => {
+    const lane = laneKeyFor(msg);
+    const laneTurn = this.activeTurns.get(lane);
+    if (laneTurn && trimmed.startsWith('/') && laneTurn.abortReason && !msg.metadata?.waitedForStop) {
+      void this.waitUntilLaneIdle(lane, 5000).then(() => {
         msg.metadata = { ...msg.metadata, waitedForStop: true };
         this.enqueueMessage(msg);
       });
       return;
     }
 
-    if (this.processing && trimmed.startsWith('/')) {
+    // A command for a chat that is busy (or while every slot is taken) is
+    // answered on the fast path instead of waiting behind long work.
+    if (trimmed.startsWith('/') && (laneTurn || !this.governor.canAdmit(this.activeTurns.size).ok)) {
       this.handleFastPathCommand(msg).catch((err) => {
         logger.error({ err, content: trimmed.slice(0, 50) }, 'Fast-path command failed');
       });
@@ -992,7 +1227,7 @@ export class Agent {
     if (!trimmed.startsWith('/')) {
       msg.metadata = {
         ...msg.metadata,
-        workCwd: typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : this.capabilities.getCwd(),
+        workCwd: typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : this.cwdForLane(lane),
       };
       const accepted = this.workLedger.accept(msg);
       workKey = accepted.entry.key;
@@ -1169,36 +1404,172 @@ export class Agent {
   }
 
   /**
-   * Tell every waiting desktop/web chat where it stands: its place in line,
-   * and the turn running now (which chat, and what it's doing). Without this
-   * a waiting chat showed "Thinking" for a turn that hadn't started.
+   * What a waiting message waits for (ADR-037): its own chat's running turn
+   * when there is one, else (every slot taken) the oldest running turn.
    */
-  private announceQueue(running: ChannelMessage | null = this.processing ? this.currentMessage : null): void {
-    if (!running) return;
+  private blockingTurnFor(msg: ChannelMessage): TurnState | undefined {
+    const own = this.activeTurns.get(laneKeyFor(msg));
+    if (own) return own;
+    let oldest: TurnState | undefined;
+    for (const t of this.activeTurns.values()) if (!oldest || t.startedAt < oldest.startedAt) oldest = t;
+    return oldest;
+  }
+
+  private describeTurn(t: TurnState): string {
+    return (t.activity || t.message.content).replace(/^\W+/u, '').replace(/\s+/g, ' ').trim().slice(0, 90) || 'another task';
+  }
+
+  /**
+   * A waiting message's place in line: the messages ahead of it that start
+   * before it — earlier ones in its own chat, and earlier ones from chats
+   * that are free (they take the next free slot first). Messages of other
+   * busy chats wait for their own chat, not for a slot, so they don't count.
+   */
+  private positionOf(index: number): number {
+    const lane = laneKeyFor(this.messageQueue[index].message);
+    let ahead = 0;
+    for (let i = 0; i < index; i++) {
+      const other = laneKeyFor(this.messageQueue[i].message);
+      if (other === lane || !this.activeTurns.has(other)) ahead++;
+    }
+    return ahead + 1;
+  }
+
+  /**
+   * Tell every waiting desktop/web chat where it stands: its place in its
+   * chat's line, and the turn it waits for (which chat, and what it's
+   * doing). Without this a waiting chat showed "Thinking" for a turn that
+   * hadn't started.
+   */
+  private announceQueue(): void {
+    if (this.activeTurns.size === 0) return;
     const web = this.channels.get('web') as unknown as { sendQueued?: (t: string, d: { position: number; busyWith?: string; busySessionId?: string }) => void } | undefined;
     if (!web?.sendQueued) return;
-    const busyWith = (this.currentActivity && this.currentMessage === running ? this.currentActivity : running.content)
-      .replace(/^\W+/u, '').replace(/\s+/g, ' ').trim().slice(0, 90) || 'another task';
-    const busySessionId = running.channelType === 'web' ? running.channelId : undefined;
     this.messageQueue.forEach((item, i) => {
       const m = item.message;
-      if (m.channelType !== 'web' || m.channelId === busySessionId) return;
-      web.sendQueued!(m.channelId, { position: i + 1, busyWith, busySessionId });
+      if (m.channelType !== 'web') return;
+      const blocking = this.blockingTurnFor(m);
+      if (!blocking) return;
+      // Its own chat is running: that chat already shows the running turn.
+      if (blocking.laneKey === laneKeyFor(m)) return;
+      const busySessionId = blocking.message.channelType === 'web' ? blocking.message.channelId : undefined;
+      web.sendQueued!(m.channelId, { position: this.positionOf(i), busyWith: this.describeTurn(blocking), busySessionId });
     });
   }
 
   /** Where one chat's work stands, for a chat opened while it waits. */
   queueStateFor(channelId: string): { state: 'running' | 'queued' | 'none'; position?: number; busyWith?: string; busySessionId?: string } {
-    if (this.processing && this.currentMessage?.channelId === channelId) return { state: 'running' };
+    if (this.turnForChannel(channelId)) return { state: 'running' };
     const at = this.messageQueue.findIndex((i) => i.message.channelId === channelId);
     if (at === -1) return { state: 'none' };
-    const running = this.processing ? this.currentMessage : null;
+    const blocking = this.blockingTurnFor(this.messageQueue[at].message);
     return {
       state: 'queued',
-      position: at + 1,
-      busyWith: running ? (this.currentActivity || running.content).replace(/\s+/g, ' ').trim().slice(0, 90) : undefined,
-      busySessionId: running?.channelType === 'web' ? running.channelId : undefined,
+      position: this.positionOf(at),
+      busyWith: blocking ? this.describeTurn(blocking) : undefined,
+      busySessionId: blocking?.message.channelType === 'web' ? blocking.message.channelId : undefined,
     };
+  }
+
+  /** The running turn for this chat (by channel id), if any. */
+  turnForChannel(channelId: string): TurnState | undefined {
+    for (const t of this.activeTurns.values()) if (t.message.channelId === channelId) return t;
+    return undefined;
+  }
+
+  /** The running turn for a canonical session (a cloud request's channel id is per request; its session is not). */
+  turnForSession(sessionId: string): TurnState | undefined {
+    for (const t of this.activeTurns.values()) {
+      const of = t.message.sessionId ?? (typeof t.message.metadata?.sessionId === 'string' ? t.message.metadata.sessionId : undefined);
+      if (of === sessionId) return t;
+    }
+    return undefined;
+  }
+
+  /** Is this message's chat running a turn right now? */
+  isLaneBusy(msg: ChannelMessage): boolean {
+    return this.activeTurns.has(laneKeyFor(msg));
+  }
+
+  /** The running turn of this message's chat, if any (fast-path commands act on it). */
+  turnFor(msg: ChannelMessage): TurnState | undefined {
+    return this.activeTurns.get(laneKeyFor(msg));
+  }
+
+  /** Every running turn, oldest first: what each chat is doing (for /progress, status screens). */
+  /**
+   * The reply a chat is working on right now, as far as it got: thinking and
+   * tool steps (with what still runs), and what it is doing. Undefined when
+   * the chat is idle. Lets a screen that left the chat and came back show
+   * the turn again instead of a blank.
+   */
+  liveTurn(id: string): { startedAt: number; activity: string; trace: import('./turn-trace.js').StoredTrace } | undefined {
+    const turn = this.turnForSession(id) ?? this.turnForChannel(id);
+    if (!turn || turn.done) return undefined;
+    return { startedAt: turn.startedAt, activity: turn.activity, trace: turn.trace.peek(turn.startedAt) };
+  }
+
+  runningTurns(): Array<{ laneKey: string; channelType: string; channelId: string; sessionId?: string; content: string; activity: string; startedAt: number; completedSteps: number; narrative: import('../utils/tool-label.js').NarrativeStep[] }> {
+    return [...this.activeTurns.values()]
+      .sort((a, b) => a.startedAt - b.startedAt)
+      .map((t) => ({
+        laneKey: t.laneKey,
+        channelType: t.message.channelType,
+        channelId: t.message.channelId,
+        ...(sessionOf(t.message) ? { sessionId: sessionOf(t.message) } : {}),
+        content: t.message.content,
+        activity: t.activity,
+        startedAt: t.startedAt,
+        completedSteps: t.completedStepCount,
+        narrative: t.stepNarrative,
+      }));
+  }
+
+  /**
+   * Chats with messages waiting (for their own chat or a free slot), each
+   * once, with how many messages wait and the place of its first one.
+   */
+  waitingChats(): Array<{ channelType: string; channelId: string; sessionId?: string; waiting: number; position: number }> {
+    const out = new Map<string, { channelType: string; channelId: string; sessionId?: string; waiting: number; position: number }>();
+    this.messageQueue.forEach((item, i) => {
+      const lane = laneKeyFor(item.message);
+      const known = out.get(lane);
+      if (known) { known.waiting++; return; }
+      const sessionId = sessionOf(item.message);
+      out.set(lane, { channelType: item.message.channelType, channelId: item.message.channelId, ...(sessionId ? { sessionId } : {}), waiting: 1, position: this.positionOf(i) });
+    });
+    return [...out.values()];
+  }
+
+  /** Change how many chats run at once, live (ADR-037); waiting chats start if there is room now. */
+  setConcurrentTurnLimit(limit: number): void {
+    this.governor.setLimit(limit);
+    this.processQueue();
+  }
+
+  /**
+   * Abort one running turn. Its work entry is cancelled for a user stop (a
+   * restart never resumes it); a background hand-off keeps it. Returns
+   * false when it was already stopping.
+   */
+  abortTurn(t: TurnState, reason: AbortReason, ledgerNote?: string): boolean {
+    if (t.done) return false;
+    if (CANCEL_REASONS.has(reason)) {
+      // The owner's stop is recorded even when the controller is already
+      // aborted (a stall retry in flight): that retry must not carry on.
+      const first = t.cancelled === null;
+      if (first) t.cancelled = reason as CancelReason;
+      t.abortReason = reason;
+      if (t.abort && !t.abort.signal.aborted) t.abort.abort(new Error(`Task ${reason} by the user`));
+      if (ledgerNote && t.workKey) {
+        try { this.workLedger.markCancelled(t.workKey, ledgerNote); } catch { /* entry may not exist */ }
+      }
+      return first;
+    }
+    if (!t.abort || t.abort.signal.aborted) return false;
+    t.abortReason = reason;
+    t.abort.abort();
+    return true;
   }
 
   /** "Do mine first": this chat's waiting messages move to the front of the line (in their order). */
@@ -1218,20 +1589,22 @@ export class Agent {
 
   isBusyWith(sessionId: string): boolean {
     const of = (m: ChannelMessage | null | undefined) => m?.sessionId ?? (typeof m?.metadata?.sessionId === 'string' ? m.metadata.sessionId : undefined);
-    if (this.processing && of(this.currentMessage) === sessionId) return true;
+    for (const t of this.activeTurns.values()) if (of(t.message) === sessionId) return true;
     return this.messageQueue.some((i) => of(i.message) === sessionId);
   }
 
   /**
    * Where work for one channel stands: running now, waiting in the queue,
-   * or neither; and what Mercury is busy with when it's something else.
+   * or neither; and, when it waits, what it waits for.
    */
   workStateFor(channelId: string): { state: 'running' | 'queued' | 'none'; busyWith?: string } {
-    const current = this.currentMessage?.channelId;
-    if (this.processing && current === channelId) return { state: 'running' };
-    const busyWith = this.processing && current ? (this.currentActivity || 'another task').replace(/^\W+/u, '').trim() || 'another task' : undefined;
-    if (this.messageQueue.some((i) => i.message.channelId === channelId)) return { state: 'queued', busyWith };
-    return { state: 'none', busyWith };
+    if (this.turnForChannel(channelId)) return { state: 'running' };
+    const waiting = this.messageQueue.find((i) => i.message.channelId === channelId);
+    if (waiting) {
+      const blocking = this.blockingTurnFor(waiting.message);
+      return { state: 'queued', busyWith: blocking ? this.describeTurn(blocking) : undefined };
+    }
+    return { state: 'none' };
   }
 
   private async handleDuplicateWork(entry: WorkEntry): Promise<void> {
@@ -1362,13 +1735,15 @@ export class Agent {
    * what was read. False when there's no research running in that chat.
    */
   finishResearch(sessionId: string): { ok: boolean; reason?: string } {
-    const run = this.researchMode.currentRun();
-    if (!run || run.sessionId !== sessionId || run.outcome !== 'running') return { ok: false, reason: 'No research is running in this chat.' };
+    const run = this.researchMode.activeRunFor(sessionId);
+    if (!run || run.outcome !== 'running') return { ok: false, reason: 'No research is running in this chat.' };
     if (run.readCount() === 0) return { ok: false, reason: 'Nothing has been read yet, so there is nothing to write from. Stop it instead, or let it read a few sources.' };
-    if (!this.currentAbort || this.currentAbort.signal.aborted) return { ok: false, reason: 'The research is already finishing.' };
+    const turn = this.turnForChannel(sessionId);
+    if (!turn?.abort || turn.abort.signal.aborted) return { ok: false, reason: 'The research is already finishing.' };
     run.finishRequested = true;
-    this.currentAbortReason = 'stopped';
-    this.currentAbort.abort();
+    // Not a cancellation: the turn goes on to write the report from what it read.
+    turn.abortReason = 'stopped';
+    turn.abort.abort();
     return { ok: true };
   }
 
@@ -1434,34 +1809,150 @@ export class Agent {
    * command and the Cloud `task.stop` control so a remote stop behaves
    * exactly like typing /stop locally. Returns the confirmation note.
    */
-  async stopAllWork(reason: 'stopped' | 'halted'): Promise<string> {
-    if (this.currentAbort && !this.currentAbort.signal.aborted) {
-      this.currentAbortReason = reason;
-      this.currentAbort.abort();
-    }
+  /**
+   * Stop work. With a `channelId` (a `/stop` typed in a chat, the app's
+   * Stop button in one conversation, Esc in the terminal) only that chat's
+   * running turn and the sub-agents it started stop — other chats keep
+   * going (ADR-037). Without one (`/halt`, or a caller that names no chat)
+   * every running turn and every sub-agent stops.
+   */
+  async stopAllWork(reason: 'stopped' | 'halted', target?: { channelId?: string; sessionId?: string; keepQueued?: boolean }): Promise<string> {
     // The user deliberately killed this work — cancel its ledger entry so
     // a restart never tries to resume it. (Only real crashes auto-resume.)
-    if (this.currentWorkKey) {
-      const label = reason === 'stopped' ? 'Stopped by the user (/stop).' : 'Halted by the user (/halt).';
-      try { this.workLedger.markCancelled(this.currentWorkKey, label); } catch { /* entry may not exist */ }
+    const label = reason === 'stopped' ? 'Stopped by the user (/stop).' : 'Halted by the user (/halt).';
+    // A stop typed in an idle chat runs as that chat's own turn: never abort the command itself.
+    const caller = this.turn();
+    if (target && (target.channelId || target.sessionId)) {
+      let turn = (target.channelId ? this.turnForChannel(target.channelId) : undefined)
+        ?? (target.sessionId ? this.turnForSession(target.sessionId) : undefined);
+      if (turn && caller && turn.id === caller.id) turn = undefined;
+      if (turn) this.abortTurn(turn, reason, label);
+      // Messages this chat had waiting go too (unless the caller only wants
+      // the running turn gone, e.g. "do mine first"): a stop that let the
+      // next queued message start would look like the task resuming.
+      const dropped = target.keepQueued ? 0 : this.dropWaiting((m) =>
+        (target.channelId !== undefined && m.channelId === target.channelId)
+        || (target.sessionId !== undefined && (m.sessionId ?? m.metadata?.sessionId) === target.sessionId)
+        || (turn !== undefined && laneKeyFor(m) === turn.laneKey), label);
+      const channelId = turn?.message.channelId ?? target.channelId;
+      const halted = this.supervisor && channelId ? await this.supervisor.haltForChannel(channelId) : [];
+      // Videos and songs this chat is still making stop too (ADR-042).
+      const jobsStopped = channelId ? mediaJobs()?.stop({ channelId }) ?? 0 : 0;
+      const others = [...this.activeTurns.values()]
+        .filter((t) => t !== turn && t.id !== caller?.id && !t.abort?.signal.aborted).length;
+      // Nothing else running anywhere: the full stop it always was (locks
+      // released, task board cleared), exactly as with one chat.
+      let cleared = false;
+      if (reason === 'stopped' && others === 0 && this.supervisor
+        && this.supervisor.getActiveAgents().every((a) => halted.includes(a.id) || (a.status !== 'running' && a.status !== 'pending'))) {
+        this.supervisor.clearTaskBoard();
+        cleared = true;
+      }
+      const tail = cleared ? ' Locks released, task board cleared.' : '';
+      const elsewhere = others > 0 ? ` ${others} task${others === 1 ? '' : 's'} in other chats keep${others === 1 ? 's' : ''} running — /halt stops everything.` : '';
+      if (!turn && halted.length === 0 && dropped === 0 && jobsStopped === 0) {
+        return cleared ? `Nothing was running.${tail}` : `Nothing is running in this chat.${elsewhere}`;
+      }
+      const parts = [
+        turn ? 'Stopped this chat\'s task' : null,
+        halted.length ? `halted ${halted.length} sub-agent${halted.length === 1 ? '' : 's'} it started` : null,
+        dropped ? `dropped ${dropped} waiting message${dropped === 1 ? '' : 's'}` : null,
+        jobsStopped ? `stopped ${jobsStopped} video or song being made` : null,
+      ].filter(Boolean) as string[];
+      parts[0] = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+      return `${parts.join(', ')}.${tail}${elsewhere}`;
     }
+    this.dropWaiting(() => true, label);
+    mediaJobs()?.stop();
+    let stoppedTurns = 0;
+    for (const turn of this.activeTurns.values()) {
+      if (caller && turn.id === caller.id) continue;
+      if (this.abortTurn(turn, reason, label)) stoppedTurns++;
+    }
+    const turnsNote = stoppedTurns > 1 ? `${stoppedTurns} running tasks` : stoppedTurns === 1 ? 'The running task' : null;
     if (this.supervisor) {
       await this.supervisor.haltAll();
       if (reason === 'stopped') {
         this.supervisor.clearTaskBoard();
       }
-      return reason === 'halted' ? 'All sub-agents halted.' : 'All agents stopped, locks released, task board cleared.';
+      const agentsNote = reason === 'halted' ? 'all sub-agents halted.' : 'all agents stopped, locks released, task board cleared.';
+      return turnsNote ? `${turnsNote} ${reason}; ${agentsNote}` : agentsNote.charAt(0).toUpperCase() + agentsNote.slice(1);
     }
+    if (turnsNote) return `${turnsNote} ${reason}.${reason === 'stopped' ? ' Locks released, task board cleared.' : ''}`;
     return reason === 'halted' ? 'Foreground task halted.' : 'Foreground task stopped, locks released, task board cleared.';
   }
 
-  /** Resolves when no turn is running (or after the deadline). */
-  private waitUntilIdle(maxMs: number): Promise<void> {
+  /**
+   * Take waiting messages out of the line and cancel their work entries
+   * (never started: a restart must not run them after all). Returns how many.
+   */
+  private dropWaiting(match: (m: ChannelMessage) => boolean, reason: string): number {
+    const dropped = this.messageQueue.filter((i) => match(i.message));
+    if (dropped.length === 0) return 0;
+    this.messageQueue = this.messageQueue.filter((i) => !match(i.message));
+    for (const item of dropped) {
+      if (!item.workKey) continue;
+      this.queuedWorkKeys.delete(item.workKey);
+      try { this.workLedger.markCancelled(item.workKey, reason); } catch { /* entry may not exist */ }
+    }
+    // A screen showing "Waiting…" for one of them must hear it won't run.
+    // Best effort: telling a screen must never get in the way of the stop.
+    let web: { sendQueueDropped?: (target: string, data: { dropped: number; reason: string }) => void } | undefined;
+    try { web = this.channels?.get?.('web') as unknown as typeof web; } catch { web = undefined; }
+    if (web?.sendQueueDropped) {
+      const perChat = new Map<string, number>();
+      for (const item of dropped) if (item.message.channelType === 'web') perChat.set(item.message.channelId, (perChat.get(item.message.channelId) ?? 0) + 1);
+      for (const [target, count] of perChat) {
+        try { web.sendQueueDropped(target, { dropped: count, reason }); } catch { /* best effort */ }
+      }
+    }
+    this.announceQueue();
+    return dropped.length;
+  }
+
+  /** Resolves when this lane has no running turn (or after the deadline). */
+  private waitUntilLaneIdle(laneKey: string, maxMs: number): Promise<void> {
     const deadline = Date.now() + maxMs;
     return new Promise((resolve) => {
-      const tick = () => { if (!this.processing || Date.now() >= deadline) resolve(); else setTimeout(tick, 50); };
+      const tick = () => { if (!this.activeTurns.has(laneKey) || Date.now() >= deadline) resolve(); else setTimeout(tick, 50); };
       tick();
     });
+  }
+
+  private readonly sessionLocks = new Map<string, Promise<void>>();
+
+  /**
+   * Take one stored conversation for the calling turn; resolves to its
+   * release. Waiters queue in order; a released lock with no waiter is
+   * forgotten, so the map only holds conversations in use.
+   */
+  private async lockSession(sessionId: string): Promise<() => void> {
+    const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => { release = resolve; });
+    const chained = previous.then(() => mine);
+    this.sessionLocks.set(sessionId, chained);
+    await previous;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      release();
+      if (this.sessionLocks.get(sessionId) === chained) this.sessionLocks.delete(sessionId);
+    };
+  }
+
+  /** No turn running and none waiting. */
+  isIdle(): boolean {
+    return this.activeTurns.size === 0 && this.messageQueue.length === 0;
+  }
+
+  private idleWaiters: Array<() => void> = [];
+
+  /** Resolves once no turn runs and none waits (at once when that's already so). */
+  whenIdle(): Promise<void> {
+    if (this.isIdle()) return Promise.resolve();
+    return new Promise((resolve) => { this.idleWaiters.push(resolve); });
   }
 
   private async handleFastPathCommand(msg: ChannelMessage): Promise<void> {
@@ -1924,8 +2415,122 @@ export class Agent {
    * Cheap no-op for non-CLI channels.
    */
   private pushLiveActivity(phase: string, detail?: string): void {
+    this.cliFeed()?.setLiveActivity(phase, detail);
+    const web = this.currentMessage ? this.channels.getChannelForMessage(this.currentMessage) : undefined;
+    if (web instanceof WebChannel) web.sendPhase(phase, detail, this.currentMessage!.channelId);
+  }
+
+  /**
+   * The terminal's live feed, when the calling turn may draw on it: the
+   * terminal's own turn always; another chat's only while the terminal has
+   * no turn of its own (ADR-037 — two turns must not interleave one feed).
+   */
+  private cliFeed(): CLIChannel | undefined {
     const ch = this.channels.get('cli');
-    if (ch instanceof CLIChannel) ch.setLiveActivity(phase, detail);
+    if (!(ch instanceof CLIChannel)) return undefined;
+    const t = this.turn();
+    if (t && t.laneKey !== 'cli' && this.activeTurns.has('cli')) return undefined;
+    return ch;
+  }
+
+  /**
+   * A video or song finished (or failed) after its turn ended (media/jobs.ts):
+   * post it to the chat that asked. The apps get it as a new message with
+   * the file attached (kept with the conversation, so a reopened chat shows
+   * it); chat apps get a note and the file; the terminal a notice with the path.
+   */
+  async deliverMediaJob(job: MediaJob, note?: string): Promise<void> {
+    const channel = this.channels.get(job.chat.channelType as Parameters<ChannelRegistry['get']>[0]);
+    const what = job.kind === 'video' ? 'video' : 'music';
+    const icon = job.kind === 'video' ? '🎬' : '🎵';
+    const text = job.status === 'done' && job.file
+      ? `${icon} Your ${what} is ready${job.madeWith ? ` (${job.madeWith})` : ''}.${note ? `\n\n${note.trim().slice(0, 500)}` : ''}`
+      : `⚠ I couldn't make the ${what}: ${job.error ?? 'it failed'}`;
+    const file = job.status === 'done' && job.file && existsSync(job.file) ? job.file : undefined;
+    if (job.chat.channelType === 'web') {
+      const sessionId = job.chat.sessionId ?? job.chat.channelId;
+      let refs: ReturnType<typeof artifactRef>[] = [];
+      if (file) {
+        try {
+          const kind = /\.(mp4|webm|mov|m4v)$/i.test(file) ? 'video' : 'audio';
+          refs = [artifactRef(artifactStore().add({ threadId: sessionId, path: file, kind, tool: `generate_${job.kind}` }))];
+        } catch (err) { logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Keeping a media job artifact failed'); }
+      }
+      try {
+        this.sessions.appendMessage(sessionId, {
+          role: 'assistant',
+          content: text,
+          externalMessageId: `media-job:${job.id}`,
+          metadata: { channelType: 'web', channelId: job.chat.channelId, ...(refs.length ? { artifacts: refs } : {}) },
+        });
+      } catch { /* the chat was deleted meanwhile */ }
+      if (channel instanceof WebChannel) channel.sendMediaReady(text, refs, job.chat.channelId, job.id);
+      return;
+    }
+    if (!channel) return;
+    if (channel instanceof CLIChannel) {
+      channel.sendSystemNotice(`${text}${file ? `\n  ${file}` : ''}`);
+      return;
+    }
+    await channel.send(text, job.chat.channelId).catch(() => {});
+    if (file) await channel.sendFile(file, job.chat.channelId);
+  }
+
+  /**
+   * Say the reply as a voice note in a chat app: when the owner sent a voice
+   * note ("mirror", the default), on every reply ("always"), or never
+   * ("off"); /media replies. The text was already sent: this is extra and
+   * never fails the turn.
+   */
+  private async maybeVoiceReply(channel: { sendFile(path: string, targetId?: string): Promise<void> }, msg: ChannelMessage, text: string): Promise<void> {
+    if (this.turnCancelled() || !voiceReplyWanted(msg.channelType, msg.metadata?.voiceNote === true, loadMediaPrefs().speech?.replies)) return;
+    const spoken = speakableText(text);
+    if (!spoken || /^\s*⏹/.test(text)) return;
+    const speech = getSpeechService();
+    if (!speech) return;
+    const dir = mkdtempSync(path.join(tmpdir(), 'mercury-voice-reply-'));
+    try {
+      const { file } = await speech.speakToFile(spoken, dir, { format: 'ogg' });
+      await channel.sendFile(file, msg.channelId);
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err), channel: msg.channelType }, 'Voice reply failed (the text reply was sent)');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * A note while the turn keeps working ("Checking my work…"). On the web
+   * channel a plain send is a finished reply, which would end the turn on
+   * screen while work goes on; there it is a progress event instead.
+   */
+  private async sendProgressNote(channel: { send(text: string, targetId?: string): Promise<void> }, text: string, channelId: string): Promise<void> {
+    if (channel instanceof WebChannel) {
+      channel.sendProgressNote(text, channelId);
+      return;
+    }
+    await channel.send(text, channelId);
+  }
+
+  /**
+   * Where a stream's reasoning goes: the terminal's thinking preview, the
+   * desktop's live thought process, and the turn's trace (kept with the
+   * reply). `null` ends the current thinking block.
+   */
+  private reasoningSink(channel: unknown, channelId: string): (preview: string | null, delta?: string) => void {
+    const cli = channel instanceof CLIChannel ? channel : null;
+    const web = channel instanceof WebChannel ? channel : null;
+    const trace = this.turn()?.trace;
+    return (preview, delta) => {
+      cli?.showThinkingPreview(preview);
+      if (preview === null) {
+        trace?.reasoningEnded();
+        web?.sendReasoning(null, channelId);
+        return;
+      }
+      if (delta) trace?.reasoning(delta);
+      web?.sendReasoning(delta ?? '', channelId);
+    };
   }
 
   /**
@@ -1948,8 +2553,19 @@ export class Agent {
         try { current.toolStarted(this.currentMessage.channelId, toolName); } catch { /* best effort */ }
       }
     }
-    const ch = this.channels.get('cli');
-    if (!(ch instanceof CLIChannel)) return;
+    const turn = this.turn();
+    if (status === 'running') turn?.trace.toolStarted(callId, formatToolStep(toolName, (argsOrResult as Record<string, unknown>) || {}));
+    else turn?.trace.toolFinished(callId, status === 'error', durationMs, toolSummary(argsOrResult));
+    // Mercury Desktop and the web dashboard see each tool as it starts and
+    // ends, not only after the whole step.
+    const web = this.currentMessage ? this.channels.getChannelForMessage(this.currentMessage) : undefined;
+    if (web instanceof WebChannel) {
+      const target = this.currentMessage!.channelId;
+      if (status === 'running') web.sendToolStarted(callId, toolName, (argsOrResult as Record<string, unknown>) || {}, target);
+      else web.sendToolFinished(callId, toolName, argsOrResult, status === 'error', durationMs, target);
+    }
+    const ch = this.cliFeed();
+    if (!ch) return;
     if (status === 'running') {
       void ch.sendToolEvent(toolName, argsOrResult as Record<string, any>, callId).catch(() => {});
     } else {
@@ -1967,6 +2583,31 @@ export class Agent {
     })();
   }
 
+  /**
+   * Abort this provider attempt as stalled when no chunk of any kind (text,
+   * reasoning, tool call) arrives within the first-response window.
+   * `MERCURY_FIRST_RESPONSE_TIMEOUT_MS` overrides it (0 turns it off).
+   */
+  private armFirstResponseTimer(providerName: string, controller: AbortController): { received(): void; clear(): void } {
+    const raw = Number(process.env.MERCURY_FIRST_RESPONSE_TIMEOUT_MS);
+    const windowMs = Number.isFinite(raw) && raw >= 0 ? raw : FIRST_RESPONSE_TIMEOUT_MS;
+    let settled = false;
+    const timer = windowMs > 0 ? setTimeout(() => {
+      if (settled || controller.signal.aborted) return;
+      settled = true;
+      logger.warn({ provider: providerName, waitedMs: windowMs }, 'No response from the provider within the first-response window — trying the next one');
+      this.pushLiveActivity(`No response from ${providerName} — trying again`, `${Math.round(windowMs / 1000)}s without a reply`);
+      this.currentAbortReason = 'stalled';
+      controller.abort(new Error(`${providerName} sent nothing for ${Math.round(windowMs / 1000)}s`));
+    }, windowMs) : null;
+    timer?.unref?.();
+    const clear = () => {
+      settled = true;
+      if (timer) clearTimeout(timer);
+    };
+    return { received: clear, clear };
+  }
+
   private withProviderDeadline<T>(operation: PromiseLike<T>, controller: AbortController, deadlineAt: number): Promise<T> {
     return withAbortDeadline(operation, controller, deadlineAt - Date.now(), () => {
       this.currentAbortReason = 'time-limit';
@@ -1981,7 +2622,9 @@ export class Agent {
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const tick = () => {
-      if (!this.processing || !this.currentMessage || this.currentMessage.id !== msg.id) return;
+      // Timers carry the turn's scope: a tick after the turn ended does nothing.
+      const own = this.turn();
+      if (!own || own.done || !this.currentMessage || this.currentMessage.id !== msg.id) return;
       const channel = this.channels.getChannelForMessage(msg);
 
       const elapsedMs = Date.now() - this.currentMessage.timestamp;
@@ -2110,24 +2753,27 @@ export class Agent {
    * Session-scoped coding. A message that names a programming mode (Mercury
    * Desktop's Code surface) runs with THAT session's mode, plan and folder;
    * everything else (terminal, chat, other sessions) keeps the global mode.
-   * Turns are serial (processQueue), so a swap-run-restore is race-free.
+   * The turn gets its own ProgrammingMode instance and its own working
+   * directory (ADR-037), so it can run beside other turns; the global mode
+   * is never touched.
    */
   private readonly sessionProgramming = new Map<string, ProgrammingSnapshot>();
 
   private async withSessionProgramming(msg: ChannelMessage, run: () => Promise<void>): Promise<void> {
     const requested = scopedProgrammingState(msg.metadata?.programming);
     const sessionKey = typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : msg.sessionId;
-    if (!requested || !sessionKey) return run();
-    const globalMode = this.programmingMode.snapshot();
-    const globalCwd = this.capabilities.getCwd();
+    const turn = this.turn();
+    if (!requested || !sessionKey || !turn) return run();
     const cwd = typeof msg.metadata?.programmingCwd === 'string' ? msg.metadata.programmingCwd : null;
     const saved = this.sessionProgramming.get(sessionKey);
-    this.programmingMode.restore({
+    const mode = new ProgrammingMode();
+    mode.restore({
       state: requested,
       projectContext: cwd ?? saved?.projectContext ?? null,
       // A plan made in this session stays with this session.
       lastPlan: saved?.lastPlan ?? null,
     });
+    turn.programming = mode;
     if (cwd) {
       this.capabilities.setCwd(cwd);
       this.capabilities.permissions.addTempScope(cwd, true, true);
@@ -2135,56 +2781,217 @@ export class Agent {
     try {
       await run();
     } finally {
-      this.sessionProgramming.set(sessionKey, this.programmingMode.snapshot());
+      this.sessionProgramming.delete(sessionKey);
+      this.sessionProgramming.set(sessionKey, mode.snapshot());
       if (this.sessionProgramming.size > 200) {
         const oldest = this.sessionProgramming.keys().next().value;
         if (oldest !== undefined) this.sessionProgramming.delete(oldest);
       }
-      this.programmingMode.restore(globalMode);
-      if (cwd) this.capabilities.setCwd(globalCwd);
+      turn.programming = null;
     }
   }
 
-  private async processQueue(): Promise<void> {
-    if (this.processing) return;
-    if (this.messageQueue.length === 0) return;
+  /** Where a chat's next turn starts: its own last directory, else the terminal's. */
+  private cwdForLane(laneKey: string): string {
+    if (laneKey === 'cli') return this.capabilities.getGlobalCwd();
+    const own = this.laneCwd.get(laneKey);
+    return own && existsSync(own) ? own : this.capabilities.getGlobalCwd();
+  }
+
+  private rememberLaneCwd(laneKey: string, dir: string): void {
+    if (laneKey === 'cli') {
+      // The terminal's `cd` carries over to its next turn, as before.
+      this.capabilities.setGlobalCwd(dir);
+      return;
+    }
+    this.laneCwd.delete(laneKey);
+    this.laneCwd.set(laneKey, dir);
+    if (this.laneCwd.size > 500) {
+      const oldest = this.laneCwd.keys().next().value;
+      if (oldest !== undefined) this.laneCwd.delete(oldest);
+    }
+  }
+
+  /**
+   * Start every waiting message whose chat is free, while the governor
+   * admits more (ADR-037). Never awaits a turn: each runs on its own and
+   * pumps again when it ends. Order: first come, first served across chats
+   * (voice-call questions and "do mine first" reorder the line as before);
+   * within a chat, strictly one after another.
+   */
+  private processQueue(): void {
     if (!this.running) return;
-    if (!this.lifecycle.is('idle')) return;
+    if (!this.globalLifecycle.is('idle')) return;
+    for (;;) {
+      const index = this.messageQueue.findIndex((i) => !this.activeTurns.has(laneKeyFor(i.message)));
+      if (index === -1) break;
+      const decision = this.governor.canAdmit(this.activeTurns.size);
+      if (!decision.ok) {
+        if (this.lastAdmitRefusal !== decision.reason) {
+          logger.info({ reason: decision.reason, running: this.activeTurns.size, waiting: this.messageQueue.length, limit: this.governor.limit() }, 'Turn governor: holding new turns');
+        }
+        this.lastAdmitRefusal = decision.reason;
+        break;
+      }
+      this.lastAdmitRefusal = null;
+      const [item] = this.messageQueue.splice(index, 1);
+      if (item.workKey) this.queuedWorkKeys.delete(item.workKey);
+      this.startTurn(item);
+    }
+    // The line moved: everyone still waiting learns their place and what they wait for.
+    this.announceQueue();
+  }
 
-    this.processing = true;
+  private startTurn(item: { message: ChannelMessage; workKey?: string }): void {
+    const msg = item.message;
+    const laneKey = laneKeyFor(msg);
+    const turn: TurnState = {
+      id: `t${++this.turnSeq}`,
+      laneKey,
+      message: msg,
+      startedAt: Date.now(),
+      abort: null,
+      abortReason: null,
+      cancelled: null,
+      activity: '',
+      completedStepCount: 0,
+      stepNarrative: [],
+      workKey: item.workKey ?? null,
+      lastProgressAt: Date.now(),
+      lastTypingAt: 0,
+      injectedBeliefIds: [],
+      lifecycle: new Lifecycle('idle'),
+      programming: null,
+      done: false,
+      trace: new TurnTrace(),
+    };
+    this.activeTurns.set(laneKey, turn);
+    logger.info({ turn: turn.id, lane: laneKey, running: this.activeTurns.size, limit: this.governor.limit() }, 'Turn started');
+    const startCwd = typeof msg.metadata?.workCwd === 'string' && existsSync(msg.metadata.workCwd) ? msg.metadata.workCwd : this.cwdForLane(laneKey);
 
+    void this.turnStore.run(turn, () => runInTurnScope(() => this.capabilities.permissions.withTurn(async () => {
+      // This turn's working directory, tools switch and image switch are its own.
+      this.capabilities.claimTurnState(startCwd);
+      claimToolImagesForTurn();
+      // Its requests carry this chat's effort override, if it has one (#188).
+      claimEffortChat(laneKey);
+      // What untrusted content this turn reads, starting clean (ADR-044).
+      claimExposureForTurn();
+      noteMessageExposure(msg);
+      try {
+        await this.runQueuedItem(item);
+      } finally {
+        this.rememberLaneCwd(laneKey, this.capabilities.getCwd());
+        // However the turn ended (reply, error, stop), its streamed text is no longer "live".
+        const ch = this.channels.getChannelForMessage(msg);
+        if (ch instanceof WebChannel) ch.clearLiveText(msg.channelId);
+      }
+    }))).catch((err) => {
+      logger.error({ err, turn: turn.id }, 'Turn failed outside its handler');
+    }).finally(() => {
+      turn.done = true;
+      if (this.activeTurns.get(laneKey) === turn) this.activeTurns.delete(laneKey);
+      logger.info({ turn: turn.id, lane: laneKey, ms: Date.now() - turn.startedAt, running: this.activeTurns.size }, 'Turn ended');
+      if (this.activeTurns.size === 0) this.governor.noteIdle();
+      this.processQueue();
+      if (this.isIdle() && this.idleWaiters.length > 0) {
+        for (const resolve of this.idleWaiters.splice(0)) resolve();
+      }
+    });
+  }
+
+  /** One queued message, start to finish: the work ledger and scheduled-run bookkeeping around handleMessage. */
+  private async runQueuedItem(item: { message: ChannelMessage; workKey?: string }): Promise<void> {
+    const msg = item.message;
+    // Cancelled while it waited (or a retry timer that raced a stop): never run it.
+    if (item.workKey && this.workLedger.get(item.workKey)?.status === 'cancelled') {
+      logger.info({ workKey: item.workKey }, 'Skipping cancelled work');
+      return;
+    }
     try {
-      while (this.messageQueue.length > 0) {
-        const item = this.messageQueue.shift()!;
-        const msg = item.message;
-        if (item.workKey) this.queuedWorkKeys.delete(item.workKey);
-        // The line moved: everyone still waiting learns their new place and what runs now.
-        this.announceQueue(msg);
-        this.currentWorkKey = item.workKey ?? null;
+      if (item.workKey) this.workLedger.markRunning(item.workKey);
+      await this.withSessionProgramming(msg, () => this.handleMessage(msg));
+      if (item.workKey && this.workLedger.get(item.workKey)?.status === 'running') {
+        this.workLedger.markFailed(item.workKey, 'Work ended without producing a durable final response');
+      }
+    } catch (err) {
+      if (item.workKey) {
+        const entry = this.workLedger.get(item.workKey);
+        if (entry?.status === 'completed') this.workLedger.markDeliveryError(item.workKey, err);
+        else this.workLedger.markFailed(item.workKey, err);
+      }
+      logger.error({ err, msg: msg.content.slice(0, 50) }, 'Failed to handle message');
+    } finally {
+      const taskId = msg.metadata?.scheduledTaskId;
+      const runId = msg.metadata?.scheduledRunId;
+      if (typeof taskId === 'string' && typeof runId === 'string') {
+        const entry = item.workKey ? this.workLedger.get(item.workKey) : undefined;
         try {
-          if (item.workKey) this.workLedger.markRunning(item.workKey);
-          await this.withSessionProgramming(msg, () => this.handleMessage(msg));
-          if (item.workKey && this.workLedger.get(item.workKey)?.status === 'running') {
-            this.workLedger.markFailed(item.workKey, 'Work ended without producing a durable final response');
-          }
+          this.scheduler.finishRun(taskId, runId, entry?.status === 'completed' ? 'completed' : 'failed',
+            entry?.status === 'completed' ? undefined : entry?.error ?? 'Scheduled work ended without confirmed completion');
         } catch (err) {
-          if (item.workKey) {
-            const entry = this.workLedger.get(item.workKey);
-            if (entry?.status === 'completed') this.workLedger.markDeliveryError(item.workKey, err);
-            else this.workLedger.markFailed(item.workKey, err);
-          }
-          logger.error({ err, msg: msg.content.slice(0, 50) }, 'Failed to handle message');
-        } finally {
-          this.currentWorkKey = null;
-          if (!this.lifecycle.is('idle') && this.lifecycle.canTransitionTo('idle')) {
-            this.lifecycle.transition('idle');
-          }
+          // Leave the durable running record uncertain, but always release queue state.
+          logger.error({ err, taskId, runId }, 'Could not persist scheduled run outcome');
         }
       }
-    } finally {
-      this.processing = false;
-      if (this.messageQueue.length > 0) void this.processQueue();
     }
+  }
+
+  /** The running turns as the governor sees them. */
+  private governedTurns(): GovernedTurn[] {
+    return [...this.activeTurns.values()].map((t) => ({
+      id: t.id,
+      startedAt: t.startedAt,
+      label: `${t.laneKey}: ${this.describeTurn(t)}`,
+      isStopping: () => t.done || t.cancelled !== null || !t.abort || t.abort.signal.aborted,
+      shed: (error: Error) => {
+        if (!t.abort || t.abort.signal.aborted) return;
+        t.abortReason = 'memory-pressure';
+        t.abort.abort(error);
+        this.captureHeapSnapshot();
+      },
+    }));
+  }
+
+  private heapSnapshotTaken = false;
+
+  /** Forensics, once per process: the first pressure stop writes a heap snapshot. Never throws. */
+  private captureHeapSnapshot(): void {
+    if (this.heapSnapshotTaken) return;
+    this.heapSnapshotTaken = true;
+    void (async () => {
+      try {
+        const { writeHeapSnapshot } = await import('node:v8');
+        const file = path.join(getMercuryHome(), `heap-task-${Date.now()}.heapsnapshot`);
+        writeHeapSnapshot(file);
+        logger.error({ file }, 'Heap snapshot captured for memory forensics');
+      } catch { /* forensics must never break the governor */ }
+    })();
+  }
+
+  /**
+   * The heap kept growing past the exit line even after turns were stopped:
+   * the allocator runs outside any abortable path and a V8 crash is next.
+   * Leave now, while the work ledger and sessions are still writable, so
+   * every interrupted chat is recovered on the next start.
+   */
+  private exitForMemory(heapUsed: number): void {
+    const turns = [...this.activeTurns.values()];
+    const mb = Math.round(heapUsed / 1048576);
+    try {
+      const first = turns[0];
+      writeCrashFlag({
+        reason: `Memory safety exit at ${mb}MB with ${turns.length} task(s) running: ${turns.map((t) => this.describeTurn(t).slice(0, 60)).join(' | ').slice(0, 300)}`,
+        timestamp: Date.now(),
+        activeTask: first ? this.describeTurn(first) : undefined,
+        channelId: first?.message.channelId,
+        channelType: first?.message.channelType,
+      });
+    } catch { /* best effort */ }
+    try {
+      process.stderr.write(`\n⚠ Mercury stopped: memory grew to ${mb}MB.\n  Your work is saved and will be recoverable on the next start. Details: ~/.mercury/crash-report.log\n`);
+    } catch { /* stderr gone */ }
+    process.exit(0);
   }
 
   /**
@@ -2207,7 +3014,8 @@ export class Agent {
     channelId: string;
     /** Mechanically force the first step to contain a tool call. */
     forceFirstTool?: boolean;
-    onStep: (toolCalls: any[] | undefined, toolResults: any[] | undefined) => void | Promise<void>;
+    toolDiscovery: ToolDiscovery;
+    onStep: (toolCalls: any[] | undefined, toolResults: any[] | undefined, usage?: StepUsageLike) => void | Promise<void>;
   }): Promise<{ text: string; usage: any; reasoning?: any; finishReason?: string }> {
     this.markProgress(`Resuming with ${opts.provider.name}...`);
     const deadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
@@ -2217,14 +3025,9 @@ export class Agent {
       // opting in stops the SDK printing a warning on every call.
       allowSystemInMessages: true,
       messages: this.withCachedSystem(opts.systemPrompt, opts.messages, opts.volatileSystem),
-      tools: this.capabilities.getTools(),
+      ...opts.toolDiscovery.request(undefined, { forceFirstTool: opts.forceFirstTool }),
       maxOutputTokens: opts.maxOutputTokens,
       stopWhen: stepCountIs(opts.maxSteps),
-      // forceFirstTool: the first step MUST contain a tool call — narration
-      // rounds are converted into action rounds mechanically.
-      prepareStep: opts.forceFirstTool
-        ? ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const } : {})
-        : undefined,
       // Live tool-step UI during continuation rounds: forced/verification
       // rounds land file writes, and the user must SEE which file is being
       // written at the bottom, exactly as in the main loop.
@@ -2245,13 +3048,13 @@ export class Agent {
       },
       abortSignal: opts.abortController.signal,
       experimental_include: { requestBody: false },
-      onStepFinish: async ({ toolCalls, toolResults }) => {
-        await opts.onStep(toolCalls as any[], toolResults as any[]);
+      onStepFinish: async ({ toolCalls, toolResults, usage }) => {
+        await opts.onStep(toolCalls as any[], toolResults as any[], usage);
       },
     });
     const text = (opts.channel
       ? await this.withProviderDeadline(
-        opts.channel.stream(stepAwareTextStream(stream.fullStream), opts.channelId),
+        opts.channel.stream(stepAwareTextStream(stream.fullStream, this.reasoningSink(opts.channel, opts.channelId)), opts.channelId),
         opts.abortController,
         deadlineAt,
       )
@@ -2317,9 +3120,33 @@ export class Agent {
     } catch { /* telling about artifacts must never break a turn */ }
   }
 
+  /** End of a turn: settle the chat's plan (settlePlan) and show it settled. Never throws. */
+  private settleTurnPlan(msg: ChannelMessage, outcome: 'completed' | 'stopped' | 'failed', turnStartedAt: number): void {
+    try {
+      // A plan from an earlier turn (a question asked in between) is left as it is.
+      if ((this.planTouchedAt.get(msg.channelId) ?? 0) < turnStartedAt) return;
+      this.planTouchedAt.delete(msg.channelId);
+      const channel = this.channels.getChannelForMessage(msg);
+      if (channel instanceof WebChannel) {
+        const plan = channel.plans.get(msg.channelId);
+        if (!plan || plan.state) return;
+        const settled = settlePlan(plan.steps, outcome);
+        if (settled) channel.sendPlan(settled.steps, msg.channelId, settled.state);
+      } else if (channel instanceof CLIChannel) {
+        const steps = channel.currentPlanProgress();
+        const settled = steps ? settlePlan(steps, outcome) : null;
+        if (settled) channel.setPlanProgress(settled.steps);
+      }
+    } catch { /* the plan display must never break a turn */ }
+  }
+
+  /** When each chat's plan was last updated by the model: only the turn that worked on a plan settles it. */
+  private planTouchedAt = new Map<string, number>();
+
   private maybeRecordPlanProgress(channel: unknown, toolName: string, input: unknown, targetId?: string): void {
     try {
       if (toolName !== 'update_plan') return;
+      if (targetId) this.planTouchedAt.set(targetId, Date.now());
       const steps = (input as { steps?: Parameters<CLIChannel['setPlanProgress']>[0] } | null)?.steps;
       if (channel instanceof CLIChannel) channel.setPlanProgress(steps);
       else {
@@ -2331,6 +3158,8 @@ export class Agent {
   }
 
   private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown, continuation = false): number {
+    // Stopped work is never retried or continued (ADR-038).
+    if (this.turnCancelled() || this.workLedger.get(workKey)?.status === 'cancelled') return 0;
     const attempts = this.workLedger.get(workKey)?.attempts ?? 1;
     const delayMs = continuation
       ? Math.min(2_000 * 2 ** Math.min(attempts - 1, 5), 60_000)
@@ -2558,6 +3387,7 @@ export class Agent {
     }
     await this.channels.startAll();
     this.running = true;
+    this.governor.start(() => this.governedTurns());
 
     if (!this.terminalOnly) {
       const recovered = this.workLedger.recoverInterrupted();
@@ -2574,6 +3404,7 @@ export class Agent {
 
   async sleep(): Promise<void> {
     this.running = false;
+    this.governor.stop();
     if (this.outboxRetryTimer) {
       clearInterval(this.outboxRetryTimer);
       this.outboxRetryTimer = null;
@@ -2638,121 +3469,36 @@ export class Agent {
   }
 
   /**
-   * Skill intent routing and batch execution (see the strategy note at the
-   * call site): an explicit `#skill` pick, a clear multi-skill batch, or an
-   * ambiguous match the user disambiguates. May rewrite or append to
-   * `messages`; never ends the turn on its own.
+   * The user's explicit skill pick (ADR-039, ADR-040): `#skill-name …` tells
+   * the model to use that skill; an unknown `#tag` is stripped. Nothing else
+   * is routed — the model sees every installed skill and its description in
+   * the system prompt and picks itself. Mercury used to stop the turn on a
+   * skill picker before the first model call, answer that picker itself on
+   * voice channels, tell the model "User clarified: use X" although nobody
+   * had, run skill batches as sub-agents up front, and later suggest skills
+   * from a fuzzy match.
    */
-  private async routeSkillIntent(msg: ChannelMessage, trimmed: string, messages: Array<{ role: string; content: unknown }>): Promise<void> {
-    if (this.skillBatcher && this.skillLoader && msg.channelType !== 'internal') {
-      try {
-        const intentRouter = this.skillLoader.intentRouter;
-
-        // (1) Explicit `#skill-name <rest>` shortcut from the # picker.
-        const hashMatch = trimmed.match(/^#([a-z0-9_:.-]+)\b\s*(.*)$/i);
-        if (intentRouter && intentRouter.isInitialized() && hashMatch) {
-          const skillName = hashMatch[1];
-          const rest = hashMatch[2].trim();
-          const knownSkills = this.skillLoader.getDiscovered?.() || [];
-          const known = knownSkills.some((s: any) => s.name === skillName);
-          if (known) {
-            messages[messages.length - 1] = {
-              role: 'user',
-              content: rest || trimmed,
-            };
-            messages.push({
-              role: 'user',
-              content: `[Routing] The user explicitly selected the \`${skillName}\` skill via #-prefix. Invoke it via \`use_skill\` with name="${skillName}" before doing anything else, then act on the result.`,
-            });
-            // Skip the rest of routing — explicit pick wins.
-          } else {
-            // Unknown #tag: just strip it and let routing proceed on the rest.
-            const stripped = rest || trimmed.replace(/^#\S+\s*/, '');
-            if (stripped) {
-              messages[messages.length - 1] = { role: 'user', content: stripped };
-            }
-          }
-        }
-
-        if (intentRouter && intentRouter.isInitialized() && !hashMatch) {
-          const analysis = intentRouter.analyzeMatch(trimmed, { clearThreshold: 0.85, gap: 0.15 });
-
-          // (2a) Ambiguous → ask the user to pick before executing anything.
-          if (analysis.ambiguous && analysis.closeContenders.length >= 2) {
-            const contenders = analysis.closeContenders.slice(0, 5);
-            const choices = [
-              ...contenders.map(c => {
-                const desc = intentRouter.getSkillDescription?.(c.name) || '';
-                return desc ? `${c.name} — ${desc}` : c.name;
-              }),
-              'None of these — answer normally',
-            ];
-            const channel = this.channels.getChannelForMessage(msg);
-            let picked: string | null = null;
-            try {
-              picked = await this.presentChoice(
-                `I matched several skills for that request and I'm not sure which you meant. Pick one:`,
-                choices,
-                msg.channelId,
-                msg.channelType,
-              );
-            } catch {
-              picked = null;
-            }
-            if (picked && !picked.startsWith('None of these')) {
-              const chosenName = picked.split(' — ')[0].trim();
-              messages.push({
-                role: 'user',
-                content: `[Routing] User clarified: use the \`${chosenName}\` skill. Invoke it via \`use_skill\` with name="${chosenName}" before doing anything else.`,
-              });
-              if (channel) {
-                await channel.send(`Routing to **${chosenName}**.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-              }
-            }
-            // If the user picked "None of these" we just fall through silently.
-          } else {
-            // (2b) Clear-enough match → use the existing batch path, but
-            //      only when the *top batch alone* has 2+ skills (genuine
-            //      multi-step request like "download and notify"). Cross-
-            //      category fan-out is what caused the 10-skill explosion.
-            const batches = intentRouter.matchToBatches(trimmed, 0.6);
-            const totalMatchedSkills = batches.reduce((sum, b) => sum + b.skills.length, 0);
-
-            if (batches.length > 0 && totalMatchedSkills >= 1) {
-              const topBatch = batches[0];
-              const matchedSkillNames = topBatch.skills.map(s => s.name);
-              this.markProgress(`Matched intents: ${matchedSkillNames.join(', ')}...`);
-
-              if (topBatch.skills.length >= 2 && analysis.clearWinner) {
-                const plan = this.skillBatcher.planExecution([topBatch]);
-                if (plan.batches.length > 0) {
-                  const channel = this.channels.getChannelForMessage(msg);
-                  if (channel) {
-                    await channel.send(`🧠 Routing to ${topBatch.skills.length} skills in **${topBatch.categoryLabel}**: ${matchedSkillNames.join(', ')}.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                  }
-
-                  const batchResults = await this.skillBatcher.execute(plan, trimmed, msg.channelId, msg.channelType);
-                  const summary = this.skillBatcher.summarizeResults(batchResults);
-
-                  if (summary) {
-                    messages.push({
-                      role: 'user',
-                      content: `[Skill Batch Execution Results]\n${summary}\n\nSynthesize a coherent response based on these results. Mention what was done, any failures, and key findings.`,
-                    });
-                    messages.push({
-                      role: 'assistant',
-                      content: 'Acknowledged. I will synthesize the batch execution results into a coherent response.',
-                    });
-                  }
-                }
-              }
-              // Single clear-winner skill: let the LLM call use_skill itself.
-            }
-          }
-        }
-      } catch (err) {
-        logger.warn({ err }, 'Intent routing / batch execution failed — continuing without it');
+  private applyExplicitSkillPick(msg: ChannelMessage, trimmed: string, messages: Array<{ role: string; content: unknown }>): void {
+    if (!this.skillLoader || msg.channelType === 'internal') return;
+    const hashMatch = trimmed.match(/^#([a-z0-9_:.-]+)\b\s*(.*)$/i);
+    if (!hashMatch) return;
+    try {
+      const skillName = hashMatch[1];
+      const rest = hashMatch[2].trim();
+      const knownSkills = this.skillLoader.getDiscovered?.() || [];
+      if (knownSkills.some((s: any) => s.name === skillName)) {
+        messages[messages.length - 1] = { role: 'user', content: rest || trimmed };
+        messages.push({
+          role: 'user',
+          content: `[Routing] The user explicitly selected the \`${skillName}\` skill via #-prefix. Invoke it via \`use_skill\` with name="${skillName}" before doing anything else, then act on the result.`,
+        });
+      } else {
+        // Unknown #tag: just strip it.
+        const stripped = rest || trimmed.replace(/^#\S+\s*/, '');
+        if (stripped) messages[messages.length - 1] = { role: 'user', content: stripped };
       }
+    } catch (err) {
+      logger.warn({ err }, 'Explicit skill pick failed — continuing without it');
     }
   }
 
@@ -2853,7 +3599,6 @@ export class Agent {
     // Short id printed on every terminal message and resolvable with /trace.
     const traceId = (msg.id || '').replace(/[^a-z0-9]/gi, '').slice(-8) || Date.now().toString(36);
     let loopAbortController = new AbortController();
-    this.currentMessage = msg;
     this.currentAbort = loopAbortController;
     this.currentAbortReason = null;
     const durableCwd = typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : undefined;
@@ -2884,79 +3629,25 @@ export class Agent {
       ? this.researchMode.beginRun(msg.channelId, msg.content, this.saverMode.adjustMaxSteps(MAX_STEPS) * 3)
       : null;
     if (researchRun) this.emitResearch(msg, researchRun);
+    // How the turn ended, for the plan it leaves behind (settlePlan).
+    let turnFailed = false;
+    const turnStartedAt = Date.now();
     if (!isSlashCommand) raiseTurnIndicator();
     const stopHeartbeat = isSlashCommand ? () => {} : this.startForegroundHeartbeat(msg);
-    const heapBaseline = process.memoryUsage().heapUsed;
-    const heapAbortThreshold = taskHeapAbortThreshold(getHeapStatistics().heap_size_limit, heapBaseline);
-    const heapExitThreshold = taskHeapExitThreshold(getHeapStatistics().heap_size_limit, heapBaseline);
-    const governorThresholds = memoryGovernorThresholds({
-      heapSizeLimit: getHeapStatistics().heap_size_limit,
-      baselineHeapUsed: heapBaseline,
-    });
+    // Memory: the turn governor watches the heap for the whole process (one
+    // timer, not one per turn) and stops the newest turn under pressure
+    // (ADR-037). At step boundaries this turn checks in deterministically —
+    // the timer can't fire while the event loop is flooded.
+    const turnId = this.turn()?.id;
     const memoryGovernor = (phase: string): 'ok' | 'abort' | 'exit' => {
-      const verdict = memoryGovernorVerdict(process.memoryUsage().heapUsed, governorThresholds);
-      if (verdict === 'abort') {
-        logger.warn({ phase, heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) }, 'Step governor: relief threshold exceeded — trimming conversation');
-      }
-      return verdict === 'ok' || verdict === 'relief' ? 'ok' : verdict;
+      const turns = this.governedTurns();
+      const verdict = this.governor.verdict(turns.length);
+      if (verdict === 'exit') return 'exit';
+      if (verdict === 'ok') return 'ok';
+      logger.warn({ phase, heapMB: Math.round(process.memoryUsage().heapUsed / 1048576), running: turns.length }, 'Step governor: over the memory line — trimming conversation');
+      return 'abort';
     };
-    const memoryGuard = setInterval(() => {
-      const usage = process.memoryUsage();
-      // Stage 2 — emergency: abort was attempted but the allocator kept
-      // running outside the abortable path. Exit deliberately while the work
-      // ledger and session store are still writable, so recovery survives.
-      if (isTaskHeapUnsafe(usage.heapUsed, heapExitThreshold)) {
-        logger.error({
-          heapUsed: usage.heapUsed,
-          threshold: heapExitThreshold,
-          activity: this.currentActivity,
-        }, 'Memory continued growing after abort — exiting to preserve work state');
-        try {
-          const { writeCrashFlag } = require('./crash-flag.js');
-          writeCrashFlag({
-            reason: `Memory safety exit at ${Math.round(usage.heapUsed / 1048576)}MB (abort threshold ${Math.round(heapAbortThreshold / 1048576)}MB). Task: ${this.currentActivity?.slice(0, 150) || 'unknown'}`,
-            timestamp: Date.now(),
-            activeTask: this.currentActivity || undefined,
-            channelId: msg.channelId,
-            channelType: msg.channelType,
-          });
-        } catch { /* best effort */ }
-        try {
-          process.stderr.write(
-            `\n⚠ Mercury stopped the current task: memory grew to ${Math.round(usage.heapUsed / 1048576)}MB.\n  Your work is saved and will be recoverable on the next start. Details: ~/.mercury/crash-report.log\n`,
-          );
-        } catch { /* stderr gone */ }
-        process.exit(0);
-      }
-      // Stage 1 — attempt graceful stop of the current generation.
-      if (!isTaskHeapUnsafe(usage.heapUsed, heapAbortThreshold) || this.currentAbortReason === 'memory-pressure') return;
-      this.currentAbortReason = 'memory-pressure';
-      const error = new Error(
-        `Task stopped at ${Math.round(usage.heapUsed / 1048576)}MB heap usage before Mercury reached the V8 crash limit`,
-      );
-      logger.error({
-        heapUsed: usage.heapUsed,
-        heapTotal: usage.heapTotal,
-        rss: usage.rss,
-        threshold: heapAbortThreshold,
-        activity: this.currentActivity,
-      }, 'Task memory safety limit reached');
-      loopAbortController.abort(error);
-      // Forensics: capture a heap snapshot in the background. If growth
-      // continues past the exit threshold, this .heapsnapshot identifies the
-      // exact retainer. Best-effort — never throw from the guard.
-      void (async () => {
-        try {
-          const { writeHeapSnapshot } = await import('node:v8');
-          const { getMercuryHome } = await import('../utils/config.js');
-          const { join } = await import('node:path');
-          const file = join(getMercuryHome(), `heap-task-${Date.now()}.heapsnapshot`);
-          await writeHeapSnapshot(file as any);
-          logger.error({ file }, 'Heap snapshot captured for memory forensics');
-        } catch { /* forensics must never break the guard */ }
-      })();
-    }, 1000);
-    memoryGuard.unref?.();
+    const shouldYieldToMemory = (): boolean => turnId !== undefined && this.governor.shouldShed(turnId, this.governedTurns());
     // Stall watchdog: the memory guard covers heap growth; this covers time.
     // A task that emits nothing (no chunks, no tool events, no steps) for
     // minutes is almost certainly dead — surface it, then abort the attempt
@@ -2979,6 +3670,12 @@ export class Agent {
     });
     stallWatchdog.start();
     let canonicalSessionId: string | undefined;
+    let releaseSession: (() => void) | null = null;
+    // Bills the turn's model steps to the token budget, once. Set when the
+    // turn starts calling models; the finally runs it for turns that end
+    // early (all providers failed, an honest pause, a memory stop, a retry
+    // scheduled) — their steps were spent too.
+    let flushTurnUsage: (() => void) | null = null;
 
     if (this.supervisor && msg.channelType !== 'internal') {
       const activeAgents = this.supervisor.getActiveAgents();
@@ -3101,6 +3798,10 @@ export class Agent {
         : typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
       const canonicalSession = this.sessions.getOrCreateBound(msg.channelType, externalConversationId, suppliedSessionId);
       canonicalSessionId = canonicalSession.id;
+      // Two lanes can reach one stored conversation (the terminal resuming a
+      // chat the desktop has open): their turns take it one at a time, so
+      // its history never interleaves (ADR-037).
+      releaseSession = await this.lockSession(canonicalSession.id);
 
       // A normal chat that would write loose files into the home folder (the
       // daemon's folder) writes into its own folder in ~/mercury-artifacts.
@@ -3121,7 +3822,17 @@ export class Agent {
         }
       }
 
-      let systemPrompt = this.buildSystemPrompt();
+      // Set this turn's caller before exposing tools or routing a skill. A
+      // previous local/owner turn must not determine remote recall access.
+      this.capabilities.setChannelContext(msg.channelId, msg.channelType, canonicalSession.id);
+      this.capabilities.permissions.setCurrentSenderRole(msg.senderRole);
+      this.capabilities.permissions.setUnattendedTurn(msg.senderId === 'system');
+
+      // Stable part = the cached system prefix; the parts that change between
+      // turns (owner brief, bots, clock, cwd, memory count) go in the per-turn
+      // block after it, so a new turn still hits the provider's cache (ADR-039).
+      const promptParts = this.buildSystemPromptParts();
+      let systemPrompt = promptParts.stable;
       if (chatFolder) systemPrompt += `\n- Files you make go in the working directory (this chat's folder in the owner's Mercury artifacts folder), unless the owner names another place. Use relative paths or that folder; never write loose files into the home folder.`;
       if (msg.metadata?.workContinuation === true) {
         const attempt = typeof msg.metadata.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 1;
@@ -3146,6 +3857,9 @@ export class Agent {
           channelId: msg.channelId,
           workCwd: this.capabilities.getCwd(),
           ...(requestId ? { requestId } : {}),
+          // Not the owner's words: the learning passes skip it (ADR-044).
+          ...(msg.senderRole === 'member' ? { senderRole: 'member' } : {}),
+          ...(msg.metadata?.channelAccess === 'general' ? { channelAccess: 'general' } : {}),
           // Files the owner sent with this turn, as refs a client can fetch back.
           ...(() => { const refs = attachmentRefs(msg.metadata?.attachments); return refs.length ? { attachments: refs } : {}; })(),
         },
@@ -3165,15 +3879,16 @@ export class Agent {
         this.saverMode.isActive() ? HISTORY_TOKEN_BUDGET_SAVER : HISTORY_TOKEN_BUDGET,
       );
 
-      const messages: any[] = [];
-      // Per-turn context (retrieved memory, shared-pool hits, loop warnings)
+      const history = buildModelHistory(recentMemory);
+      const messages: any[] = [...history.messages];
+      // Per-turn context (tool history, retrieved memory, loop warnings)
       // goes into a second, volatile system block instead of being staged as
       // fake user/assistant dialogue: the fake "Noted. I'll keep this in
       // mind." turns primed terse acknowledgements and polluted history.
       const contextBlocks: string[] = [];
       contextBlocks.push(budgetContext(this.tokenBudget.getStatusText(), this.tokenBudget.getUsagePercentage()));
 
-      const loopWarning = detectRepetitionLoop(recentMemory);
+      const loopWarning = detectRepetitionLoop(history.messages);
       if (loopWarning) contextBlocks.push(loopWarning);
 
       // Chat channels can carry an access level and guidance (plugin API 1.1,
@@ -3190,13 +3905,24 @@ export class Agent {
       if (guidance) contextBlocks.unshift(guidance);
       if (!generalAccess) contextBlocks.push(...(await this.retrieveMemoryContext(msg)));
 
-      for (const m of recentMemory) messages.push(toModelMessage(m));
+      if (history.toolContext) contextBlocks.push(history.toolContext);
+      // Skills and services the owner chose earlier in this chat, every turn: a skill's
+      // instructions drop out of history, and the method must not drift ("use hyperframes").
+      if (this.skillLoader && !generalAccess) {
+        try {
+          const note = chatChoicesNote(chatChoices(activeSession.messages.slice(-80), this.skillLoader.getDiscovered().map((d) => d.name)));
+          if (note) contextBlocks.push(note);
+        } catch (err) {
+          logger.debug({ err: (err as Error).message }, 'chat choices failed');
+        }
+      }
 
       if (!canonicalSessionId) messages.push({ role: 'user', content: msg.content });
 
-      const volatileSystem = contextBlocks.length > 0
-        ? `## Context for this turn\n\n${contextBlocks.join('\n\n')}`
-        : '';
+      const volatileSystem = [
+        promptParts.dynamic,
+        contextBlocks.length > 0 ? `## Context for this turn\n\n${contextBlocks.join('\n\n')}` : '',
+      ].filter(Boolean).join('\n\n');
       // Mode-aware tool exposure: niche tool groups (Spotify) are left out of
       // the request unless the turn is about them. Schemas are re-sent on
       // every step, so this saves tokens on every step of every turn.
@@ -3206,21 +3932,13 @@ export class Agent {
         recentMemory.map((m) => m.content),
       );
 
-      // ── Skill Intent Routing & Batch Execution ──
-      //
-      // Routing strategy:
-      //   1. Explicit pick via `#skill-name` prefix → run that skill directly,
-      //      no ambiguity resolution needed.
-      //   2. Otherwise consult the intent router:
-      //      - Clear winner (high confidence + clear gap) → let the LLM invoke
-      //        it normally via use_skill (single skill) OR batch-execute when
-      //        the top batch is multi-skill in the same category.
-      //      - Ambiguous (multiple contenders bunched near the top) → ask the
-      //        user to disambiguate before doing anything.
-      //      - No usable match → fall through to the normal LLM loop.
       // A command that reached the model is a real turn after all.
       raiseTurnIndicator();
-      await this.routeSkillIntent(msg, trimmed, messages);
+      // `#skill-name` is the user's explicit pick; any other skill choice is
+      // the model's (ADR-040).
+      this.applyExplicitSkillPick(msg, trimmed, messages);
+      // `/image …` or the desktop's Image switch: an image model makes it (ADR-042).
+      applyMediaIntent(msg, trimmed, messages);
 
       this.lifecycle.transition('responding');
 
@@ -3230,10 +3948,10 @@ export class Agent {
         this.markProgress();
       }
 
-      this.capabilities.setChannelContext(msg.channelId, msg.channelType);
-      this.capabilities.permissions.setCurrentChannelType(msg.channelType);
-      this.capabilities.permissions.setCurrentSenderRole(msg.senderRole);
-      this.capabilities.permissions.setUnattendedTurn(msg.senderId === 'system');
+      const toolDiscovery = new ToolDiscovery(
+        () => this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+        this.config.toolDiscovery?.enabled === true,
+      );
 
       const providerContextId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : msg.channelId);
       const channelOverride = this.channelProviderOverrides.get(providerContextId);
@@ -3243,7 +3961,57 @@ export class Agent {
           [Symbol.iterator]()
         : this.providers.getFallbackIterator();
       let result: any = null;
+      // Every model step this turn adds its own usage here (main loop,
+      // continuations, guard, verification). Report THIS, never result.usage:
+      // that is the SDK's last step only, and later rounds replace result.
+      const turnUsage = new TurnUsage();
       let usedProvider: { name: string; model: string } | null = null;
+      // The provider most recently called, even if that attempt never
+      // completed (/stop, abort, error). Set before every model call (main
+      // loop, guard, resume, verification): each step's usage is billed to
+      // it, so steps from a provider that failed before a fallback stay
+      // billed to that provider, and a stopped turn isn't filed as "unknown".
+      let attemptedProvider: { name: string; model: string } | null = null;
+      let usageRecorded: { turnTotals: TurnUsageTotals; usageEntries: SourceUsageTotals[]; billedProvider: { name: string; model: string } | null } | null = null;
+      const recordTurnUsage = (lastResultUsage?: StepUsageLike) => {
+        if (usageRecorded) return usageRecorded;
+        // Who billed this turn: the provider that completed, else the last one
+        // called (a stopped or failed attempt still billed its finished steps).
+        const billedProvider = usedProvider ?? attemptedProvider;
+        // Whole-turn usage: every step of every round. Fall back to the last
+        // result only if no step reported (a path without step callbacks).
+        const turnTotals = turnUsage.totals().steps > 0
+          ? turnUsage.totals()
+          : (() => {
+            const fallback = new TurnUsage();
+            fallback.add(lastResultUsage);
+            return fallback.totals();
+          })();
+        // One budget entry per provider+model: a turn that fell back bills the
+        // failed provider for its finished steps and the fallback for the rest.
+        const usageEntries = billingEntries(
+          turnTotals,
+          turnUsage.totals().steps > 0 ? turnUsage.bySource() : [],
+          billedProvider,
+        );
+        for (const entry of usageEntries) {
+          this.tokenBudget.recordUsage({
+            provider: entry.provider,
+            model: entry.model,
+            inputTokens: entry.inputTokens,
+            outputTokens: entry.outputTokens,
+            totalTokens: entry.totalTokens,
+            // The split lets tokens.cachedWeight discount cache hits in the budget.
+            cachedInputTokens: entry.cachedInputTokens,
+            noCacheInputTokens: entry.noCacheInputTokens,
+            channelType: msg.channelType,
+            agentId: this.config.cloud.agentId || undefined,
+          });
+        }
+        usageRecorded = { turnTotals, usageEntries, billedProvider };
+        return usageRecorded;
+      };
+      flushTurnUsage = () => { if (turnUsage.totals().steps > 0) recordTurnUsage(); };
       let lastError: any = null;
       let hasCompletedTool = false;
       let hasStreamedOutput = false;
@@ -3283,6 +4051,9 @@ export class Agent {
       // Compact per-turn tool trace, written to the session at turn end so
       // the next turn's history carries what was read and written.
       const turnToolTrace: string[] = [];
+      // The same steps as data: a turn that ends without text is answered
+      // with what it did instead of "(no text response)".
+      const turnActions: TurnAction[] = [];
       // Files this turn makes that are worth keeping (images, PDFs, reports…): artifacts of the conversation.
       const artifactCollector = new ArtifactCollector({
         startedAt: Date.now(),
@@ -3309,6 +4080,7 @@ export class Agent {
             args: summarizeToolArgs(tc.input),
             outcome: summarizeToolResult(raw, !isFailedToolResult(text)),
           }));
+          turnActions.push({ tool: tc.toolName, input: tc.input, ok: !isFailedToolResult(text) });
         }
       };
       let lastStepHadToolCalls = false;
@@ -3439,14 +4211,14 @@ export class Agent {
       // non-streaming): they were two ~295-line copies that differed only
       // in their memory-checkpoint label and drifted on every change. The
       // continuation rounds (resume / verification) share a lighter handler.
-      const stepHandler = (path: 'stream' | 'gen') => async ({ toolCalls, toolResults }: { toolCalls?: any[]; toolResults?: any[] }): Promise<void> => {
+      const stepHandler = (path: 'stream' | 'gen') => async ({ toolCalls, toolResults, usage }: { toolCalls?: any[]; toolResults?: any[]; usage?: StepUsageLike }): Promise<void> => {
                 this.completedStepCount++;
+                turnUsage.add(usage, attemptedProvider);
                 // Completion-contract tracking: per-round step usage and how
                 // the step ended (tool calls pending = work in progress).
                 lastRoundSteps++;
                 lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
-                const cliCh = this.channels.get('cli');
-                if (cliCh instanceof CLIChannel) cliCh.bumpLiveActivitySteps();
+                this.cliFeed()?.bumpLiveActivitySteps();
                 // Every tool step goes into the per-turn trace (session history
                 // and /trace), not only the guard/continuation rounds.
                 noteToolSteps(toolCalls, toolResults);
@@ -3473,6 +4245,9 @@ export class Agent {
                     } catch { /* compaction is best-effort */ }
                     return;
                   }
+                  // Already compacted: give way only if this is the turn the
+                  // governor picks (the newest); an older one keeps working.
+                  if (!shouldYieldToMemory()) return;
                   this.currentAbortReason = 'memory-pressure';
                   loopAbortController.abort(new Error(`Task stopped at ${Math.round(process.memoryUsage().heapUsed / 1048576)}MB heap usage (step governor)`));
                   return;
@@ -3588,7 +4363,7 @@ export class Agent {
                         // Not yet at check limit — let it continue with a note
                         loopDetector.reset();
                         loopWarningSent = false;
-                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                        await this.sendProgressNote(channel, `☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                       } else {
                         loopWarningSent = true;
                         const shouldContinue = await channel.askToContinue(
@@ -3667,19 +4442,7 @@ export class Agent {
                         }
                       }
                     } else if (channel instanceof WebChannel) {
-                      const webCh = channel as WebChannel;
-                      for (const tc of toolCalls) {
-                        webCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = resultFor(toolCalls, toolResults, i) as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            webCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId);
-                          }
-                        }
-                      }
+                      // Sent live, as each tool starts and ends (pushLiveToolEvent).
                     } else if (channel instanceof DiscordChannel) {
                       const dcCh = channel as DiscordChannel;
                       for (const tc of toolCalls) {
@@ -3724,7 +4487,7 @@ export class Agent {
                     logger.warn('Reasoning loop detected — model keeps thinking without acting, aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send('⚠ I\'m stuck in a reasoning loop (thinking without taking action). Stopping.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await this.sendProgressNote(channel, '⚠ I\'m stuck in a reasoning loop (thinking without taking action). Stopping.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                     }
                     loopAbortController.abort();
                     return;
@@ -3740,12 +4503,12 @@ export class Agent {
                   }
                 }
               };
-      const continuationStepHandler = async (toolCalls: any[] | undefined, toolResults: any[] | undefined): Promise<void> => {
+      const continuationStepHandler = async (toolCalls: any[] | undefined, toolResults: any[] | undefined, usage?: StepUsageLike): Promise<void> => {
               this.completedStepCount++;
+              turnUsage.add(usage, attemptedProvider);
               lastRoundSteps++;
               lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
-              const cliChResume = this.channels.get('cli');
-              if (cliChResume instanceof CLIChannel) cliChResume.bumpLiveActivitySteps();
+              this.cliFeed()?.bumpLiveActivitySteps();
               if (toolCalls && toolResults && toolCalls.length > 0) {
                 hasCompletedTool = true;
                 noteToolSteps(toolCalls, toolResults);
@@ -3778,11 +4541,14 @@ export class Agent {
         // Per-attempt latency accounting: the only way to answer "why is
         // coding slow" with data instead of guesses.
         const attemptStartedAt = Date.now();
+        let firstResponse: { received(): void; clear(): void } | null = null;
+        attemptedProvider = { name: provider.name, model: provider.getModel() };
+        noteTurnModel(provider.getModel());
         try {
           const providerDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           this.markProgress(`Calling ${provider.name}...`);
           this.pushLiveActivity(`Calling ${provider.name}`, provider.getModel());
-          updateCliProviderStatus(this.channels.get('cli'), provider.name, provider.getModel());
+          if (this.cliFeed()) updateCliProviderStatus(this.channels.get('cli'), provider.name, provider.getModel());
           const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
             ? { deepseek: { thinking: { type: 'enabled' as const } } }
             : undefined;
@@ -3791,7 +4557,11 @@ export class Agent {
           // get plain text.
           // Photos and PDFs from the chat go to models that can take them.
           const seesImages = modelSeesImages(provider.name, provider.getModel(), provider.seesImages);
-          setPluginImagesAllowed(seesImages);
+          // How screenshots reach this model, and at what size (ADR-043): inside
+          // tool results, as an image message after them, or not at all.
+          const vision = visionProfile({ model: provider.getModel(), seesImages, toolResultImages: provider.supportsToolResultImages() });
+          setToolVision(vision);
+          logger.debug({ provider: provider.name, model: provider.getModel(), route: vision.route, box: vision.box }, 'Screenshot route for this model');
           const providerMessages = withAttachments(
             deepseekProviderOptions ? withReasoningParts(messages) : messages,
             msg,
@@ -3813,15 +4583,20 @@ export class Agent {
           if (canStream && channel) {
             let streamError: unknown;
             let streamAborted = false;
+            // A provider that accepts the request and then sends nothing (rate
+            // limited upstream, overloaded, a dead connection) used to hold the
+            // turn at "Starting" until the stall watchdog — minutes. Nothing
+            // within the first-response window → this attempt is stalled and
+            // the next provider in the chain takes over (ADR-039).
+            firstResponse = this.armFirstResponseTimer(provider.name, loopAbortController);
             const streamResult = streamText({
               model: provider.getModelInstance(),
               // Mercury builds this system message itself (trusted, not user input);
               // opting in stops the SDK printing a warning on every call.
               allowSystemInMessages: true,
               messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              ...toolDiscovery.request(activeTools),
               maxOutputTokens: providerMaxOutputTokens,
-              ...(activeTools ? { activeTools } : {}),
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
               // Memory: the SDK retains a structuredClone of the whole
@@ -3836,6 +4611,7 @@ export class Agent {
               onAbort: () => {
                 streamAborted = true;
               },
+              onChunk: () => firstResponse?.received(),
               // Real-time feedback: these fire at TOOL EXECUTION time, not
               // step completion — the TUI live block shows what is actually
               // running during long tool calls instead of nothing.
@@ -3861,13 +4637,9 @@ export class Agent {
 
             const cliChThinking = channel instanceof CLIChannel ? channel : null;
             // Clients that show the thought process live (Mercury Desktop) get the reasoning text.
-            const webChThinking = channel instanceof WebChannel ? channel : null;
-            const reasoningTarget = msg.channelId;
+            const reasoningSink = this.reasoningSink(channel, msg.channelId);
             const trackedStream = this.withProgressStream((async function* () {
-              for await (const chunk of (stepAwareTextStream(streamResult.fullStream, (preview, delta) => {
-                cliChThinking?.showThinkingPreview(preview);
-                if (webChThinking) webChThinking.sendReasoning(preview === null ? null : delta ?? '', reasoningTarget);
-              }))) {
+              for await (const chunk of (stepAwareTextStream(streamResult.fullStream, reasoningSink))) {
                 if (chunk) hasStreamedOutput = true;
                 cliChThinking?.showThinkingPreview(null);
                 yield chunk;
@@ -3879,6 +4651,7 @@ export class Agent {
               providerDeadlineAt,
             );
             cliResponseStreamed = channel instanceof CLIChannel;
+            firstResponse.clear();
 
             // Surface the REAL provider error BEFORE awaiting the result
             // promises: a stream that errored (401, invalid key) records zero
@@ -3945,7 +4718,7 @@ export class Agent {
                         ? toolTruncationContinuationPrompt(msg.content)
                         : truncationContinuationPrompt(msg.content) },
                     ], volatileSystem),
-                    tools: this.capabilities.getTools(),
+                    ...toolDiscovery.request(),
                     maxOutputTokens: effectiveMaxOutputTokens,
                     // FULL budget: a one-step round can only read files — the
                     // model could never reach the write, which is exactly the
@@ -3953,12 +4726,14 @@ export class Agent {
                     stopWhen: stepCountIs(effectiveMaxSteps),
                     abortSignal: loopAbortController.signal,
                     experimental_include: { requestBody: false },
+                    // Billed like any other step: count it in the turn total.
+                    onStepFinish: ({ usage }) => { turnUsage.add(usage, attemptedProvider); },
                   })),
                   loopAbortController,
                   providerDeadlineAt,
                 );
                 const chunk: string[] = [];
-                for await (const c of stepAwareTextStream(continueResult.fullStream)) chunk.push(c);
+                for await (const c of stepAwareTextStream(continueResult.fullStream, this.reasoningSink(channel, msg.channelId))) chunk.push(c);
                 const piece = chunk.join('');
                 const cFinish: string = await continueResult.finishReason;
                 if (cFinish === 'error') throw new Error('Continuation stream ended with an error');
@@ -3990,9 +4765,8 @@ export class Agent {
               // opting in stops the SDK printing a warning on every call.
               allowSystemInMessages: true,
               messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              ...toolDiscovery.request(activeTools),
               maxOutputTokens: providerMaxOutputTokens,
-              ...(activeTools ? { activeTools } : {}),
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
               // Same O(N²) step retention as streamText (see comment above).
@@ -4054,6 +4828,7 @@ export class Agent {
           }
           break;
         } catch (err: any) {
+          firstResponse?.clear();
           if (this.currentAbortReason === 'memory-pressure') {
             lastError = loopAbortController.signal.reason instanceof Error
               ? loopAbortController.signal.reason
@@ -4086,7 +4861,7 @@ export class Agent {
           }
           if (this.currentAbortReason === 'backgrounded') {
             researchRun?.end('stopped', 'it was moved to the background');
-            result = { text: 'This task was moved to the background and will report back when it finishes.', usage: undefined };
+            result = { text: stopNoteFor('backgrounded'), usage: undefined };
             break;
           }
           if (this.currentAbortReason === 'stopped' && researchRun?.finishRequested && researchRun.readCount() > 0) {
@@ -4097,7 +4872,7 @@ export class Agent {
           }
           if (this.currentAbortReason === 'stopped' || this.currentAbortReason === 'halted') {
             researchRun?.end('stopped', 'you stopped it');
-            result = { text: `⏹ Task ${this.currentAbortReason}. Its work entry was cancelled — a restart will not resume it. Send the request again or ask me to continue if you change your mind.`, usage: undefined };
+            result = { text: stopNoteFor(this.currentAbortReason), usage: undefined };
             this.currentAbortReason = null;
             break;
           }
@@ -4152,6 +4927,15 @@ export class Agent {
         }
       }
 
+      // Stopped by the owner however the attempt ended (mid-tool, between
+      // steps, in a fallback): the answer is the stop note — never a retry,
+      // a continuation or a failure report (ADR-038).
+      const ownerStop = this.turn()?.cancelled ?? null;
+      if (!result && ownerStop) {
+        researchRun?.end('stopped', ownerStop === 'backgrounded' ? 'it was moved to the background' : 'you stopped it');
+        result = { text: stopNoteFor(ownerStop), usage: undefined };
+      }
+
       if (!result && researchRun && !memoryPressureStop) {
         const cut = researchCut ?? (lastError ? `of an error (${whitelabelProviderError(lastError)})` : 'it was interrupted');
         if (await deliverResearchReport(cut)) return;
@@ -4180,7 +4964,7 @@ export class Agent {
           return;
         }
         logger.error({ err: lastError }, errMsg);
-        if (this.currentWorkKey && (hasCompletedTool || hasStreamedOutput || requiresContinuationApproval)) {
+        if (this.currentWorkKey && !msg.metadata?.scheduledTaskId && (hasCompletedTool || hasStreamedOutput || requiresContinuationApproval)) {
           const continuationAttempt = typeof msg.metadata?.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 0;
           const needsApproval = needsContinuationApproval(continuationAttempt, requiresContinuationApproval);
           if (needsApproval) {
@@ -4214,7 +4998,7 @@ export class Agent {
             return;
           }
         }
-        if (this.currentWorkKey && !hasCompletedTool && !hasStreamedOutput && this.isRetryableProviderError(lastError)) {
+        if (this.currentWorkKey && !msg.metadata?.scheduledTaskId && !hasCompletedTool && !hasStreamedOutput && this.isRetryableProviderError(lastError)) {
           const attempts = this.workLedger.get(this.currentWorkKey)?.attempts ?? 1;
           const shouldContinue = !needsRetryApproval(attempts) || (
             channel && msg.channelType !== 'internal'
@@ -4299,7 +5083,7 @@ export class Agent {
         const isDuplicateWarning = lastGuardMsg?.role === 'agent'
           && lastGuardMsg.content.startsWith('Getting started on the real build now');
         if (channel && msg.channelType !== 'internal' && !isDuplicateWarning) {
-          await channel.send(
+          await this.sendProgressNote(channel, 
             `Alright — getting started on the real build now (attempt ${executeGuardRounds} of ${MAX_EXECUTE_CONTINUATIONS})...`,
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -4336,6 +5120,7 @@ export class Agent {
         const guardProvider = providersForAttempt[guardProviderCursor % providersForAttempt.length];
         guardProviderCursor++;
         if (!guardProvider) break;
+        attemptedProvider = { name: guardProvider.name, model: guardProvider.getModel() };
         try {
           this.markProgress(`Resuming with ${guardProvider.name}...`);
           const guardDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
@@ -4345,14 +5130,13 @@ export class Agent {
             // opting in stops the SDK printing a warning on every call.
             allowSystemInMessages: true,
             messages: this.withCachedSystem(systemPrompt, messages, volatileSystem),
-            tools: this.capabilities.getTools(),
+            ...toolDiscovery.request(undefined, { forceFirstTool: true, firstStepTools: FORCED_ACTION_TOOLS }),
             maxOutputTokens: effectiveMaxOutputTokens,
             stopWhen: stepCountIs(effectiveMaxSteps),
             // Mechanical enforcement, not a polite nudge: the first step of
             // this round MUST contain a tool call. Text nudges alone let
             // narration-only models loop for every round; a provider-enforced
             // toolChoice converts "describing the work" into doing it.
-            prepareStep: ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const, activeTools: FORCED_ACTION_TOOLS } : {}),
             experimental_onToolCallStart: ({ toolCall }) => {
               const tc = toolCall as any;
               this.markProgress(formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
@@ -4370,13 +5154,13 @@ export class Agent {
             },
             abortSignal: loopAbortController.signal,
             experimental_include: { requestBody: false },
-            onStepFinish: async ({ toolCalls, toolResults }) => {
+            onStepFinish: async ({ toolCalls, toolResults, usage }) => {
               this.completedStepCount++;
+              turnUsage.add(usage, attemptedProvider);
               // Completion-contract tracking for the guard round.
               lastRoundSteps++;
               lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
-              const cliChGen = this.channels.get('cli');
-              if (cliChGen instanceof CLIChannel) cliChGen.bumpLiveActivitySteps();
+              this.cliFeed()?.bumpLiveActivitySteps();
               if (toolCalls && toolResults && toolCalls.length > 0) {
                 hasCompletedTool = true;
                 noteToolSteps(toolCalls, toolResults);
@@ -4402,7 +5186,7 @@ export class Agent {
           });
           const guardText = channel
             ? await this.withProviderDeadline(
-              channel.stream(stepAwareTextStream(guardStream.fullStream), msg.channelId),
+              channel.stream(stepAwareTextStream(guardStream.fullStream, this.reasoningSink(channel, msg.channelId)), msg.channelId),
               loopAbortController,
               guardDeadlineAt,
             )
@@ -4486,7 +5270,7 @@ export class Agent {
         this.markProgress('Step budget reached — continuing...');
         this.pushLiveActivity('Resuming with a fresh step budget', 'step budget');
         if (channel && msg.channelType !== 'internal') {
-          await channel.send(
+          await this.sendProgressNote(channel, 
             `This one's a bigger build than a single pass — picking up right where I left off...`,
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -4498,6 +5282,7 @@ export class Agent {
           ? (providersForAttempt.find((p) => p.name === usedProvider!.name && p.getModel() === usedProvider!.model) ?? providersForAttempt[0])
           : providersForAttempt[0];
         if (!resumeProvider) break;
+        attemptedProvider = { name: resumeProvider.name, model: resumeProvider.getModel() };
         lastRoundSteps = 0;
         try {
           const round = await this.runInlineContinuationRound({
@@ -4510,6 +5295,7 @@ export class Agent {
             abortController: loopAbortController,
             channel,
             channelId: msg.channelId,
+            toolDiscovery,
             onStep: continuationStepHandler,
           });
           if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning, finishReason: round.finishReason };
@@ -4525,19 +5311,24 @@ export class Agent {
       // (no build/test/typecheck ran clean after the last edit). Force one
       // bounded evidence round. Execute mode only: in plain chat "write my
       // notes to notes.md" must not trigger "running the build/tests now".
+      // Chat doing real multi-step work (it made a plan this turn) and producing something:
+      // Mercury Code's rule, adapted — look at the result before calling it done.
+      const chatCheck = !this.programmingMode.isExecute()
+        && (this.planTouchedAt.get(msg.channelId) ?? 0) >= turnStartedAt
+        && chatNeedsCheck(executeToolSucceeded)
+        && !responseAsksUser(result.text || '');
       if (
         !loopAbortController.signal.aborted
         && turnEnd() === 'text-stop'
-        && this.programmingMode.isExecute()
         && !this.capabilities.areToolsDisabled()
         && verificationContinuations < MAX_VERIFICATION_CONTINUATIONS
-        && shouldRequireVerification({
+        && (chatCheck || (this.programmingMode.isExecute() && shouldRequireVerification({
           taskText: msg.content,
           hasApprovedPlan: this.programmingMode.getLastPlan() != null,
           commandsRun: executeCommandsRun,
           toolsSucceeded: executeToolSucceeded,
           verifiedOk: verifiedAfterLastMutation(),
-        })
+        })))
       ) {
         verificationContinuations++;
         logger.warn(
@@ -4547,18 +5338,19 @@ export class Agent {
         this.markProgress('Verifying changes...');
         this.pushLiveActivity('Verifying the work', 'verification gate');
         if (channel && msg.channelType !== 'internal') {
-          await channel.send(
-            'Checking my work before I call it done — running the build/tests now...',
+          await this.sendProgressNote(channel, 
+            chatCheck ? 'Checking the result before I call it done...' : 'Checking my work before I call it done — running the build/tests now...',
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
         }
         const verifyText = (result.text || '').trim();
         if (verifyText && verifyText !== '(no text response)') messages.push({ role: 'assistant', content: verifyText });
-        messages.push({ role: 'user', content: verificationPrompt(msg.content) });
+        messages.push({ role: 'user', content: chatCheck ? chatCheckPrompt(msg.content) : verificationPrompt(msg.content) });
         const verifyProvider = usedProvider
           ? (providersForAttempt.find((p) => p.name === usedProvider!.name && p.getModel() === usedProvider!.model) ?? providersForAttempt[0])
           : providersForAttempt[0];
         if (verifyProvider) {
+          attemptedProvider = { name: verifyProvider.name, model: verifyProvider.getModel() };
           lastRoundSteps = 0;
           try {
             const round = await this.runInlineContinuationRound({
@@ -4573,6 +5365,7 @@ export class Agent {
               channelId: msg.channelId,
               // Verification must produce evidence, not prose about evidence.
               forceFirstTool: true,
+              toolDiscovery,
               onStep: continuationStepHandler,
             });
             if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning, finishReason: round.finishReason };
@@ -4662,7 +5455,18 @@ export class Agent {
       // Recompute AFTER the guard: the continuation's output (not the
       // original narration) must be what reaches the session store, the
       // work ledger, and the final delivery.
-      let finalText = (result.text || '').trim() || '(no text response)';
+      // Stopped during a continuation or verification round: deliver the
+      // stop note, never the earlier answer dressed up as complete.
+      {
+        const stoppedAs = this.turn()?.cancelled ?? null;
+        if (stoppedAs && (result.text || '').trim() !== stopNoteFor(stoppedAs)) {
+          if (researchRun?.outcome === 'running') researchRun.end('stopped', stoppedAs === 'backgrounded' ? 'it was moved to the background' : 'you stopped it');
+          result = { ...result, text: stopNoteFor(stoppedAs) };
+        }
+      }
+      // No text from the model (it ended on tool calls): say what was done.
+      const modelWroteText = (result.text || '').trim().length > 0;
+      let finalText = modelWroteText ? (result.text || '').trim() : summarizeSilentTurn(turnActions);
       let researchReportText: string | null = null;
 
       // A research run: an empty answer still gets a report from what was
@@ -4689,22 +5493,20 @@ export class Agent {
         logger.info({ planLength: preGuardText.length }, 'Plan captured from plan-mode response');
       }
 
-      this.tokenBudget.recordUsage({
-        provider: usedProvider?.name ?? 'unknown',
-        model: usedProvider?.model ?? 'unknown',
-        inputTokens: result.usage?.inputTokens ?? 0,
-        outputTokens: result.usage?.outputTokens ?? 0,
-        totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-        channelType: msg.channelType,
-        agentId: this.config.cloud.agentId || undefined,
-      });
+      // Who billed this turn: the provider that completed, else the last one
+      // called (a stopped or failed attempt still billed its finished steps).
+      const { turnTotals, usageEntries, billedProvider } = recordTurnUsage(result.usage);
       logger.info({
-        provider: usedProvider?.name,
-        model: usedProvider?.model,
-        inputTokens: result.usage?.inputTokens ?? 0,
-        cachedInputTokens: result.usage?.cachedInputTokens ?? 0,
-        outputTokens: result.usage?.outputTokens ?? 0,
+        provider: billedProvider?.name,
+        model: billedProvider?.model,
+        inputTokens: turnTotals.inputTokens,
+        cachedInputTokens: turnTotals.cachedInputTokens,
+        noCacheInputTokens: turnTotals.noCacheInputTokens,
+        outputTokens: turnTotals.outputTokens,
+        reasoningTokens: turnTotals.reasoningTokens,
         steps: this.completedStepCount,
+        usageSteps: turnTotals.steps,
+        ...(usageEntries.length > 1 ? { usageByProvider: usageEntries.map((e) => ({ provider: e.provider, model: e.model, inputTokens: e.inputTokens, outputTokens: e.outputTokens })) } : {}),
         toolCalls: turnToolTrace.length,
         historyEntries: recentMemory.length,
         activeTools: activeTools?.length ?? 'all',
@@ -4715,7 +5517,7 @@ export class Agent {
       // Estimate tokens saved by Saver Mode (cap headroom + history trim).
       // Rough: (default_cap - actual_output) when capped, plus history-window delta.
       if (saverWasActive) {
-        const actualOutput = result.usage?.outputTokens ?? 0;
+        const actualOutput = turnTotals.outputTokens;
         const outputHeadroom = Math.max(0, MODEL_OUTPUT_TOKEN_LIMIT - effectiveMaxOutputTokens);
         const outputSaved = Math.max(0, Math.min(outputHeadroom, MODEL_OUTPUT_TOKEN_LIMIT - actualOutput));
         // Rough proxy: each trimmed history message ~120 tokens average.
@@ -4751,7 +5553,7 @@ export class Agent {
           role: 'assistant',
           content: finalText,
           externalMessageId: `${msg.id}:assistant`,
-          tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          tokenCount: turnTotals.totalTokens,
           reasoning: typeof result.reasoning === 'string'
             ? result.reasoning
             : result.reasoning
@@ -4761,14 +5563,17 @@ export class Agent {
             channelType: msg.channelType,
             channelId: msg.channelId,
             ...(typeof msg.metadata?.requestId === 'string' ? { requestId: msg.metadata.requestId } : {}),
-            ...(usedProvider ? { provider: usedProvider.name, model: usedProvider.model } : {}),
+            ...(billedProvider ? { provider: billedProvider.name, model: billedProvider.model } : {}),
+            // The thought process as shown live, for the reopened chat.
+            ...(() => { const t = this.turn(); const trace = t?.trace.snapshot(t.startedAt); return trace ? { trace } : {}; })(),
             // Per-turn trace, shown by /trace <id>.
             traceId,
             elapsedMs: Date.now() - startTime,
             steps: this.completedStepCount,
-            inputTokens: result.usage?.inputTokens ?? 0,
-            cachedInputTokens: result.usage?.cachedInputTokens ?? 0,
-            outputTokens: result.usage?.outputTokens ?? 0,
+            inputTokens: turnTotals.inputTokens,
+            cachedInputTokens: turnTotals.cachedInputTokens,
+            noCacheInputTokens: turnTotals.noCacheInputTokens,
+            outputTokens: turnTotals.outputTokens,
             ...(lastVerificationNote ? { verification: lastVerificationNote } : {}),
             ...(turnArtifacts.length ? { artifacts: turnArtifacts.map(artifactRef) } : {}),
             ...(researchRun ? { research: researchRun.snapshot() } : {}),
@@ -4782,7 +5587,7 @@ export class Agent {
         this.shortTerm.add(msg.channelId, { id: msg.id, timestamp: msg.timestamp, role: 'user', content: msg.content });
         this.shortTerm.add(msg.channelId, {
           id: Date.now().toString(36), timestamp: Date.now(), role: 'assistant', content: finalText,
-          tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0), reasoning: result.reasoning || undefined,
+          tokenCount: turnTotals.totalTokens, reasoning: result.reasoning || undefined,
         });
       }
 
@@ -4797,7 +5602,8 @@ export class Agent {
       let replyDelivered: () => void = () => {};
       const delivered = new Promise<void>((resolve) => { replyDelivered = resolve; });
       if (msg.channelType !== 'internal' && msg.metadata?.channelAccess !== 'general') {
-        this.extractMemory(msg.content, finalText, { msg, channel, sessionId: canonicalSessionId, toolTrace: turnToolTrace, delivered }).catch(err => {
+        // What the turn read, taken now: the learning pass runs after the turn's scope (ADR-044).
+        this.extractMemory(msg.content, finalText, { msg, channel, sessionId: canonicalSessionId, toolTrace: turnToolTrace, delivered, exposure: exposure() }).catch(err => {
           logger.warn({ err }, 'Memory extraction failed');
         });
         this.scheduleStatusVerbRefresh(channel, msg.content);
@@ -4809,11 +5615,12 @@ export class Agent {
         const elapsed = Date.now() - startTime;
         const stepCount = this.completedStepCount;
         const completionMeta = {
-          provider: usedProvider?.name ?? 'unknown',
-          model: usedProvider?.model ?? 'unknown',
-          inputTokens: result.usage?.inputTokens ?? 0,
-          outputTokens: result.usage?.outputTokens ?? 0,
-          totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          provider: billedProvider?.name ?? 'unknown',
+          model: billedProvider?.model ?? 'unknown',
+          inputTokens: turnTotals.inputTokens,
+          outputTokens: turnTotals.outputTokens,
+          totalTokens: turnTotals.totalTokens,
+          cachedInputTokens: turnTotals.cachedInputTokens,
           budgetUsed: this.tokenBudget.getDailyUsed(),
           budgetTotal: this.tokenBudget.getBudget(),
           budgetPercentage: this.tokenBudget.getUsagePercentage(),
@@ -4829,11 +5636,17 @@ export class Agent {
           meta: completionMeta,
           verificationNote: lastVerificationNote || undefined,
           traceId,
-          alreadyStreamed: !requiresFinalSend(msg.channelType, cliResponseStreamed),
+          // Nothing was streamed when the model wrote no text: the summary
+          // of what was done must be sent, or the screen shows nothing.
+          alreadyStreamed: modelWroteText && !this.turnCancelled() && !requiresFinalSend(msg.channelType, cliResponseStreamed),
           forceBanner: isMercuryCodeExecution,
         });
         replyDelivered();
-        this.markProgress();
+        // Progress, without the typing refresh: a "thinking" event after the
+        // reply would make a screen think a new turn started.
+        this.lastProgressAt = Date.now();
+        // A chat-app reply can follow as a voice note (ADR-042 phase 2).
+        if (channel) void this.maybeVoiceReply(channel, msg, finalText);
       } else {
         replyDelivered();
         logger.debug('Internal prompt processed, no channel response needed');
@@ -4847,6 +5660,7 @@ export class Agent {
 
       this.lifecycle.transition('idle');
     } catch (err) {
+      turnFailed = true;
       logger.error({ err }, 'Error handling message');
       const ledgerEntry = this.currentWorkKey ? this.workLedger.get(this.currentWorkKey) : undefined;
       if (this.currentWorkKey) {
@@ -4896,6 +5710,8 @@ export class Agent {
       } catch { /* best effort */ }
       this.lifecycle.transition('idle');
     } finally {
+      releaseSession?.();
+      try { flushTurnUsage?.(); } catch (err) { logger.warn({ err }, 'Recording turn token usage failed'); }
       if (chatFolder) {
         if (cwdBeforeChatFolder && this.capabilities.getCwd() === chatFolder) this.capabilities.setCwd(cwdBeforeChatFolder);
         this.chatFolders().close(chatFolder);
@@ -4909,29 +5725,25 @@ export class Agent {
           if (closed) planChannel.sendPlan(closed, msg.channelId);
         }
         this.emitResearch(msg, researchRun);
-        this.researchMode.endRun();
+        this.researchMode.endRun(msg.channelId);
       }
-      clearInterval(memoryGuard);
+      // The plan as this turn leaves it: a forgotten last tick done, open steps paused or stopped.
+      if (!researchRun) this.settleTurnPlan(msg, this.turnCancelled() ? 'stopped' : turnFailed ? 'failed' : 'completed', turnStartedAt);
       stallWatchdog.stop();
       stopHeartbeat();
       this.finalizeChannelTask(msg);
       this.capabilities.setToolsDisabled(false);
       this.capabilities.permissions.setTurnPluginGrants([]);
-      this.currentMessage = null;
       this.currentAbort = null;
       this.currentAbortReason = null;
       this.currentActivity = '';
       this.completedStepCount = 0;
       this.stepNarrative = [];
-      {
-        const ch = this.channels.get('cli');
-        if (ch instanceof CLIChannel) ch.clearLiveActivity();
-      }
+      this.cliFeed()?.clearLiveActivity();
       if (isInternal) {
         this.capabilities.permissions.endTurnGrant();
       }
       this.capabilities.permissions.clearElevation();
-      this.capabilities.permissions.setUnattendedTurn(false);
     }
   }
 
@@ -4958,11 +5770,20 @@ export class Agent {
     ];
   }
 
-  /** Stable system prompt; assembly lives in core/system-prompt.ts. */
+  /** The whole system prompt; assembly lives in core/system-prompt.ts. */
   private buildSystemPrompt(): string {
+    return assembleSystemPrompt(this.systemPromptInputs());
+  }
+
+  /** Stable (cached) and per-turn parts of the system prompt (ADR-039). */
+  private buildSystemPromptParts(): { stable: string; dynamic: string } {
+    return buildSystemPromptParts(this.systemPromptInputs());
+  }
+
+  private systemPromptInputs(): SystemPromptInputs {
     const summary = this.userMemory ? this.userMemory.getSummary() : null;
     const ownerName = this.config.identity.owner || 'the owner';
-    return assembleSystemPrompt({
+    return {
       identityPrompt: this.identity.getSystemPrompt(this.config.identity),
       ownerSections: this.userMemory ? this.ownerSections(this.userMemory.beliefs, ownerName) : null,
       ownerName,
@@ -4978,31 +5799,39 @@ export class Agent {
       memorySummary: summary ? { total: summary.total, learningPaused: summary.learningPaused } : null,
       toolNames: this.capabilities.getToolNames(),
       github: this.config.github,
-    });
+    };
   }
 
-  async processInternalPrompt(prompt: string, channelId?: string, channelType?: string, opts: { allowTools?: string[]; scheduledTaskId?: string } = {}): Promise<void> {
+  async processInternalPrompt(prompt: string, channelId?: string, channelType?: string, opts: { allowTools?: string[]; scheduledTaskId?: string; scheduledRunId?: string } = {}): Promise<void> {
     const syntheticMsg: ChannelMessage = {
-      id: `internal-${Date.now().toString(36)}`,
+      id: opts.scheduledRunId ? `scheduled-${opts.scheduledRunId}` : `internal-${Date.now().toString(36)}`,
       channelId: channelId || 'internal',
       channelType: (channelType || 'internal') as ChannelType,
       senderId: 'system',
       content: prompt,
       timestamp: Date.now(),
       ...(opts.allowTools?.length || opts.scheduledTaskId
-        ? { metadata: { ...(opts.allowTools?.length ? { allowTools: opts.allowTools } : {}), ...(opts.scheduledTaskId ? { scheduledTaskId: opts.scheduledTaskId } : {}) } }
+        ? { metadata: { ...(opts.allowTools?.length ? { allowTools: opts.allowTools } : {}), ...(opts.scheduledTaskId ? { scheduledTaskId: opts.scheduledTaskId, scheduledRunId: opts.scheduledRunId } : {}) } }
         : {}),
     };
-    this.enqueueMessage(syntheticMsg);
+    if (opts.scheduledTaskId) {
+      // A scheduled prompt is work, never an interactive slash command/dialog answer.
+      const accepted = this.workLedger.accept(syntheticMsg);
+      if (accepted.accepted) {
+        this.queueMessage(syntheticMsg, accepted.entry.key);
+        void this.processQueue();
+      }
+    } else {
+      this.enqueueMessage(syntheticMsg);
+    }
   }
 
-  private async handleScheduledTask(manifest: ScheduledTaskManifest): Promise<void> {
+  private async handleScheduledTask(manifest: ScheduledTaskManifest, runId: string): Promise<ScheduledDispatch> {
     // Bot routines run on the bot lane, never through the main agent loop
     // (BOTS-ARCHITECTURE.md §2.3 — cron lane).
     if (manifest.botId) {
       if (!this.botManager) {
-        logger.warn({ task: manifest.id, botId: manifest.botId }, 'Bot routine fired but BotManager is not wired');
-        return;
+        throw new Error('Bot routine fired but BotManager is not wired');
       }
       logger.info({ task: manifest.id, botId: manifest.botId }, 'Bot routine firing');
       const result = this.botManager.enqueue(manifest.botId, {
@@ -5014,8 +5843,10 @@ export class Agent {
         // Gate skips (busy, too soon, paused) are the governor working, not faults.
         const level = result.reasonCode === 'busy' || result.reasonCode === 'too_soon' || result.reasonCode === 'routine_paused' ? 'info' : 'warn';
         logger[level]({ botId: manifest.botId, task: manifest.id, reasonCode: result.reasonCode }, 'Bot routine tick skipped');
+        if (['busy', 'too_soon', 'routine_paused', 'stopped', 'target_disabled'].includes(result.reasonCode ?? '')) return 'skipped';
+        throw new Error(`Bot schedule was not accepted: ${result.reasonCode ?? 'unknown error'}`);
       }
-      return;
+      return 'dispatched';
     }
     logger.info({ task: manifest.id, channel: manifest.sourceChannelType }, 'Processing scheduled task');
     try {
@@ -5026,7 +5857,7 @@ export class Agent {
       if (channel && manifest.sourceChannelType !== 'internal') {
         const skillInfo = manifest.skillName ? ` (${manifest.skillName})` : '';
         await channel.send(
-          ` Scheduled task started${skillInfo}: ${manifest.description}\nAll actions auto-approved for this run.`,
+          ` Scheduled task started${skillInfo}: ${manifest.description}\nExisting tool permissions apply to this run.`,
           manifest.sourceChannelId,
         ).catch((e) => logger.warn({ e }, 'channel send failed'));
       }
@@ -5039,9 +5870,11 @@ export class Agent {
       if (!prompt) {
         prompt = `Execute scheduled task: ${manifest.description}`;
       }
-      await this.processInternalPrompt(prompt, manifest.sourceChannelId, manifest.sourceChannelType, { allowTools: manifest.allowTools, scheduledTaskId: manifest.id });
+      await this.processInternalPrompt(prompt, manifest.sourceChannelId, manifest.sourceChannelType, { allowTools: manifest.allowTools, scheduledTaskId: manifest.id, scheduledRunId: runId });
+      return 'queued';
     } catch (err) {
       logger.error({ err, task: manifest.id }, 'Scheduled task execution failed');
+      throw err;
     }
   }
 
@@ -5073,6 +5906,64 @@ export class Agent {
     };
   }
   private warnedLearningProvider = false;
+
+  /** Suggestions for a new chat (learning/suggestions.ts): refreshed from the heartbeat, a few times a day at most. */
+  readonly suggestions = new SuggestionEngine({
+    file: path.join(getMercuryHome(), 'suggestions.json'),
+    ownerName: () => this.config.identity.owner || 'the owner',
+    gather: () => this.suggestionContext(),
+    generate: () => {
+      // The model only when learning may run and the budget allows; rules otherwise.
+      if (this.userMemory?.isLearningPaused() || !this.tokenBudget.canAfford(4000)) return null;
+      let provider: ReturnType<ProviderRegistry['getDefault']>;
+      try { provider = this.learningProviders().getDefault(); } catch { return null; }
+      return async (system, prompt, maxOutputTokens) => {
+        const result = await generateText({ model: provider.getModelInstance() as Parameters<typeof generateText>[0]['model'], system, messages: [{ role: 'user', content: prompt }], maxOutputTokens });
+        const inputTokens = result.usage?.inputTokens ?? 0;
+        const outputTokens = result.usage?.outputTokens ?? 0;
+        this.tokenBudget.recordUsage({ provider: provider.name, model: provider.getModel(), inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, channelType: 'internal', agentId: this.config.cloud.agentId || undefined });
+        return result.text;
+      };
+    },
+  });
+
+  /** What suggestions are made from: the owner's profile, goals, recent chats (their own words), schedules, artifacts. */
+  private suggestionContext(): SuggestionContext {
+    const now = Date.now();
+    let about: string | undefined;
+    let current: string[] = [];
+    try {
+      const beliefs = this.userMemory?.beliefs;
+      if (beliefs) {
+        const brief = beliefs.getMeta('brief');
+        if (brief) about = (JSON.parse(brief) as { about?: string }).about;
+        current = beliefs.list({ statuses: ['held', 'confirmed'], kinds: ['goal', 'project', 'situation'], limit: 8 }).map((b) => b.statement);
+      }
+    } catch (err) { logger.debug({ err }, 'Suggestions: profile unavailable'); }
+    const recent: SuggestionContext['recent'] = [];
+    let lastActivity = 0;
+    try {
+      const summaries = this.sessions.listSummaries().sort((a, b) => b.updatedAt - a.updatedAt);
+      lastActivity = summaries[0]?.updatedAt ?? 0;
+      for (const sum of summaries.slice(0, 8)) {
+        let lastAsk: string | undefined;
+        try {
+          const msgs = this.sessions.get(sum.id).messages;
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i];
+            // The owner's own words only: never someone else's message or a scheduled run.
+            if (m.role === 'user' && m.kind === 'message' && m.metadata?.senderRole !== 'member' && m.metadata?.channelType !== 'internal') { lastAsk = m.content.slice(0, 300); break; }
+          }
+        } catch { /* gone */ }
+        recent.push({ title: sum.title, updatedAt: sum.updatedAt, ...(lastAsk ? { lastAsk } : {}) });
+      }
+    } catch (err) { logger.debug({ err }, 'Suggestions: sessions unavailable'); }
+    let schedules: string[] = [];
+    try { schedules = this.scheduler.getManifests().map((m) => m.description).filter(Boolean); } catch { /* none */ }
+    let artifacts: string[] = [];
+    try { artifacts = artifactStore().all().slice(0, 8).map((a) => `${a.name} (${a.kind})`); } catch { /* none */ }
+    return { ownerName: this.config.identity.owner || 'the owner', now, about, current, recent, schedules, artifacts, lastActivity };
+  }
 
   async reflectNow(): Promise<void> {
     if (!this.userMemory) return;
@@ -5121,6 +6012,12 @@ export class Agent {
       // It is the only maintenance the Second Brain gets — one source.
       await this.reflectNow().catch((err) => logger.warn({ err }, 'Reflection pass failed'));
     }
+
+    // New-chat suggestions: remade a few times a day at most, only after the owner was active.
+    try {
+      const last = this.sessions.listSummaries().reduce((n, s) => Math.max(n, s.updatedAt), 0);
+      if (!this.terminalOnly && this.suggestions.shouldRefresh(Date.now(), last)) await this.suggestions.refresh();
+    } catch (err) { logger.debug({ err }, 'Suggestions refresh failed'); }
 
     const notifications: string[] = [];
 
@@ -5191,9 +6088,13 @@ export class Agent {
       toolTrace?: readonly string[];
       /** Resolves once the reply reached the channel; the note is sent after it. */
       delivered?: Promise<void>;
+      /** The untrusted content the turn read (ADR-044). */
+      exposure?: Exposure;
     } = {},
   ): Promise<void> {
     if (!this.userMemory) return;
+    // Someone else's words are never evidence about the owner.
+    if (ctx.msg?.senderRole === 'member') return;
     if (this.userMemory.isLearningPaused()) return;
     const beliefs = this.userMemory.beliefs;
     const channelAccess = typeof ctx.msg?.metadata?.channelAccess === 'string' ? ctx.msg.metadata.channelAccess : undefined;
@@ -5208,6 +6109,7 @@ export class Agent {
         for (const m of this.sessions.get(ctx.sessionId).messages) {
           if (m.kind !== 'message' || (m.role !== 'user' && m.role !== 'assistant')) continue;
           if (m.externalMessageId && thisTurn.has(m.externalMessageId)) continue;
+          if (m.role === 'user' && m.metadata?.senderRole === 'member') continue;
           history.push({ role: m.role === 'user' ? 'owner' : 'mercury', content: m.content });
         }
       } catch (err) {
@@ -5228,11 +6130,26 @@ export class Agent {
     // Validation loop (§3.1): the beliefs the previous turn acted on earn
     // weak support once the owner's next message in the same session shows
     // no correction. Then remember what this turn acted on.
-    const pending = this.pendingActedOn;
-    if (pending && pending.ids.length > 0 && pending.sessionId && pending.sessionId === ctx.sessionId && !signals.correction.detected) {
-      try { beliefs.actedOnOk(pending.ids, pending.sessionId); } catch (err) { logger.debug({ err }, 'actedOnOk failed'); }
+    // Per session (ADR-037): another chat's turn in between no longer resets it.
+    if (ctx.sessionId) {
+      const pending = this.pendingActedOn.get(ctx.sessionId);
+      if (pending && pending.length > 0 && !signals.correction.detected) {
+        try { beliefs.actedOnOk(pending, ctx.sessionId); } catch (err) { logger.debug({ err }, 'actedOnOk failed'); }
+      }
+      this.pendingActedOn.delete(ctx.sessionId);
+      this.pendingActedOn.set(ctx.sessionId, [...(this.lastInjectedBeliefIds ?? [])]);
+      if (this.pendingActedOn.size > 200) {
+        const oldest = this.pendingActedOn.keys().next().value;
+        if (oldest !== undefined) this.pendingActedOn.delete(oldest);
+      }
     }
-    this.pendingActedOn = ctx.sessionId ? { ids: [...(this.lastInjectedBeliefIds ?? [])], sessionId: ctx.sessionId } : null;
+
+    // A turn that read instructions written to an AI learns nothing: whatever
+    // it would take away could be what the page wanted remembered.
+    if (ctx.exposure?.suspicious) {
+      logger.info({ sources: ctx.exposure.sources.map((s) => s.label) }, 'Learning skipped: the turn read content with instructions to an AI');
+      return;
+    }
 
     try {
       const ops = await extractBeliefOperations({
@@ -5251,6 +6168,7 @@ export class Agent {
         channelAccess,
         sessionId: ctx.sessionId,
         turnRef: ctx.msg?.id,
+        untrusted: !!ctx.exposure?.sources.length,
       });
       this.syncTokenInfoToCli();
       if (ops.length === 0) return;
@@ -5297,22 +6215,9 @@ export class Agent {
    * queued for it. Other chats keep going. Returns whether anything stopped.
    */
   stopWorkFor(channelPrefix: string, reason = 'Stopped by the owner.'): boolean {
-    const dropped = this.messageQueue.filter((i) => i.message.channelId.startsWith(channelPrefix));
-    this.messageQueue = this.messageQueue.filter((i) => !i.message.channelId.startsWith(channelPrefix));
-    // Never started: cancel them, or a restart would run them after all.
-    for (const item of dropped) {
-      if (!item.workKey) continue;
-      this.queuedWorkKeys.delete(item.workKey);
-      try { this.workLedger.markCancelled(item.workKey, reason); } catch { /* entry may not exist */ }
-    }
-    let stopped = dropped.length > 0;
-    if (this.currentMessage?.channelId.startsWith(channelPrefix) && this.currentAbort && !this.currentAbort.signal.aborted) {
-      this.currentAbortReason = 'stopped';
-      this.currentAbort.abort();
-      if (this.currentWorkKey) {
-        try { this.workLedger.markCancelled(this.currentWorkKey, reason); } catch { /* entry may not exist */ }
-      }
-      stopped = true;
+    let stopped = this.dropWaiting((m) => m.channelId.startsWith(channelPrefix), reason) > 0;
+    for (const turn of this.activeTurns.values()) {
+      if (turn.message.channelId.startsWith(channelPrefix) && this.abortTurn(turn, 'stopped', reason)) stopped = true;
     }
     if (stopped) logger.info({ channelPrefix }, 'Work stopped for one channel');
     return stopped;
@@ -5334,6 +6239,7 @@ export class Agent {
       await this.supervisor.haltAll();
     }
     this.backgroundTasks.destroy();
+    await this.capabilities.closeBrowserSessions();
     this.providers.destroy();
     await this.sleep();
     logger.info('Mercury has shut down');
@@ -5504,7 +6410,8 @@ Is this productive iteration or a stuck loop?`,
     } else if (action === 'cancel' || action === '4') {
       await channel.send(`Cancelled. ${this.tokenBudget.getStatusText()}`, channelId);
     } else if (!action || action === 'status') {
-      await channel.send(this.tokenBudget.getStatusText(), channelId);
+      const split = this.tokenBudget.getCacheSplitText();
+      await channel.send(split ? `${this.tokenBudget.getStatusText()}\n${split}` : this.tokenBudget.getStatusText(), channelId);
     } else {
       await channel.send(`Unknown budget command "${action}". Available: /budget, /budget override, /budget reset, /budget set <number>, /budget status`, channelId);
     }
@@ -5838,6 +6745,8 @@ Is this productive iteration or a stuck loop?`,
     for (const session of this.sessions.list()) {
       const firstUser = session.messages.find((m) => m.role === 'user' && (m.kind ?? 'message') === 'message');
       if (!firstUser) continue;
+      // Voice labels are deterministic timestamps/durations, not model titles.
+      if (typeof session.messages[0]?.metadata?.voiceCall === 'string') continue;
       if (session.titleSource === 'fallback') {
         const title = fallbackSessionTitle(firstUser.content);
         if (title !== session.title) { this.sessions.updateTitle(session.id, title, 'fallback', { touch: false }); recut++; }

@@ -4,9 +4,10 @@
    ═══════════════════════════════════════════════════════════════ */
 
 import { http, ApiError } from "./client";
+import type { ChatEffort, ImageIntent, MediaModelsResponse, TurnsInfo, VoiceReplies } from "./types";
 import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
-  BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
+  BotActivityEvent, BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
   McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, PluginItem, ReasoningChoice, Skill, DeviceSummary,
 } from "./types";
 
@@ -72,15 +73,25 @@ export const chat = {
   threads: () => http.get<{ threads: ChatThread[] }>("/api/chat/threads"),
   thread: (id: string) => http.get<ChatThread>(`/api/chat/threads/${encodeURIComponent(id)}`),
   createThread: (title?: string) => http.post<ChatThread>("/api/chat/threads", { title }),
+  renameThread: (id: string, title: string) => http.put<{ id: string; title: string }>(`/api/chat/threads/${encodeURIComponent(id)}/title`, { title }),
   deleteThread: (id: string) => http.post<{ deleted: boolean }>(`/api/chat/threads/${encodeURIComponent(id)}/delete`, { confirmSessionId: id }),
-  send: (content: string, sessionId?: string, attachments?: Array<{ name: string; data: string }>, code?: { programming: string; cwd?: string }) =>
-    http.post<{ sent: boolean; sessionId: string }>("/api/chat/send", { content, sessionId, ...(attachments?.length ? { attachments } : {}), ...(code ?? {}) }),
-  /** Interrupt the running turn (same as /stop). Needs the "chat.stop" feature. */
-  stop: () => http.post<{ ok: boolean; note?: string }>("/api/chat/stop", {}),
+  send: (content: string, sessionId?: string, attachments?: Array<{ name: string; data: string }>, code?: { programming: string; cwd?: string }, media?: ImageIntent) =>
+    http.post<{ sent: boolean; sessionId: string }>("/api/chat/send", { content, sessionId, ...(attachments?.length ? { attachments } : {}), ...(code ?? {}), ...(media ? { media } : {}) }),
+  /**
+   * Interrupt a running turn (same as /stop). With a thread, only that chat's
+   * turn stops (runtimes that run chats at once); without one, everything.
+   * Needs the "chat.stop" feature.
+   */
+  stop: (threadId?: string | null, opts?: { keepQueued?: boolean }) =>
+    http.post<{ ok: boolean; note?: string }>("/api/chat/stop", threadId ? { threadId, ...(opts?.keepQueued ? { keepQueued: true } : {}) } : {}),
   /** Take back your last message and the reply (stop the turn first); returns your text. */
   save: (threadId: string, saved: boolean) => http.post<{ id: string; saved: boolean; savedAt: string | null }>(`/api/chat/threads/${encodeURIComponent(threadId)}/save`, { saved }),
   undo: (threadId: string, content: string) => http.post<{ ok: boolean; content: string; removed: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/undo`, { content }),
   answer: (promptId: string, action: string, targetId?: string) => http.post<{ resolved: boolean }>(`/api/chat/permission/${encodeURIComponent(promptId)}`, { action, targetId }),
+  /** Which chats are working now, which wait for a slot, and how many may run at once. */
+  running: () => http.get<TurnsInfo>("/api/chat/running"),
+  /** How many chats may run at once: 0 = automatic, else 1–16. Applies at once. */
+  setConcurrency: (maxTurns: number) => http.put<TurnsInfo>("/api/chat/concurrency", { maxTurns }),
   /** Put this chat's waiting message first in line. */
   queueFirst: (threadId: string) => http.post<{ moved: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/queue/first`, {}),
   /** This chat's research: on for the next message, the run going now, or its last one. */
@@ -95,7 +106,11 @@ export const chat = {
   commands: () => http.get<{ commands: CommandEntry[] }>("/api/chat/commands").then((r) => r.commands),
   settings: () => http.get<ChatSettings>("/api/chat/settings"),
   updateSettings: (patch: Partial<ChatSettings>) => http.put<ChatSettings>("/api/chat/settings", patch),
-  models: () => http.get<ModelsResponse>("/api/chat/models"),
+  models: (sessionId?: string | null) => http.get<ModelsResponse>(`/api/chat/models${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`),
+  /** The reply this chat is working on now, as far as it got (runtimes from ADR-041 on). */
+  live: (id: string) => http.get<{ running: boolean; startedAt?: number; activity?: string; trace?: unknown; text?: string }>(`/api/chat/threads/${encodeURIComponent(id)}/live`),
+  /** This chat's effort: a level, "auto", or null for the model's default (#188). */
+  setEffort: (sessionId: string, level: ReasoningChoice | null) => http.post<{ ok: boolean; effort: ChatEffort }>("/api/chat/effort", { sessionId, level }),
   switchModel: (provider: string, model?: string) => http.post<{ ok: boolean; message: string }>("/api/chat/models/switch", { provider, model }),
   setReasoning: (provider: string, model: string, reasoning: ReasoningChoice | null) => http.post<{ ok: boolean }>("/api/chat/models/prefs", { provider, model, reasoning }),
 };
@@ -125,6 +140,8 @@ export const bots = {
   disable: (id: string) => http.post<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/disable`),
   stop: (id: string) => http.post<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/stop`),
   remove: (id: string) => http.delete<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}`),
+  /** The live feed's recent past, oldest first (the bots stream sends what happens next). */
+  activity: (bots: string[], limit = 400) => http.get<{ events: BotActivityEvent[]; now: number }>(`/api/bots/activity?bots=${encodeURIComponent(bots.join(","))}&limit=${limit}`),
   journal: (id: string, limit = 60) => http.get<{ journal: BotRunRecord[] }>(`/api/bots/${encodeURIComponent(id)}/journal?limit=${limit}`),
   run: (id: string, runId: string) => http.get<RunTranscript>(`/api/bots/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`),
   outputs: (id: string) => http.get<{ outputs: Deliverable[] }>(`/api/bots/${encodeURIComponent(id)}/outputs`),
@@ -192,3 +209,21 @@ export const skills = {
 };
 
 export type { ChatMessage };
+
+/** Image models on the configured providers, and the default (ADR-042). */
+export const media = {
+  models: (refresh = false) => http.get<MediaModelsResponse>(`/api/media/models${refresh ? "?refresh=1" : ""}`),
+  setDefault: (ref: string | null, kind: "image" | "video" | "music" = "image") => http.put<{ ok: boolean }>("/api/media/default", { kind, ref }),
+  /** Speaking: what speaks, the voice, and when chat-app replies come as voice notes. null clears. */
+  setSpeech: (update: { choice?: string | null; voice?: string | null; replies?: VoiceReplies }) => http.put<{ ok: boolean }>("/api/media/speech", update),
+};
+
+/** What the owner might want next, for a new chat (GET /api/suggestions). */
+export interface Suggestion { id: string; title: string; prompt: string; why?: string; kind: "continue" | "create" | "plan" | "check" | "learn" | "explore" }
+export interface SuggestionPick { greeting: string; subtitle?: string; items: Suggestion[]; generatedAt: number }
+
+export const suggestions = {
+  pick: (n = 4) => http.get<SuggestionPick>(`/api/suggestions?n=${n}`),
+  used: (id: string) => http.post<{ ok: boolean }>(`/api/suggestions/${encodeURIComponent(id)}/used`, {}),
+};
+

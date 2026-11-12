@@ -10,8 +10,10 @@
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { getMercuryHome } from './config.js';
+import { ScopedValue } from './turn-scope.js';
+import { cachedCaps, heuristicLevels } from './reasoning-caps.js';
 
-export type ReasoningLevel = 'off' | 'low' | 'medium' | 'high';
+export type ReasoningLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface ModelPref {
   /** User-chosen display name; absent means use the generated one. */
@@ -20,7 +22,7 @@ export interface ModelPref {
   reasoning?: ReasoningLevel;
 }
 
-const REASONING_LEVELS: readonly ReasoningLevel[] = ['off', 'low', 'medium', 'high'];
+const REASONING_LEVELS: readonly ReasoningLevel[] = ['off', 'low', 'medium', 'high', 'xhigh', 'max'];
 const MAX_LABEL_LENGTH = 80;
 /** Same bound Agent.switchProvider applies to model ids. */
 const MAX_REF_LENGTH = 256;
@@ -128,28 +130,202 @@ export function resetModelPrefsCache(): void {
 /** OpenAI API models that accept a reasoning effort: o-series and GPT-5 family. */
 const OPENAI_REASONING_MODEL = /^(o\d|gpt-5)/i;
 
-/** Providers with any reasoning control (decides whether to hook requests at all). */
+/** Providers with their own request path (no OpenAI-style effort field from here). */
+const OWN_WIRE = new Set(['anthropic', 'deepseek', 'mercuryCloud', 'mimo', 'mimoTokenPlan', 'githubCopilot']);
+
+/**
+ * Providers whose requests go through the OpenAI-style hook (decides whether
+ * to hook requests at all; the hook changes a body only when the model has
+ * levels and one is chosen).
+ */
 export function providerHasReasoningControl(provider: string): boolean {
-  return ['chatgptWeb', 'openai', 'ollamaLocal', 'ollamaCloud'].includes(provider);
+  return !OWN_WIRE.has(provider);
+}
+
+/**
+ * What a Claude model does with thinking, from its id (any prefix or date
+ * suffix: "claude-opus-5-5", "anthropic/claude-sonnet-4-6-2026…").
+ *
+ * - thinksByDefault: Claude 5-era models (Opus/Sonnet/Haiku 5+, Fable,
+ *   Mythos) run adaptive thinking whether or not it is asked for, and some
+ *   reject turning it off. Their thinking text is "omitted" unless the
+ *   request asks for a summary.
+ * - adaptive: accepts thinking {type: "adaptive"} (4.6 and later). Older
+ *   models (4.5, 3.x) only take a token budget, which Mercury does not send.
+ * - levels: output_config.effort values the model accepts. "xhigh" arrived
+ *   with Opus 4.7; 4.6 has low…high plus max.
+ */
+export interface ClaudeThinking {
+  thinksByDefault: boolean;
+  adaptive: boolean;
+  levels: ReasoningLevel[];
+}
+
+const NO_CLAUDE_THINKING: ClaudeThinking = { thinksByDefault: false, adaptive: false, levels: [] };
+
+export function claudeThinking(model: string): ClaudeThinking {
+  const id = model.toLowerCase();
+  if (/claude-(fable|mythos)\b/.test(id)) {
+    return { thinksByDefault: true, adaptive: true, levels: ['low', 'medium', 'high', 'xhigh', 'max'] };
+  }
+  const m = /claude-(opus|sonnet|haiku)-(\d+)(?:[-.](\d)(?!\d))?/.exec(id);
+  if (!m) return NO_CLAUDE_THINKING;
+  const family = m[1];
+  const version = Number(m[2]) + (m[3] ? Number(m[3]) / 10 : 0);
+  if (version >= 5) return { thinksByDefault: true, adaptive: true, levels: ['low', 'medium', 'high', 'xhigh', 'max'] };
+  if (version >= 4.7 && family === 'opus') return { thinksByDefault: false, adaptive: true, levels: ['low', 'medium', 'high', 'xhigh', 'max'] };
+  if (version >= 4.6 && family !== 'haiku') return { thinksByDefault: false, adaptive: true, levels: ['low', 'medium', 'high', 'max'] };
+  return NO_CLAUDE_THINKING;
 }
 
 /**
  * Levels a model can honour. ChatGPT/OpenAI models may reject "none", so they
  * get no Off; Ollama maps Off to reasoning_effort "none" (thinking off). On
  * the OpenAI API only reasoning models accept an effort at all: gpt-4o or
- * gpt-4.1 would answer 400 "Unsupported parameter". Anything else: none.
+ * gpt-4.1 would answer 400 "Unsupported parameter". Claude gets the efforts
+ * its model accepts and no Off (Opus 5.5 rejects disabling thinking; on
+ * older models "not set" already means no thinking). Anything else: none.
  */
 export function reasoningLevelsFor(provider: string, model?: string): ReasoningLevel[] {
   if (provider === 'chatgptWeb') return ['low', 'medium', 'high'];
-  if (provider === 'openai') return model && OPENAI_REASONING_MODEL.test(model) ? ['low', 'medium', 'high'] : [];
-  if (provider === 'ollamaLocal' || provider === 'ollamaCloud') return ['off', 'low', 'medium', 'high'];
-  return [];
+  if (provider === 'anthropic') return model ? claudeThinking(model).levels : [];
+  if (OWN_WIRE.has(provider)) return [];
+  const ollama = provider === 'ollamaLocal' || provider === 'ollamaCloud';
+  if (!model) return ollama ? ['off', 'low', 'medium', 'high'] : [];
+  // What the server said (or a 400 it answered) beats any guess (reasoning-caps.ts).
+  const known = cachedCaps(provider, model);
+  if (known) return known.levels;
+  if (provider === 'openai') return OPENAI_REASONING_MODEL.test(model) ? ['low', 'medium', 'high'] : [];
+  // Until Ollama has been asked: its own levels for gpt-oss, on/off for the rest.
+  if (ollama) return /gpt-oss/i.test(model) ? ['low', 'medium', 'high'] : ['off', 'low', 'medium', 'high'];
+  return heuristicLevels(model);
 }
 
-/** The saved level for a model, only if that model can still honour it. */
+/** How a level reads on screen: "auto" → "Auto", "xhigh" → "Extra high". */
+export function effortLabel(level: string): string {
+  return ({ auto: 'Auto', off: 'Off', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' } as Record<string, string>)[level] ?? level;
+}
+
+// ─── Per-chat effort (issue #188) ────────────────────────────────────────────
+
+/**
+ * A chat can override its model's effort ("/effort high" in that chat, the
+ * desktop's Effort picker). The running turn names its chat here, so every
+ * request it makes reads that chat's override. Kept in
+ * ~/.mercury/chat-effort.json, keyed by the chat (the turn's lane: a
+ * desktop thread id, "cli", or a channel conversation).
+ */
+const effortChat = new ScopedValue<string | undefined>(undefined);
+const MAX_CHAT_OVERRIDES = 1000;
+let chatEfforts: Record<string, ReasoningLevel | 'auto'> | null = null;
+
+function chatEffortPath(): string {
+  return join(getMercuryHome(), 'chat-effort.json');
+}
+
+function loadChatEfforts(): Record<string, ReasoningLevel | 'auto'> {
+  if (chatEfforts) return chatEfforts;
+  chatEfforts = Object.create(null) as Record<string, ReasoningLevel | 'auto'>;
+  try {
+    const raw = existsSync(chatEffortPath()) ? JSON.parse(readFileSync(chatEffortPath(), 'utf-8')) : {};
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        if (isValidModelRef(k) && (v === 'auto' || isReasoningLevel(v))) chatEfforts[k] = v;
+      }
+    }
+  } catch { /* unreadable: no overrides */ }
+  return chatEfforts;
+}
+
+/** The running turn's chat: its requests read this chat's override. */
+export function claimEffortChat(chatKey: string): void {
+  effortChat.claim(chatKey);
+}
+
+export function currentEffortChat(): string | undefined {
+  return effortChat.get();
+}
+
+export function getChatEffort(chatKey: string): ReasoningLevel | 'auto' | undefined {
+  return loadChatEfforts()[chatKey];
+}
+
+/** Set a chat's override; null clears it (back to the model's default). */
+export function setChatEffort(chatKey: string, level: ReasoningLevel | 'auto' | null): void {
+  if (!isValidModelRef(chatKey)) return;
+  const all = loadChatEfforts();
+  delete all[chatKey];
+  if (level) all[chatKey] = level;
+  const keys = Object.keys(all);
+  if (keys.length > MAX_CHAT_OVERRIDES) for (const k of keys.slice(0, keys.length - MAX_CHAT_OVERRIDES)) delete all[k];
+  const tmp = `${chatEffortPath()}.tmp`;
+  writeFileSync(tmp, JSON.stringify(all, null, 2), 'utf-8');
+  renameSync(tmp, chatEffortPath());
+}
+
+export interface EffortState {
+  /** What requests carry: undefined = nothing (the model decides). */
+  effective: ReasoningLevel | undefined;
+  /** Where it comes from: this chat's override, the model's default, or neither. */
+  source: 'chat' | 'model' | 'auto';
+  /** The model's saved default ("auto" when none). */
+  modelDefault: ReasoningLevel | 'auto';
+  /** This chat's override, if any. */
+  chat?: ReasoningLevel | 'auto';
+  /** The chat asked for a level this model doesn't take: the model's default applies. */
+  chatUnsupported?: boolean;
+  levels: ReasoningLevel[];
+}
+
+/** The effort a request for this model carries in this chat, and why. */
+export function effortFor(provider: string, model: string, chatKey: string | undefined = effortChat.get()): EffortState {
+  const levels = reasoningLevelsFor(provider, model);
+  const saved = getModelPref(provider, model).reasoning;
+  const modelDefault = saved && levels.includes(saved) ? saved : undefined;
+  const chat = chatKey ? getChatEffort(chatKey) : undefined;
+  const base = { modelDefault: modelDefault ?? ('auto' as const), levels, ...(chat ? { chat } : {}) };
+  if (chat === 'auto' && levels.length) return { ...base, effective: undefined, source: 'chat' };
+  if (chat && chat !== 'auto') {
+    if (levels.includes(chat)) return { ...base, effective: chat, source: 'chat' };
+    if (levels.length) return { ...base, effective: modelDefault, source: modelDefault ? 'model' : 'auto', chatUnsupported: true };
+  }
+  return { ...base, effective: modelDefault, source: modelDefault ? 'model' : 'auto' };
+}
+
+/** The level a request for this model carries (the running chat's override, else the model's default). */
 export function effectiveReasoning(provider: string, model: string): ReasoningLevel | undefined {
-  const level = getModelPref(provider, model).reasoning;
-  return level && reasoningLevelsFor(provider, model).includes(level) ? level : undefined;
+  return effortFor(provider, model).effective;
+}
+
+/** Test hook. */
+export function resetChatEffortCache(): void {
+  chatEfforts = null;
+}
+
+/** Is this an OpenRouter endpoint (its effort goes in `reasoning: {effort}`)? */
+export function isOpenRouterUrl(baseUrl: string | undefined): boolean {
+  return !!baseUrl && /(^|\/\/|\.)openrouter\.ai(\/|:|$)/i.test(baseUrl);
+}
+
+/**
+ * Anthropic provider options for one request: show the thinking (as the
+ * API's summary) wherever the model thinks, and apply the chosen effort.
+ *
+ * - Models that think by default always get display "summarized": the
+ *   thinking happens and is billed either way; without it the stream carries
+ *   empty thinking blocks and the screen shows a long silent pause.
+ * - Models where thinking is opt-in (4.6–4.8) think only when the owner
+ *   picked an effort; "Auto" leaves the request exactly as before.
+ */
+export function anthropicThinkingOptions(model: string, level: ReasoningLevel | undefined): Record<string, unknown> | undefined {
+  const caps = claudeThinking(model);
+  if (!caps.adaptive) return undefined;
+  const effort = level && caps.levels.includes(level) ? level : undefined;
+  if (!caps.thinksByDefault && !effort) return undefined;
+  return {
+    thinking: { type: 'adaptive', display: 'summarized' },
+    ...(effort ? { effort } : {}),
+  };
 }
 
 /**
@@ -157,15 +333,30 @@ export function effectiveReasoning(provider: string, model: string): ReasoningLe
  * Done at the HTTP layer because the AI SDK drops reasoningEffort for model
  * ids it doesn't recognise as reasoning models (anything not o1/o3/o4/gpt-5*).
  */
-export function applyReasoningToBody(body: Record<string, unknown>, level: ReasoningLevel | undefined): void {
-  if (!level) return;
+export function applyReasoningToBody(
+  body: Record<string, unknown>,
+  level: ReasoningLevel | undefined,
+  { summary = false, openRouter = false }: { summary?: boolean; openRouter?: boolean } = {},
+): void {
   if (Array.isArray(body.input)) {
-    // Responses API
+    // Responses API. A summary of the reasoning, where asked for, is what a
+    // screen can show while the model thinks (the raw reasoning never is).
+    if (!level && !summary) return;
     const reasoning = (body.reasoning && typeof body.reasoning === 'object' ? body.reasoning : {}) as Record<string, unknown>;
-    body.reasoning = { ...reasoning, effort: level === 'off' ? 'none' : level };
-  } else if (Array.isArray(body.messages)) {
-    // Chat Completions (Ollama's /v1 maps "none" to thinking off)
-    body.reasoning_effort = level === 'off' ? 'none' : level;
+    body.reasoning = {
+      ...reasoning,
+      ...(level ? { effort: level === 'off' ? 'none' : level } : {}),
+      ...(summary && level !== 'off' && reasoning.summary === undefined ? { summary: 'auto' } : {}),
+    };
+  } else if (level && Array.isArray(body.messages)) {
+    if (openRouter) {
+      // OpenRouter's unified field, mapped to each upstream's own control.
+      const reasoning = (body.reasoning && typeof body.reasoning === 'object' ? body.reasoning : {}) as Record<string, unknown>;
+      body.reasoning = { ...reasoning, effort: level === 'off' ? 'none' : level };
+    } else {
+      // Chat Completions (Ollama's /v1 maps "none" to thinking off)
+      body.reasoning_effort = level === 'off' ? 'none' : level;
+    }
   }
 }
 
@@ -186,6 +377,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   aimlapi: 'AI/ML API',
   atlascloud: 'Atlas Cloud',
   runcrate: 'Runcrate',
+  cloudgpu: 'CloudGPU',
   mimo: 'MiMo',
   mimoTokenPlan: 'MiMo Token Plan',
   githubCopilot: 'GitHub Copilot',
@@ -243,7 +435,15 @@ export function humanizeModelName(model: string): string {
   const extras: string[] = [];
 
   // Hyphens separate words; underscores belong to quant tags like Q4_K_M.
-  const parts = name.split(/[-\s]+/).filter(Boolean);
+  // A dated snapshot ("…-20251001") reads as the model; a version split into
+  // numbers ("haiku-4-5", "llama-3-1-8b") reads as one: 4.5, 3.1.
+  const raw = name.split(/[-\s]+/).filter(Boolean).filter((p, i, all) => !(i > 0 && /^(19|20)\d{6}$/.test(p) && all.length > 1));
+  const parts: string[] = [];
+  for (const p of raw) {
+    const prev = parts[parts.length - 1];
+    if (/^\d{1,2}$/.test(p) && prev && /^\d{1,2}$/.test(prev) && parts.length >= 2 && !/^\d/.test(parts[parts.length - 2])) parts[parts.length - 1] = `${prev}.${p}`;
+    else parts.push(p);
+  }
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     // Keep GPT-style "GPT-6" / "GPT-5.6" joined.

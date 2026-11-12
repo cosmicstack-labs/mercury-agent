@@ -27,7 +27,12 @@ export interface ContextScope {
 export interface PermissionContext {
   readonly channelType: string;
   readonly channelId: string;
+  /** External event turns neither consume nor create remembered conversation approvals. */
+  readonly rememberApprovals: boolean;
+  /** Canonical repository session, supplied by the agent, never tool arguments. */
+  readonly sessionId?: string;
   readonly senderRole: 'admin' | 'member' | undefined;
+  readonly unattended: boolean;
   /** Allow-all: approved-scope actions and non-blocked commands run without prompts. */
   readonly autoApprove: boolean;
   /**
@@ -52,7 +57,10 @@ export function makeContext(fields: Partial<PermissionContext> = {}): Permission
   return Object.freeze({
     channelType: fields.channelType ?? 'cli',
     channelId: fields.channelId ?? 'cli',
+    ...(fields.sessionId ? { sessionId: fields.sessionId } : {}),
     senderRole: fields.senderRole,
+    unattended: fields.unattended ?? false,
+    rememberApprovals: fields.rememberApprovals ?? true,
     autoApprove: fields.autoApprove ?? false,
     autoApproveOrigin: fields.autoApprove ? (fields.autoApproveOrigin ?? 'session') : null,
     allowedTools: fields.allowedTools ? Object.freeze([...fields.allowedTools]) : undefined,
@@ -119,6 +127,8 @@ export function deriveChildContext(parent: PermissionContext, req: ChildContextR
     channelType: req.channelType ?? parent.channelType,
     channelId: req.channelId ?? parent.channelId,
     senderRole: parent.senderRole,
+    unattended: parent.unattended,
+    rememberApprovals: parent.rememberApprovals,
     autoApprove: inheritAllow,
     autoApproveOrigin: inheritAllow ? 'session' : null,
     allowedTools,
@@ -130,6 +140,7 @@ export function deriveChildContext(parent: PermissionContext, req: ChildContextR
 /** True when `child` grants nothing `parent` does not (used by tests and assertions). */
 export function isSubsetContext(child: PermissionContext, parent: PermissionContext): boolean {
   if (child.autoApprove && !parent.autoApprove) return false;
+  if (child.rememberApprovals && !parent.rememberApprovals) return false;
   if (parent.allowedTools) {
     if (!child.allowedTools) return false;
     if (child.allowedTools.some((t) => !parent.allowedTools!.includes(t))) return false;
@@ -150,6 +161,33 @@ export function isSubsetContext(child: PermissionContext, parent: PermissionCont
 export interface ContextCell {
   readonly owner: object;
   ctx: PermissionContext;
+  /**
+   * Set for a main-agent turn running alongside others (ADR-037). The turn
+   * has no frozen context of its own: it reads the shared session context
+   * with its own identity laid over it, so the owner's choices (Allow All,
+   * approved scopes) apply to every chat at once, while who is asking,
+   * from where, with which skill elevation or internal grant stays with
+   * the turn. `ctx` is unused for such a cell.
+   */
+  turn?: TurnOverlay;
+}
+
+/** Context fields that belong to one turn, never to the shared session. */
+export const TURN_OWNED_FIELDS = ['channelType', 'channelId', 'sessionId', 'senderRole', 'unattended', 'rememberApprovals', 'elevated'] as const;
+export type TurnOwnedField = typeof TURN_OWNED_FIELDS[number];
+
+export interface TurnOverlay {
+  fields: { -readonly [K in TurnOwnedField]?: PermissionContext[K] };
+  /** The internal turn's allow-all grant (beginTurnGrant), if any. */
+  grant: { scopes: ContextScope[] } | null;
+  /** Plugin tools pre-approved for this turn (a scheduled task's allowTools). */
+  pluginGrants: Set<string>;
+  /** Last computed context, valid while the session context is the same object. */
+  cache: { session: PermissionContext; ctx: PermissionContext } | null;
+}
+
+export function newTurnOverlay(): TurnOverlay {
+  return { fields: {}, grant: null, pluginGrants: new Set(), cache: null };
 }
 
 export const permissionContextStore = new AsyncLocalStorage<ContextCell>();

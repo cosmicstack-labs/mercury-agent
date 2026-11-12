@@ -1,31 +1,52 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateText, streamText } from 'ai';
-import { BaseProvider } from './base.js';
+import { BaseProvider, type MediaEndpoint } from './base.js';
 import type { ProviderConfig } from '../utils/config.js';
 import type { LLMResponse, LLMStreamChunk } from './base.js';
 import { logger } from '../utils/logger.js';
 import { aimlapiHeaders } from './aimlapi-attribution.js';
-import { applyReasoningToBody, effectiveReasoning, providerHasReasoningControl } from '../utils/model-prefs.js';
+import { basicAuthHeaders } from './basic-auth.js';
+import { registerSecretValue } from '../utils/redact.js';
+import { applyReasoningToBody, effectiveReasoning, isOpenRouterUrl, providerHasReasoningControl } from '../utils/model-prefs.js';
+import { rememberCaps } from '../utils/reasoning-caps.js';
+import { reasoningAsThinkTags, withThinkTagReasoning, type WireModel } from './reasoning-wire.js';
 
 /**
- * fetch that applies the user's reasoning level for the requested model.
- * Done on the wire because the AI SDK drops reasoningEffort for model ids it
- * doesn't recognise as reasoning models (every Ollama model, for one).
+ * fetch that applies the reasoning level for the requested model (the
+ * running chat's override, else the model's default). Done on the wire
+ * because the AI SDK drops reasoningEffort for model ids it doesn't
+ * recognise as reasoning models (every Ollama model, for one).
+ *
+ * A server that answers 400 to the effort (an older vLLM, a model without
+ * reasoning behind a gateway) gets the same request again without it, and
+ * the model is remembered as taking none (reasoning-caps.ts): a wrong guess
+ * costs one retry, never a failed turn.
  */
-function withReasoningPref(providerName: string): typeof fetch {
+export function withReasoningPref(providerName: string, baseUrl?: string, base: typeof fetch = globalThis.fetch): typeof fetch {
+  const openRouter = isOpenRouterUrl(baseUrl);
   return async (input, init) => {
+    let model: string | undefined;
+    let original: string | undefined;
     if (typeof init?.body === 'string') {
       try {
         const body = JSON.parse(init.body) as Record<string, unknown>;
+        model = typeof body.model === 'string' ? body.model : undefined;
         // Only levels this model accepts (e.g. never an effort for gpt-4o).
-        const level = typeof body.model === 'string' ? effectiveReasoning(providerName, body.model) : undefined;
+        const level = model ? effectiveReasoning(providerName, model) : undefined;
         if (level) {
-          applyReasoningToBody(body, level);
+          applyReasoningToBody(body, level, { openRouter });
+          original = init.body;
           init = { ...init, body: JSON.stringify(body) };
         }
       } catch { /* not JSON — pass through */ }
     }
-    return globalThis.fetch(input, init);
+    const response = await base(input, init);
+    if (original === undefined || !model || (response.status !== 400 && response.status !== 422)) return response;
+    const text = await response.clone().text().catch(() => '');
+    if (!/reasoning|effort|think/i.test(text)) return response;
+    rememberCaps(providerName, model, [], 'rejected');
+    logger.warn({ provider: providerName, model, status: response.status }, 'Server rejected the reasoning effort; resent without it and stopped sending it for this model');
+    return base(input, { ...init, body: original });
   };
 }
 
@@ -33,26 +54,48 @@ export class OpenAICompatProvider extends BaseProvider {
   readonly name: string;
   readonly model: string;
   private client: ReturnType<typeof createOpenAI>;
-  private modelInstance: ReturnType<ReturnType<typeof createOpenAI>['languageModel']>;
+  private modelInstance: WireModel;
+  private readonly usesResponsesApi: boolean;
 
   constructor(config: ProviderConfig, { useChatApi }: { useChatApi?: boolean } = {}) {
     super(config);
     this.name = config.name;
     this.model = config.model;
+    this.usesResponsesApi = !useChatApi;
+
+    const attribution = aimlapiHeaders(config.baseUrl);
+    const basicAuth = basicAuthHeaders(config);
+    // So a `cat mercury.yaml` or an error that echoes it never shows the password.
+    if (config.password) registerSecretValue(config.password);
 
     this.client = createOpenAI({
       apiKey: config.apiKey || 'no-key',
       baseURL: config.baseUrl,
       // `undefined` for every host but AI/ML API's, so no other provider
-      // reached through this class sends anything extra.
-      headers: aimlapiHeaders(config.baseUrl),
+      // reached through this class sends anything extra. Basic auth, when
+      // configured, overrides the SDK's Bearer header.
+      headers: basicAuth ? { ...attribution, ...basicAuth } : attribution,
       // Only providers with a reasoning control get the hook; the rest keep
       // the SDK's default fetch untouched.
-      fetch: providerHasReasoningControl(config.name) ? withReasoningPref(config.name) : undefined,
+      // Chat Completions servers also get their reasoning field carried
+      // through (reasoning-wire.ts); the Responses API has it natively.
+      fetch: useChatApi
+        ? reasoningAsThinkTags(providerHasReasoningControl(config.name) ? withReasoningPref(config.name, config.baseUrl) : globalThis.fetch)
+        : providerHasReasoningControl(config.name) ? withReasoningPref(config.name, config.baseUrl) : undefined,
     });
     this.modelInstance = useChatApi
-      ? this.client.chat(config.model)
+      ? withThinkTagReasoning(this.client.chat(config.model))
       : this.client(config.model);
+  }
+
+  async mediaEndpoint(): Promise<MediaEndpoint | undefined> {
+    if (!this.config.baseUrl) return undefined;
+    const basic = basicAuthHeaders(this.config);
+    const attribution = aimlapiHeaders(this.config.baseUrl) ?? {};
+    return {
+      baseUrl: this.config.baseUrl.replace(/\/+$/, ''),
+      headers: { ...attribution, ...(basic ?? (this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {})) },
+    };
   }
 
   private formatApiError(err: unknown): Error {
@@ -116,10 +159,14 @@ export class OpenAICompatProvider extends BaseProvider {
     if (this.config.name === 'litellm' || this.config.name === 'ollamaLocal') {
       return this.config.baseUrl.length > 0;
     }
-    return this.config.apiKey.length > 0;
+    return this.config.apiKey.length > 0 || !!this.config.username;
   }
 
   getModelInstance(): any {
     return this.modelInstance;
+  }
+
+  supportsToolResultImages(): boolean {
+    return this.usesResponsesApi && this.name === 'openai';
   }
 }

@@ -125,6 +125,10 @@ describe("Mercury's gws on run_command's PATH", () => {
     expect(windows?.Path?.startsWith('C:\\Windows')).toBe(true);
     expect(windows?.Path?.endsWith(dir)).toBe(true);
     expect(withMercuryGwsOnPath({}, dir)).toEqual({ PATH: dir });
+    const both = withMercuryGwsOnPath({ Path: 'C:\\old', PATH: 'C:\\node;C:\\old' }, dir);
+    expect(both?.Path?.endsWith(dir)).toBe(true);
+    expect(both?.PATH?.startsWith('C:\\node')).toBe(true);
+    expect(both?.PATH?.endsWith(dir)).toBe(true);
   });
 
   it('lets a shell command run the gws Mercury installed', async () => {

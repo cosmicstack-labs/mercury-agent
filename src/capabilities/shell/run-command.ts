@@ -1,7 +1,7 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
-import { resolve, isAbsolute } from 'node:path';
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import type { PermissionManager } from '../permissions.js';
@@ -9,6 +9,7 @@ import { redactSecrets } from '../../utils/redact.js';
 import { logger } from '../../utils/logger.js';
 import { pulseProgress, TOOL_PULSE_INTERVAL_MS } from '../../core/progress-pulse.js';
 import { planArgvExecution, minimalEnv, type ArgvPlan } from './argv-lane.js';
+import { killProcessTree, processTreeAlive, processTreeSpawnOptions, trackProcessTree, untrackProcessTree } from './process-tree.js';
 import { withMercuryGwsOnPath } from '../../google/gws-binary.js';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -38,12 +39,32 @@ interface ExecOptions {
  * the platform shell.
  */
 export function executeCommand(command: string, cwd: string, timeoutMs: number, options: ExecOptions = {}): Promise<ExecResult> {
+  const env = shellEnv();
   return superviseChild(() => spawn(command, [], {
     cwd,
+    env: withMercuryGwsOnPath(env) ?? env,
     shell: true,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: withMercuryGwsOnPath(),
+    // Its own process group, so a stop ends everything it started.
+    ...processTreeSpawnOptions(),
   }), timeoutMs, options);
+}
+
+/**
+ * The approval lane's environment: the owner's, with the Node that runs
+ * Mercury first on PATH. A service PATH often lists an old system Node
+ * (/usr/local/bin) before a newer one, so `node`, `npx` and every Node CLI
+ * (`hyperframes`, needing Node 22) ran on Node 18 and refused, and the
+ * model went round the failure instead of doing the task. Not when Mercury
+ * runs as a standalone binary (its executable isn't a Node).
+ */
+export function shellEnv(source: NodeJS.ProcessEnv = process.env, execPath: string = process.execPath, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const exe = basename(execPath).toLowerCase();
+  if (exe !== 'node' && exe !== 'node.exe') return source;
+  const sep = platform === 'win32' ? ';' : ':';
+  const own = dirname(execPath);
+  const rest = (source.PATH ?? source.Path ?? '').split(sep).filter((d) => d && d !== own);
+  return { ...source, PATH: [own, ...rest].join(sep) };
 }
 
 /**
@@ -57,6 +78,7 @@ export function executeArgv(file: string, args: readonly string[], cwd: string, 
     env: minimalEnv(),
     shell: false,
     windowsHide: true,
+    ...processTreeSpawnOptions(),
     // Output is bounded by the stream handlers below; execFile's own buffer
     // limit would kill a long but legitimate listing.
     maxBuffer: Number.MAX_SAFE_INTEGER,
@@ -81,27 +103,32 @@ function superviseChild(start: () => ChildProcess, timeoutMs: number, options: E
       return;
     }
 
+    trackProcessTree(child);
     const onAbort = () => terminate('abort');
 
     const finish = (exitCode: number | null, timedOut: boolean, aborted = false) => {
       if (settled) return;
       settled = true;
       if (timeoutHandle) clearTimeout(timeoutHandle);
-      if (sigkillHandle) clearTimeout(sigkillHandle);
+      // NOT the SIGKILL timer: a terminated tree still gets its escalation.
       if (pulseHandle) clearInterval(pulseHandle);
       signal?.removeEventListener('abort', onAbort);
+      if (!sigkillHandle) untrackProcessTree(child);
       resolve({ stdout, stderr, exitCode, timedOut, aborted });
     };
 
-    // SIGTERM, then SIGKILL after a grace period. Used for both the tool's
-    // own timeout and an abort from the agent loop — previously an aborted
-    // turn left the child running to completion.
+    // SIGTERM to the whole tree, then SIGKILL to whatever of it is still
+    // alive after a grace period (ADR-038). Used for the tool's own timeout
+    // and for an abort from the agent loop (the owner's Stop). Killing only
+    // the shell used to leave `npm run build` and friends running.
     const terminate = (reason: 'timeout' | 'abort') => {
       if (settled) return;
-      child.kill('SIGTERM');
+      killProcessTree(child, 'SIGTERM');
       sigkillHandle = setTimeout(() => {
-        if (!child.killed || child.exitCode === null) child.kill('SIGKILL');
+        if (processTreeAlive(child)) killProcessTree(child, 'SIGKILL');
+        untrackProcessTree(child);
       }, SIGTERM_GRACE_MS);
+      sigkillHandle.unref?.();
       finish(null, reason === 'timeout', reason === 'abort');
     };
 
@@ -155,7 +182,7 @@ function superviseChild(start: () => ChildProcess, timeoutMs: number, options: E
   });
 }
 
-export function createRunCommandTool(permissions: PermissionManager, getCwd: () => string, setCwd: (dir: string) => void) {
+export function createRunCommandTool(permissions: PermissionManager, getCwd: () => string, setCwd: (dir: string) => boolean | void) {
   return tool({
     description: `Run a shell command in the current working directory. Use the cd tool to change directories first — cd commands within this tool only affect chained commands (e.g., "cd /path && ls"), not subsequent calls.
 Blocked commands (sudo, rm -rf /, etc.) are never executed.
@@ -249,7 +276,7 @@ The optional timeout parameter sets how long (in seconds) the command can run be
 }
 
 /** `cd` in the argv lane: change the tool cwd in-process (it is a shell builtin). */
-function runBuiltin(plan: Extract<ArgvPlan, { kind: 'builtin' }>, cwd: string, setCwd: (dir: string) => void): string {
+function runBuiltin(plan: Extract<ArgvPlan, { kind: 'builtin' }>, cwd: string, setCwd: (dir: string) => boolean | void): string {
   const target = plan.argv[1] ?? homedir();
   const resolved = isAbsolute(target) ? resolve(target) : resolve(cwd, target);
   try {
@@ -257,11 +284,13 @@ function runBuiltin(plan: Extract<ArgvPlan, { kind: 'builtin' }>, cwd: string, s
   } catch {
     return `Error: Directory not found: ${resolved}`;
   }
-  setCwd(resolved);
+  if (setCwd(resolved) === false) {
+    return `Error: you can only change directory inside your own work folders. Use absolute paths to work with ${resolved}.`;
+  }
   return `Changed directory to ${resolved}`;
 }
 
-function detectCd(command: string, currentCwd: string, setCwd: (dir: string) => void): void {
+function detectCd(command: string, currentCwd: string, setCwd: (dir: string) => boolean | void): void {
   const trimmed = command.trim();
 
   const cdOnly = trimmed.match(/^cd\s+(.+)$/);

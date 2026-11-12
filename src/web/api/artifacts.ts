@@ -4,7 +4,8 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { chatFoldersFor, freeName, outputRoot } from '../../artifacts/output-dir.js';
 import { Readable } from 'node:stream';
 import { Hono } from 'hono';
-import { artifactStore, type Artifact } from '../../artifacts/store.js';
+import { artifactStore, ownsOriginal, type Artifact } from '../../artifacts/store.js';
+import { getMercuryHome } from '../../utils/config.js';
 import type { ArtifactKind } from '../../artifacts/classify.js';
 import type { SessionRepository } from '../../sessions/index.js';
 import { isThisComputer } from '../middleware.js';
@@ -21,7 +22,9 @@ const asFormat = (v: unknown): ConvertFormat | null => (v === 'pdf' || v === 'do
  *   GET    /api/artifacts/:id/file                             the file itself (Range for video and audio)
  *   GET    /api/artifacts/:id/file?as=pdf|docx                 a Markdown/text artifact as a PDF or Word document
  *   POST   /api/artifacts/:id/export { dest, as? }             Save as… (this computer only), converted when `as` is given
- *   DELETE /api/artifacts/:id                                  forget one (Mercury's copy only)
+ *   DELETE /api/artifacts/:id                                  delete one: Mercury's copy, and the original when Mercury owns it
+ *   GET    /api/artifacts/usage                                space taken (as the disk counts it), per kind, and what deleting frees
+ *   POST   /api/artifacts/delete { ids? | kind?, olderThanDays?, threadId? | all? }   delete many at once
  *   GET    /api/artifacts/folder                               the output folder (~/mercury-artifacts) and files Mercury left loose in the home folder
  *   POST   /api/artifacts/folder/tidy                          move those loose files into their chats' folders (this computer only)
  */
@@ -54,10 +57,42 @@ function withThread(a: Artifact) {
     if (s && s.status !== 'deleted') { threadTitle = s.title; threadExists = true; }
   } catch { /* gone */ }
   const { storedPath: _stored, ...rest } = a;
-  return { ...rest, threadTitle, threadExists, originalExists: existsSync(a.originalPath) };
+  // `owned`: deleting it deletes the file itself (Mercury's output, a generated picture or sound), not just Mercury's copy.
+  return { ...rest, threadTitle, threadExists, originalExists: existsSync(a.originalPath), owned: ownsOriginal(a, ownedRoots()) };
 }
 
+/** The folders whose files are Mercury's own: deleting an artifact there deletes the file. */
+function ownedRoots(): string[] {
+  return [outputRoot(outputSetting()), getMercuryHome()];
+}
+
+const DAY = 86_400_000;
+
 const artifacts = new Hono();
+
+artifacts.get('/api/artifacts/usage', (c) => c.json(artifactStore().usage(ownedRoots())));
+
+/** Bulk delete: by id, or every artifact matching a kind, an age and a chat; `all` for everything. */
+artifacts.post('/api/artifacts/delete', async (c) => {
+  const body = await c.req.json().catch(() => null) as { ids?: unknown; kind?: unknown; olderThanDays?: unknown; threadId?: unknown; all?: unknown } | null;
+  if (!body || typeof body !== 'object') return c.json({ error: 'Expected a JSON body.' }, 400);
+  const store = artifactStore();
+  let ids: string[];
+  if (Array.isArray(body.ids)) {
+    ids = body.ids.filter((x): x is string => typeof x === 'string').slice(0, 5000);
+  } else {
+    const kind = typeof body.kind === 'string' && KINDS.includes(body.kind as ArtifactKind) ? body.kind : 'all';
+    const days = typeof body.olderThanDays === 'number' && body.olderThanDays > 0 ? body.olderThanDays : 0;
+    const threadId = typeof body.threadId === 'string' ? body.threadId : undefined;
+    // Never everything by accident: a filter, or `all: true`.
+    if (kind === 'all' && !days && !threadId && body.all !== true) return c.json({ error: 'Say what to delete: ids, a kind, an age, a chat, or all.' }, 400);
+    const before = days ? Date.now() - days * DAY : Infinity;
+    ids = store.all().filter((a) => (kind === 'all' || a.kind === kind) && a.createdAt < before && (!threadId || a.threadId === threadId)).map((a) => a.id);
+  }
+  const r = store.removeMany(ids, { roots: ownedRoots() });
+  logger.info(r, 'Artifacts deleted');
+  return c.json({ ok: true, ...r });
+});
 
 artifacts.get('/api/artifacts', (c) => {
   const kind = c.req.query('kind') as ArtifactKind | 'all' | undefined;
@@ -168,6 +203,9 @@ artifacts.post('/api/artifacts/:id/export', async (c) => {
   return c.json({ ok: true, path: dest });
 });
 
-artifacts.delete('/api/artifacts/:id', (c) => (artifactStore().remove(c.req.param('id')) ? c.json({ ok: true }) : c.json({ error: 'Not found' }, 404)));
+artifacts.delete('/api/artifacts/:id', (c) => {
+  const r = artifactStore().removeMany([c.req.param('id')], { roots: ownedRoots() });
+  return r.removed ? c.json({ ok: true, ...r }) : c.json({ error: 'Not found' }, 404);
+});
 
 export default artifacts;

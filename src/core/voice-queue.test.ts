@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ChannelMessage } from '../types/channel.js';
 import { Agent } from './agent.js';
 import { WorkLedger } from './work-ledger.js';
+import { bareTurnFields, startFakeTurn, endFakeTurns } from './testing/fake-turns.js';
 
 /**
  * Questions asked on a call: someone is waiting on the line, so they go
@@ -24,7 +25,7 @@ function bareAgent() {
   dirs.push(dir);
   const workLedger = new WorkLedger({ filePath: join(dir, 'work-ledger.json') });
   const agent = Object.create(Agent.prototype) as Agent;
-  Object.assign(agent, { messageQueue: [], queuedWorkKeys: new Set(), workLedger, processing: false, currentMessage: null, currentActivity: '', currentAbort: null });
+  Object.assign(agent, { ...bareTurnFields(), workLedger });
   const enqueue = (m: ChannelMessage) => { const key = workLedger.accept(m).entry.key; agent.queueMessage(m, key); return key; };
   const order = () => (agent as unknown as { messageQueue: Array<{ message: ChannelMessage }> }).messageQueue.map((i) => i.message.id);
   return { agent, workLedger, enqueue, order };
@@ -45,9 +46,10 @@ describe('voice questions in the work queue', () => {
   it('say what Mercury is busy with when it is something else', () => {
     const { agent, enqueue } = bareAgent();
     enqueue(msg('voice1', 'desktop:call:x', true));
-    Object.assign(agent, { processing: true, currentMessage: msg('long', 'web:a'), currentActivity: '📄 Reading report.md' });
+    startFakeTurn(agent, msg('long', 'web:a'), '📄 Reading report.md');
     expect(agent.workStateFor('desktop:call:x')).toEqual({ state: 'queued', busyWith: 'Reading report.md' });
-    Object.assign(agent, { currentMessage: msg('voice1', 'desktop:call:x', true) });
+    endFakeTurns(agent);
+    startFakeTurn(agent, msg('voice1', 'desktop:call:x', true));
     expect(agent.workStateFor('desktop:call:x').state).toBe('running');
   });
 
@@ -64,5 +66,17 @@ describe('voice questions in the work queue', () => {
     // The same question asked again can be queued afresh.
     agent.queueMessage(msg('voice1', 'desktop:call:x', true), v1);
     expect(order()).toEqual(['voice1', 'chat1']);
+  });
+});
+
+describe('stopping one call (ADR-037)', () => {
+  it('stops only the running turn of that call; another chat keeps running', () => {
+    const { agent, enqueue } = bareAgent();
+    enqueue(msg('chat2', 'web:b'));
+    const call = startFakeTurn(agent, msg('voice1', 'desktop:call:x', true));
+    const chat = startFakeTurn(agent, msg('chat1', 'web:a'));
+    expect(agent.stopWorkFor('desktop:call:x')).toBe(true);
+    expect(call.abort.signal.aborted).toBe(true);
+    expect(chat.abort.signal.aborted).toBe(false);
   });
 });

@@ -101,7 +101,10 @@ tokens:
   saverAutoEnabled: true         # master switch for auto-engagement
   saverAutoThreshold: 75         # percentage at which auto-engage triggers
   saverTokensSavedLifetime: 0    # lifetime savings counter
+  cachedWeight: 1                # how much a prompt-cache hit counts toward dailyBudget (0–1)
 ```
+
+Every model call in a turn counts toward `dailyBudget`, including the tool steps and any extra rounds. Prompt-cache hits cost far less than fresh input at most providers. Set `cachedWeight` to `0.1` to count them at roughly their price instead of in full. `/budget` shows today's split: cached, uncached and output tokens.
 
 All fields are optional. Existing installs without saver fields work unchanged — defaults are applied silently on read, and no file is rewritten until you first toggle saver on or it auto-engages.
 

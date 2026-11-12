@@ -43,6 +43,12 @@ export interface ProviderConfig {
    * local Qwen-VL called `qwen3.8-flash-next` was refused for that reason.
    */
   vision?: boolean;
+  /**
+   * HTTP Basic credentials for a server behind a reverse proxy. When `username`
+   * is set, Mercury sends `Authorization: Basic ...` instead of the Bearer key.
+   */
+  username?: string;
+  password?: string;
 }
 
 export interface TelegramAccessUser {
@@ -72,6 +78,7 @@ export type ProviderName =
   | 'grok'
   | 'atlascloud'
   | 'runcrate'
+  | 'cloudgpu'
   | 'ollamaCloud'
   | 'ollamaLocal'
   | 'atomicChat'
@@ -117,6 +124,7 @@ export interface MercuryConfig {
     grok: ProviderConfig;
     atlascloud: ProviderConfig;
     runcrate: ProviderConfig;
+    cloudgpu: ProviderConfig;
     ollamaCloud: ProviderConfig;
     ollamaLocal: ProviderConfig;
     atomicChat: ProviderConfig;
@@ -218,6 +226,13 @@ export interface MercuryConfig {
     saverAutoEnabled?: boolean;
     /** Lifetime estimated tokens saved by saver mode (informational). */
     saverTokensSavedLifetime?: number;
+    /**
+     * How much one cache-hit input token counts toward `dailyBudget`, 0–1.
+     * Default 1: every token counts. 0.1 roughly tracks cost, since providers
+     * bill cache hits at a fraction of the input price. Out-of-range values
+     * are clamped; anything non-numeric counts as 1.
+     */
+    cachedWeight?: number;
   };
   subagents: {
     enabled: boolean;
@@ -301,6 +316,15 @@ export interface MercuryConfig {
     allowedHosts?: string[];
   };
   mcp?: McpConfig;
+  /** Opt-in: discover plugin and MCP schemas on demand in the main agent's tool loop. */
+  toolDiscovery?: { enabled?: boolean };
+  /**
+   * Chat turns running at once (ADR-037). One turn per chat at a time; this
+   * caps how many chats are worked on together. 0 = automatic (from heap
+   * size, RAM and platform; 2 on Termux). The turn governor admits fewer
+   * while memory is tight.
+   */
+  concurrency?: { maxTurns?: number };
   /** Where the files Mercury makes go (default ~/mercury-artifacts): Research/ and one folder per chat. */
   artifacts?: {
     outputDir?: string;
@@ -418,6 +442,13 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('RUNCRATE_BASE_URL', 'https://api.runcrate.ai/v1'),
         model: getEnv('RUNCRATE_MODEL', 'deepseek-ai/DeepSeek-V4.1-Flash'),
         enabled: getEnvBool('RUNCRATE_ENABLED', true),
+      },
+      cloudgpu: {
+        name: 'cloudgpu',
+        apiKey: getEnv('CLOUDGPU_API_KEY', ''),
+        baseUrl: getEnv('CLOUDGPU_BASE_URL', 'https://cloudgpu.app/v1'),
+        model: getEnv('CLOUDGPU_MODEL', 'deepseek-v4.1-flash'),
+        enabled: getEnvBool('CLOUDGPU_ENABLED', true),
       },
       ollamaCloud: {
         name: 'ollamaCloud',
@@ -613,6 +644,8 @@ export function getDefaultConfig(): MercuryConfig {
       accountId: '',
       product: '',
     },
+    toolDiscovery: { enabled: getEnvBool('MERCURY_TOOL_DISCOVERY', false) },
+    concurrency: { maxTurns: getEnvNum('MERCURY_MAX_CONCURRENT_TURNS', 0) },
     web: {
       enabled: getEnvBool('MERCURY_WEB_ENABLED', false),
       port: getEnvNum('MERCURY_PORT', 6174),
@@ -838,7 +871,7 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
   if (provider.name === 'ollamaCloud') {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0;
   }
-  if (provider.name === 'atlascloud' || provider.name === 'runcrate') {
+  if (provider.name === 'atlascloud' || provider.name === 'runcrate' || provider.name === 'cloudgpu') {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0 && provider.model.length > 0;
   }
   if (provider.name === 'openaiCompat' || provider.name === 'litellm') {

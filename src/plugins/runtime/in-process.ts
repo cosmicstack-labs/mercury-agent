@@ -19,7 +19,8 @@ import { assertFetchableTarget, MAX_REDIRECTS } from '../../utils/ssrf.js';
 import { logger } from '../../utils/logger.js';
 import { PLUGIN_API_VERSION, providerSecretNames, type PluginManifest, type PluginProviderId } from '../types.js';
 import type { Disposable, PluginCommandDefinition, PluginContext, PluginModule, PluginToolDefinition } from '../sdk.js';
-import { publishCommand, publishTool, unpublishPlugin } from '../tool-bridge.js';
+import { publishCommand, publishTool,
+  screenshotContract, unpublishPlugin } from '../tool-bridge.js';
 import type { PluginRuntime, RuntimeDeps } from './types.js';
 
 export const IN_PROCESS_TIMEOUTS = { load: 10_000, activate: 15_000, deactivate: 5_000, dispose: 3_000 };
@@ -165,7 +166,7 @@ export class InProcessRuntime implements PluginRuntime {
         pluginName: m.name,
         name: decl.name,
         description: decl.description,
-        inputSchema: schema,
+        ...screenshotContract(schema, decl.screenshots),
         readOnly: decl.readOnly,
         timeoutMs: decl.timeoutMs,
         invoke: async (args, toolSignal) => {

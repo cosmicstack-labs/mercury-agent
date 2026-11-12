@@ -13,6 +13,18 @@
 import { jsonSchema, tool, type Tool } from 'ai';
 import { isMcpToolName } from '../capabilities/mcp/naming.js';
 import type { PermissionManager } from '../capabilities/permissions.js';
+import {
+  TOOL_IMAGE_TYPES,
+  attachedImagesNote,
+  holdImages,
+  resetToolImages,
+  screenshotRequest,
+  setToolImagesAllowed,
+  toolImagesAllowed,
+  toolOutputWithImages,
+  usableImages,
+  type ToolImage,
+} from '../capabilities/tool-images.js';
 import { logger } from '../utils/logger.js';
 
 export interface LiveTool {
@@ -24,6 +36,14 @@ export interface LiveTool {
   inputSchema: Record<string, unknown>;
   readOnly: boolean;
   timeoutMs: number;
+  /**
+   * Returns screenshots (manifest `screenshots: true`): each call gets
+   * `mercury_screenshot: { include, max_width, max_height }` — the size the
+   * current model is best served by, or none for a model that can't see
+   * images (ADR-043). The plugin shrinks the capture itself, so coordinates
+   * stay in the picture the model saw.
+   */
+  screenshots?: boolean;
   invoke(args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 
@@ -37,16 +57,9 @@ export interface PluginCommandHandler {
 
 const MAX_RESULT_CHARS = 100_000;
 
-/** Image types a plugin tool may return (plugin API 1.2), e.g. screenshots. */
-export const PLUGIN_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-/** Images per result, and base64 characters per image (~6 MB decoded). */
-const MAX_IMAGES = 4;
-const MAX_IMAGE_CHARS = 8_000_000;
+export const PLUGIN_IMAGE_TYPES = TOOL_IMAGE_TYPES;
 
-export interface PluginImage {
-  data: string;
-  mimeType: string;
-}
+export type PluginImage = ToolImage;
 
 const CONTENT = Symbol('mercury.pluginToolContent');
 
@@ -65,25 +78,13 @@ function isToolContent(v: unknown): v is PluginToolContent {
   return !!v && typeof v === 'object' && (v as Record<symbol, unknown>)[CONTENT] === true;
 }
 
-/**
- * Images waiting to be attached to their tool result, by tool call id.
- * execute() returns text only (so logs, history and learning never carry
- * base64); toModelOutput() adds the images when the result goes to the model.
- * Bounded: a result the SDK never converts can't leak memory.
- */
-const pendingImages = new Map<string, PluginImage[]>();
-/** Whether the model in use can take images (set by the agent before each provider call). */
-let imagesAllowed = true;
-
 export function setPluginImagesAllowed(allowed: boolean): void {
-  imagesAllowed = allowed;
+  setToolImagesAllowed(allowed);
 }
-const MAX_PENDING = 32;
 
-function holdImages(callId: string, images: PluginImage[]): void {
-  pendingImages.set(callId, images);
-  while (pendingImages.size > MAX_PENDING) pendingImages.delete(pendingImages.keys().next().value as string);
-}
+/** Capture once when constructing tools for the current provider request. */
+export function currentToolImagesAllowed(): boolean { return toolImagesAllowed(); }
+
 const TOOL_NAME_RE = /^([a-z][a-z0-9-]{1,30}[a-z0-9])__([a-z][a-z0-9_]{0,29})$/;
 
 const liveTools = new Map<string, LiveTool>();
@@ -111,6 +112,24 @@ export function pluginToolAllowed(name: string, allow: readonly string[]): boole
   const m = TOOL_NAME_RE.exec(name);
   if (!m || isMcpToolName(name)) return false;
   return allow.includes(name) || allow.includes(`${m[1]}__*`);
+}
+
+/** The input parameter through which Mercury sizes a plugin's screenshots (ADR-043). */
+export const SCREENSHOT_PARAM = 'mercury_screenshot';
+
+/**
+ * A plugin tool's input schema as the model sees it, and whether the tool
+ * takes screenshots: declared in the manifest (`screenshots: true`) or by a
+ * `mercury_screenshot` parameter in its schema. That parameter is Mercury's
+ * to fill, so the model never sees it.
+ */
+export function screenshotContract(schema: Record<string, unknown>, declared?: boolean): { inputSchema: Record<string, unknown>; screenshots: boolean } {
+  const props = schema.properties as Record<string, unknown> | undefined;
+  const inSchema = !!props && Object.prototype.hasOwnProperty.call(props, SCREENSHOT_PARAM);
+  if (!inSchema) return { inputSchema: schema, screenshots: declared === true };
+  const { [SCREENSHOT_PARAM]: _hidden, ...rest } = props!;
+  const required = Array.isArray(schema.required) ? (schema.required as unknown[]).filter((r) => r !== SCREENSHOT_PARAM) : schema.required;
+  return { inputSchema: { ...schema, properties: rest, ...(required !== undefined ? { required } : {}) }, screenshots: true };
 }
 
 /** Publish a tool; returns its removal. A later registration with the same name replaces it. */
@@ -180,20 +199,14 @@ function wrap(t: LiveTool, permissions: PermissionManager): Tool {
   return tool<Record<string, unknown>, string>({
     description: `[Plugin: ${t.pluginName}] ${t.description}`,
     inputSchema: jsonSchema<Record<string, unknown>>(t.inputSchema as Parameters<typeof jsonSchema>[0]),
-    toModelOutput: ({ toolCallId, output }) => {
-      const text = typeof output === 'string' ? output : stringifyResult(output);
-      const images = pendingImages.get(toolCallId);
-      if (!images?.length) return { type: 'text', value: text };
-      if (!imagesAllowed) return { type: 'text', value: `${text}\n(The current model can't view images, so the attached image was left out. Say so if it matters.)` };
-      return {
-        type: 'content',
-        value: [{ type: 'text', text }, ...images.map((i) => ({ type: 'image-data' as const, data: i.data, mediaType: i.mimeType }))],
-      };
-    },
+    toModelOutput: ({ toolCallId, output }) =>
+      toolOutputWithImages(toolCallId, typeof output === 'string' ? output : stringifyResult(output)),
     execute: async (input, options) => {
-      const args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+      const given = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+      // The model never sets this; Mercury does, for the model in use.
+      const args = t.screenshots ? { ...given, [SCREENSHOT_PARAM]: screenshotRequest() } : given;
       if (!t.readOnly) {
-        const approved = await permissions.approvePluginTool(full, `Run plugin tool ${t.pluginName} → ${t.name} with ${describeArgs(args)}`);
+        const approved = await permissions.approvePluginTool(full, `Run plugin tool ${t.pluginName} → ${t.name} with ${describeArgs(given)}`);
         if (!approved) return `Not run: the plugin tool ${full} was not approved.`;
       }
       const ac = new AbortController();
@@ -212,10 +225,9 @@ function wrap(t: LiveTool, permissions: PermissionManager): Tool {
         const result = await Promise.race([Promise.resolve().then(() => t.invoke(args, ac.signal)), timeout]);
         outcomeSink(t.pluginId, { ok: true });
         if (isToolContent(result)) {
-          const images = result.images.filter((i) => PLUGIN_IMAGE_TYPES.has(i.mimeType) && i.data.length <= MAX_IMAGE_CHARS).slice(0, MAX_IMAGES);
-          if (images.length && options?.toolCallId) holdImages(options.toolCallId, images);
-          const note = images.length ? `\n[${images.length} image${images.length > 1 ? 's' : ''} attached]` : '';
-          return stringifyResult(`${result.text || 'Done.'}${note}`);
+          const images = usableImages(result.images);
+          holdImages(options?.toolCallId, images);
+          return stringifyResult(`${result.text || 'Done.'}${attachedImagesNote(images.length)}`);
         }
         return stringifyResult(result);
       } catch (err) {
@@ -247,7 +259,7 @@ export function getPluginTools(permissions: PermissionManager, opts: { readOnlyO
 
 /** Test hook. */
 export function resetToolBridge(): void {
-  pendingImages.clear();
+  resetToolImages();
   liveTools.clear();
   liveCommands.clear();
   outcomeSink = () => {};

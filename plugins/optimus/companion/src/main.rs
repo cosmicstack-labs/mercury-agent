@@ -193,9 +193,26 @@ fn action_schema() -> Value {
             },
             "say": { "type": "string", "description": "A few words saying what this does, present tense ('Opening the compose box', 'Typing your post'). Spoken live when the owner is talking to you." },
             "screenshot": { "type": "boolean", "description": "Return a screenshot afterwards (default true)." },
-            "settle_ms": { "type": "integer", "minimum": 0, "maximum": 5000, "description": "Wait before that screenshot (default 500)." }
+            "settle_ms": { "type": "integer", "minimum": 0, "maximum": 5000, "description": "Wait before that screenshot (default 500)." },
+            "mercury_screenshot": screenshot_param()
         },
         "required": ["actions"]
+    })
+}
+
+/// The screenshot size Mercury asks for, per the model in use (ADR-043).
+/// Declaring it is how Mercury knows this tool takes screenshots: it hides
+/// the parameter from the model and fills it in. An older Mercury shows it
+/// as an optional parameter the model can leave out.
+fn screenshot_param() -> Value {
+    json!({
+        "type": "object",
+        "description": "Set by Mercury; leave it out.",
+        "properties": {
+            "include": { "type": "boolean" },
+            "max_width": { "type": "integer" },
+            "max_height": { "type": "integer" }
+        }
     })
 }
 
@@ -215,7 +232,8 @@ fn tools() -> Value {
             "type": "object",
             "properties": {
                 "display": { "type": "integer", "minimum": 1 },
-                "zoom": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 }
+                "zoom": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+                "mercury_screenshot": screenshot_param()
             }
         }),
         "act" | "act_consequential" => action_schema(),

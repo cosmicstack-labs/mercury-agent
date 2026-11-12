@@ -33,6 +33,13 @@ describe('secret redaction', () => {
     expect(out).toContain(join('Bear****', '.sig'));
   });
 
+  it('masks a short password in yaml and a Basic header in full', () => {
+    expect(redactSecrets('username: alice\n    password: s3cret\n')).toBe('username: alice\n    password: ****\n');
+    expect(redactSecrets('password = "hunter22hunter22"')).toBe('password = "****"');
+    const token = Buffer.from('alice:s3cret').toString('base64');
+    expect(redactSecrets(`Authorization: Basic ${token}`)).toBe('Authorization: Basic ****');
+  });
+
   it('leaves ordinary code and config untouched', () => {
     const code = 'const apiKeyField = "name";\nskylight.trim();\nconst tokenCount = 123456789012;';
     expect(redactSecrets(code)).toBe(code);
@@ -87,7 +94,7 @@ describe('Google secret redaction', () => {
       password: join('hunter2', 'hunter2'),
       api_key: join('abcdefgh', '12345678'),
     }));
-    expect(out).toBe('{"client_secret":"lega****1234","token":"opaq****5678","password":"hunt****ter2","api_key":"abcd****5678"}');
+    expect(out).toBe('{"client_secret":"lega****1234","token":"opaq****5678","password":"****","api_key":"abcd****5678"}');
   });
 
   it('masks a service-account private key, in JSON and as a file', () => {

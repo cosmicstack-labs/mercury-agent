@@ -4,11 +4,24 @@
         <title>Mercury Blog</title>
         <link>https://mercuryagent.sh/blog</link>
         <description>News, engineering notes and field reports from the team building Mercury.</description>
-        <lastBuildDate>Tue, 03 Nov 2026 00:00:00 GMT</lastBuildDate>
+        <lastBuildDate>Thu, 05 Nov 2026 00:00:00 GMT</lastBuildDate>
         <docs>https://validator.w3.org/feed/docs/rss2.html</docs>
         <generator>https://github.com/jpmonette/feed</generator>
         <language>en</language>
         <copyright>© 2026 Cosmic Stack</copyright>
+        <item>
+            <title><![CDATA[9 Safest, Most Secure, and Permission-Aware AI Agents for Real-World Tasks]]></title>
+            <link>https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work</link>
+            <guid>https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work</guid>
+            <pubDate>Thu, 05 Nov 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[Grok, ChatGPT Work, Mercury, OpenClaw, Manus, Gemini agent for work, Devin, Claude Cowork and Comet compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.]]></description>
+            <category>Engineering</category>
+            <category>Product</category>
+            <category>AI Agents</category>
+            <category>AI Agent Comparison</category>
+            <category>Self-Hosted AI</category>
+            <category>AI Agent Memory</category>
+        </item>
         <item>
             <title><![CDATA[Mercury 1.5: Mercury Desktop]]></title>
             <link>https://mercuryagent.sh/blog/mercury-1-5</link>

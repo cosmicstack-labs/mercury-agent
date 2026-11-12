@@ -10,23 +10,29 @@ export function createUseSkillTool(skillLoader: SkillLoader, permissions: Permis
     inputSchema: zodSchema(z.object({
       name: z.string().describe('Name of the skill to invoke'),
     })),
-    execute: async ({ name }) => {
+    execute: async ({ name: asked }) => {
+      // A name written loosely ("hyperframe", "Hyper Frames") finds the skill it means.
+      const name = skillLoader.load(asked) ? asked : (skillLoader.closest?.(asked) ?? asked);
       const skill = skillLoader.load(name);
       if (!skill) {
-        return `Skill "${name}" not found. Use list_skills to see available skills.`;
+        return `Skill "${asked}" not found. Use list_skills to see available skills. If the user named it, tell them it isn't installed — don't swap in another method on your own.`;
       }
 
-      if (skill['allowed-tools'] && skill['allowed-tools'].length > 0) {
+      // A skill from a folder other agents share never raises Mercury's permissions.
+      if (!skill.shared && skill['allowed-tools'] && skill['allowed-tools'].length > 0) {
         permissions.elevateForSkill(skill['allowed-tools']);
       }
       if (skill.category === SELF_MADE_CATEGORY) skillLoader.noteUse(skill.name);
 
       let result = `## Skill: ${skill.name}\n\n${skill.instructions}`;
+      if (skill.dir) {
+        result += `\n\n_Skill folder: ${skill.dir} — files the instructions mention (references/, scripts/, assets) are there: read them with read_file. Other skills it names (e.g. "/hyperframes-core") load with use_skill. Follow it through to the finished result (render the file), not just the source._`;
+      }
       if (skill.category === SELF_MADE_CATEGORY) {
         result += '\n\n_Self-made skill: you wrote this after it worked once. Follow it, but trust the result, not the text — if a step fails, fix it and save the corrected procedure with create_skill under the same name._';
       }
 
-      if (skill['allowed-tools'] && skill['allowed-tools'].length > 0) {
+      if (!skill.shared && skill['allowed-tools'] && skill['allowed-tools'].length > 0) {
         result += `\n\nAllowed tools: ${skill['allowed-tools'].join(', ')}`;
       }
 

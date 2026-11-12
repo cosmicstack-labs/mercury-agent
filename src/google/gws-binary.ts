@@ -84,9 +84,13 @@ export function findGws(opts: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platf
 
 export function withMercuryGwsOnPath(env: NodeJS.ProcessEnv = process.env, dir: string = mercuryGwsDir()): NodeJS.ProcessEnv | undefined {
   if (!existsSync(dir)) return undefined;
-  const key = pathKey(env);
-  const current = env[key];
-  return { ...env, [key]: current ? `${current}${delimiter}${dir}` : dir };
+  const keys = Object.keys(env).filter((key) => key.toUpperCase() === 'PATH');
+  const next: NodeJS.ProcessEnv = { ...env };
+  for (const key of keys.length > 0 ? keys : ['PATH']) {
+    const current = env[key];
+    next[key] = current ? `${current}${delimiter}${dir}` : dir;
+  }
+  return next;
 }
 
 function systemTar(): string {

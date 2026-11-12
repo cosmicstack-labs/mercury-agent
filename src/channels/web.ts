@@ -1,12 +1,40 @@
 import { BaseChannel } from './base.js';
-import { normalizePlan, PlanStore } from '../core/plan.js';
+import { normalizePlan, PlanStore, type PlanState } from '../core/plan.js';
 import type { ChannelMessage, ChannelAttachment } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import { userFacingAiError } from '../utils/redact.js';
 import { stepFailure, type ResearchSnapshot } from '../core/research-run.js';
+import { formatToolStep } from '../utils/tool-label.js';
 
 type CloudEventHandler = (event: ChatEvent) => boolean;
+
+function safeJson(value: unknown): string {
+  try { return JSON.stringify(value) ?? ''; } catch { return String(value); }
+}
+
+/**
+ * What a media tool is making, so a screen can hold a placeholder of the
+ * right shape while it works (ADR-042): kind, aspect, how many, the prompt.
+ */
+function mediaShape(toolName: string, args: Record<string, unknown>): { media?: Record<string, unknown> } {
+  const kind = toolName === 'generate_image' ? 'image' : toolName === 'generate_speech' ? 'speech' : toolName === 'generate_video' ? 'video' : toolName === 'generate_music' ? 'music' : null;
+  if (!kind) return {};
+  const prompt = typeof args.prompt === 'string' ? args.prompt : typeof args.text === 'string' ? args.text : '';
+  return {
+    media: {
+      kind,
+      ...(typeof args.aspect === 'string' ? { aspect: args.aspect } : {}),
+      ...(typeof args.count === 'number' ? { count: Math.min(Math.max(args.count, 1), 4) } : {}),
+      ...(prompt ? { prompt: prompt.slice(0, 200) } : {}),
+    },
+  };
+}
+
+/** "Read src/x.ts", "Run npm test": the tool's label without its icon. */
+function toolTitle(toolName: string, args: Record<string, unknown>): string {
+  return formatToolStep(toolName, args).replace(/^[^\p{L}\p{N}]+/u, '').trim() || toolName;
+}
 
 type PendingInteractionKind = 'permission' | 'continue' | 'mode' | 'choice';
 
@@ -22,7 +50,7 @@ interface PendingInteraction {
 }
 
 export interface ChatEvent {
-  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
+  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'progress' | 'phase' | 'media_ready' | 'media_pending' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'queue_dropped' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
   data?: Record<string, unknown>;
 }
 
@@ -269,13 +297,19 @@ export class WebChannel extends BaseChannel {
    * never reached it, and it showed "Thinking" forever.
    */
   /**
-   * This chat's message is waiting: Mercury runs one turn at a time, and
-   * another one (`busySessionId`, doing `busyWith`) is ahead of it. Sent when it
+   * This chat's message is waiting: every slot Mercury runs chats in is
+   * taken (ADR-037), and another one (`busySessionId`, doing `busyWith`) is
+   * ahead of it. Sent when it
    * joins the line and whenever the line moves; the turn's own events follow
    * when it starts.
    */
   sendQueued(targetId: string, data: { position: number; busyWith?: string; busySessionId?: string }): void {
     this.broadcast({ type: 'queued', data: { targetId, ...data } });
+  }
+
+  /** Waiting messages of this chat were dropped (a stop): they will not run (ADR-038). */
+  sendQueueDropped(targetId: string, data: { dropped: number; reason: string }): void {
+    this.broadcast({ type: 'queue_dropped', data: { targetId, ...data } });
   }
 
   sendSessionSwitched(targetId: string, session: { id: string; shortId: string; alias: string; title: string }): void {
@@ -389,10 +423,11 @@ export class WebChannel extends BaseChannel {
     return [...this.sseClients.values()].some((client) => client.sessionId === targetId);
   }
 
-  async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
+  async send(content: string, targetId?: string, elapsedMs?: number, usage?: Record<string, unknown>): Promise<void> {
+    if (targetId) this.liveText.delete(targetId);
     const delivered = this.broadcast({
       type: 'text_done',
-      data: { fullText: content, elapsedMs, targetId },
+      data: { fullText: content, elapsedMs, targetId, ...(usage ? { usage } : {}) },
     });
     if (!delivered) throw new Error('Cloud WebSocket could not accept the terminal response');
   }
@@ -401,11 +436,26 @@ export class WebChannel extends BaseChannel {
     // Not needed for web — files are referenced in text
   }
 
+  /** The reply text streamed so far per chat, for a screen that comes back mid-turn. */
+  private liveText = new Map<string, string>();
+
+  clearLiveText(targetId: string): void {
+    this.liveText.delete(targetId);
+  }
+
+  /** What this chat's running reply has written so far ('' when none). */
+  liveTextFor(targetId: string): string {
+    return this.liveText.get(targetId) ?? '';
+  }
+
   async stream(content: AsyncIterable<string>, targetId?: string): Promise<string> {
     let fullText = '';
+    // A later round of the same turn writes on after the earlier text.
+    const before = targetId ? this.liveText.get(targetId) ?? '' : '';
     for await (const chunk of content) {
       fullText += chunk;
       if (!chunk) continue;
+      if (targetId) this.liveText.set(targetId, before + fullText);
       this.broadcast({
         type: 'text_delta',
         data: { text: chunk, targetId },
@@ -418,8 +468,8 @@ export class WebChannel extends BaseChannel {
     this.broadcast({ type: 'thinking', data: { targetId: _targetId } });
   }
 
-  async askPermission(prompt: string, _targetId?: string): Promise<string> {
-    if (this.isPermissionBypassed(_targetId)) return 'yes';
+  async askPermission(prompt: string, _targetId?: string, options?: { alwaysAsk?: boolean }): Promise<string> {
+    if (!options?.alwaysAsk && this.isPermissionBypassed(_targetId)) return 'yes';
     if (!this.hasInteractiveTarget(_targetId)) return 'no';
     const id = `perm_${randomUUID()}`;
     const event: ChatEvent = {
@@ -482,6 +532,54 @@ export class WebChannel extends BaseChannel {
   }
 
   /**
+   * A tool started running, sent the moment it starts (not when the step
+   * ends), so a screen shows what is running during a long command. `id` is
+   * the tool call id: the matching tool_done carries it.
+   */
+  sendToolStarted(id: string, toolName: string, args: Record<string, unknown>, targetId?: string): void {
+    const channelId = targetId || 'default';
+    const step = (this.stepCounter.get(channelId) || 0) + 1;
+    this.stepCounter.set(channelId, step);
+    const label = Object.keys(args).length > 0
+      ? `${toolName}(${Object.entries(args).slice(0, 3).map(([k, v]) => `${k}=${typeof v === 'string' && v.length > 50 ? v.slice(0, 50) + '...' : v}`).join(', ')})`
+      : toolName;
+    this.broadcast({
+      type: 'step_start',
+      data: { id, step, tool: toolName, label: String(label), title: toolTitle(toolName, args), ...mediaShape(toolName, args), targetId },
+    });
+  }
+
+  /** The tool with this call id finished (or failed), with how long it ran. */
+  sendToolFinished(id: string, toolName: string, result: unknown, failed: boolean, durationMs: number | undefined, targetId?: string): void {
+    const text = result == null ? '' : typeof result === 'string' ? result : safeJson(result);
+    const summary = text.slice(0, 200);
+    // "HTTP 403 …" and "timed out" come back as text, not errors.
+    const reason = failed ? (stepFailure(toolName, text) ?? (summary.split('\n')[0] || 'failed')) : stepFailure(toolName, text);
+    this.broadcast({
+      type: 'step_done',
+      data: {
+        id, tool: toolName, summary, failed: reason !== null,
+        ...(reason ? { reason } : {}),
+        ...(typeof durationMs === 'number' && Number.isFinite(durationMs) ? { durationMs: Math.max(0, Math.round(durationMs)) } : {}),
+        targetId,
+      },
+    });
+  }
+
+  /** What the turn is doing between tools ("Calling anthropic", "Retrying after a stall"…). */
+  sendPhase(phase: string, detail: string | undefined, targetId?: string): void {
+    this.broadcast({ type: 'phase', data: { phase, ...(detail ? { detail } : {}), targetId } });
+  }
+
+  /**
+   * A note while the turn keeps working ("Checking my work…"). Not a reply:
+   * a screen shows it inside the running turn instead of ending the turn.
+   */
+  sendProgressNote(text: string, targetId?: string): void {
+    this.broadcast({ type: 'progress', data: { text, targetId } });
+  }
+
+  /**
    * The model's reasoning as it streams, for clients that show the thought
    * process live. Deltas are batched (≤ 8 events/s per target); null closes
    * the reasoning block when the answer starts.
@@ -515,11 +613,25 @@ export class WebChannel extends BaseChannel {
   plans = new PlanStore();
 
   /** The model updated its plan checklist: keep it with the conversation and show it live. */
-  sendPlan(steps: unknown, targetId?: string): void {
+  sendPlan(steps: unknown, targetId?: string, state?: PlanState): void {
     const normalized = normalizePlan(steps);
     if (normalized.length === 0) return;
-    const plan = targetId ? this.plans.set(targetId, normalized) : { steps: normalized, updatedAt: Date.now() };
-    this.broadcast({ type: 'plan', data: { steps: plan.steps, updatedAt: plan.updatedAt, targetId } });
+    const plan = targetId ? this.plans.set(targetId, normalized, Date.now(), state) : { steps: normalized, updatedAt: Date.now(), ...(state ? { state } : {}) };
+    this.broadcast({ type: 'plan', data: { steps: plan.steps, updatedAt: plan.updatedAt, targetId, ...(plan.state ? { state: plan.state } : {}) } });
+  }
+
+  /**
+   * A video or song made in the background is ready (or failed), after its
+   * turn ended: a message of its own, so a turn running in the chat now is
+   * left alone.
+   */
+  sendMediaReady(text: string, artifacts: unknown[], targetId?: string, jobId?: string): void {
+    this.broadcast({ type: 'media_ready', data: { text, artifacts, targetId, ...(jobId ? { jobId } : {}) } });
+  }
+
+  /** A video or song started in the background: a screen holds a placeholder for it until media_ready. */
+  sendMediaPending(job: { id: string; kind: string; prompt: string; createdAt: number; aspect?: string }, targetId: string): void {
+    this.broadcast({ type: 'media_pending', data: { jobId: job.id, kind: job.kind, prompt: job.prompt.slice(0, 200), startedAt: job.createdAt, ...(job.aspect ? { aspect: job.aspect } : {}), targetId } });
   }
 
   /** Artifacts this turn made (images, PDFs, reports…), for the conversation's live view. */
@@ -542,7 +654,8 @@ export class WebChannel extends BaseChannel {
   sendProviderInfo(name: string, model: string, targetId?: string): void {
     this.broadcast({
       type: 'provider',
-      data: { name, model, targetId },
+      // `provider` too: screens read the same field as on `connected`.
+      data: { name, provider: name, model, targetId },
     });
   }
 
@@ -580,7 +693,7 @@ export class WebChannel extends BaseChannel {
    * `attachments` are files already on disk (see `web/api/uploads.ts`); them being
    * present is what lets the runtime hand a photo to a vision model instead of a path.
    */
-  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[], scope?: { programming?: string; cwd?: string; thisComputer?: boolean }): void {
+  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[], scope?: { programming?: string; cwd?: string; thisComputer?: boolean; media?: { kind: 'image' | 'video' | 'music'; aspect?: string } }): void {
     if (this.restrictUser) {
       throw new Error('Web user is restricted. Disable restrict mode to continue.');
     }
@@ -605,6 +718,8 @@ export class WebChannel extends BaseChannel {
         ...(scope?.cwd ? { programmingCwd: scope.cwd } : {}),
         // Sent from this computer (Mercury Desktop or an attached terminal here): /server is allowed.
         ...(scope?.thisComputer ? { thisComputer: true } : {}),
+        // The desktop's Image switch: this message asks for an image (media/intent.ts).
+        ...(scope?.media ? { media: scope.media } : {}),
       },
     };
     this.emit(msg);

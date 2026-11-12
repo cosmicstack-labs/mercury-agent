@@ -18,6 +18,8 @@ export interface McpServerConfig {
   enabled?: boolean;
   timeoutMs?: number;
   tools?: McpToolFilter;
+  /** Resource URIs, independent of tools. Hidden unless explicitly allowed. */
+  resources?: McpToolFilter;
 }
 
 export interface McpConfig {
@@ -60,3 +62,14 @@ export interface McpGateResult {
 }
 
 export type McpGate = (request: McpGateRequest) => Promise<McpGateResult>;
+
+export type McpResourceGateRequest = {
+  signal?: AbortSignal;
+} & ({ operation: 'servers' } | {
+  serverId: string;
+  operation: 'list' | 'read';
+  uri?: string;
+  autoApprove: boolean;
+});
+
+export type McpResourceGate = (request: McpResourceGateRequest) => Promise<McpGateResult>;

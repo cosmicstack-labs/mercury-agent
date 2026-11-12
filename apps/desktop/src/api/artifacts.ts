@@ -4,7 +4,13 @@ import { apiUrl, authHeaders, http } from "./client";
 export type ArtifactKind = "image" | "video" | "audio" | "pdf" | "document" | "text" | "file";
 
 /** What a chat message carries about its artifacts. */
-export interface ArtifactRef { id: string; name: string; kind: ArtifactKind; mime: string; size: number; path: string }
+export interface ArtifactRef {
+  id: string; name: string; kind: ArtifactKind; mime: string; size: number; path: string; tool?: string;
+  /** Made together (several images for one ask): shown as one group. */
+  batch?: string;
+  /** What the media model was asked for. */
+  prompt?: string;
+}
 
 export interface ArtifactItem {
   id: string;
@@ -17,10 +23,29 @@ export interface ArtifactItem {
   size: number;
   originalPath: string;
   originalExists: boolean;
+  /** Deleting it deletes the file itself; otherwise (a file in a project) only Mercury's copy goes. */
+  owned?: boolean;
   createdAt: number;
   tool?: string;
   surface?: "chat" | "code";
+  batch?: string;
+  prompt?: string;
 }
+
+/** What deleting did: records gone, bytes the disk got back, originals left in place (project files). */
+export interface RemoveResult { ok: boolean; removed: number; freed: number; keptOriginals: number }
+
+/** Space the artifacts take (as the disk counts it) and what deleting them all would free. */
+export interface ArtifactUsage {
+  count: number;
+  bytes: number;
+  byKind: Partial<Record<ArtifactKind, { count: number; bytes: number }>>;
+  freeable: number;
+  /** Artifacts whose original is a file in a project: deleting keeps that file. */
+  outside: number;
+}
+
+export type BulkDelete = { ids: string[] } | { kind?: ArtifactKind; olderThanDays?: number; threadId?: string; all?: boolean };
 
 export interface ArtifactPage { items: ArtifactItem[]; nextCursor: string | null; counts: Record<string, number> }
 
@@ -35,7 +60,10 @@ export const artifactsApi = {
     return http.get<ArtifactPage>(`/api/artifacts?${p}`);
   },
   get: (id: string) => http.get<{ artifact: ArtifactItem }>(`/api/artifacts/${encodeURIComponent(id)}`).then((r) => r.artifact),
-  remove: (id: string) => http.delete<{ ok: boolean }>(`/api/artifacts/${encodeURIComponent(id)}`),
+  /** Mercury's copy, and the original when Mercury owns it (its output folder, a generated picture or sound). */
+  remove: (id: string) => http.delete<RemoveResult>(`/api/artifacts/${encodeURIComponent(id)}`),
+  usage: () => http.get<ArtifactUsage>("/api/artifacts/usage"),
+  removeMany: (what: BulkDelete) => http.post<RemoveResult>("/api/artifacts/delete", what),
   /** Save a copy to a folder on the computer Mercury runs on. */
   /** Where Mercury saves what it makes (~/mercury-artifacts), and files it left loose in the home folder. */
   folder: () => http.get<{ path: string; display: string; exists: boolean; strays: Array<{ id: string; name: string; path: string; threadId: string; threadTitle: string | null }> }>("/api/artifacts/folder"),

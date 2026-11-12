@@ -206,4 +206,48 @@ describe.skipIf(!sqliteAvailable)('BeliefStore', () => {
     expect(store.migrateLegacyMemories(now).skipped).toBe(true);
     expect(isLegacyJunk({ summary: 'User likes interactive 3D animations in web projects', type: 'preference', evidence_kind: 'inferred', confidence: 0.85, categories: '["technical"]' })).toBe(false);
   });
+
+  it('another wording of a belief supports it instead of becoming a copy, across kinds', () => {
+    const { store } = make();
+    store.setOwnerNames(['salman']);
+    const t0 = Date.now();
+    const first = store.apply({ op: 'create', kind: 'relationship', statement: "User's wife is Heer", excerpt: 'my wife Heer', sessionId: 's1' }, t0)!;
+    const again = store.apply({ op: 'create', kind: 'fact', statement: 'Salman is married to Heer', excerpt: 'married to Heer', sessionId: 's2' }, t0 + 1000)!;
+    expect(again.belief.id).toBe(first.belief.id);
+    expect(again.change).toBe('now-held');
+    // A little more detail: the same belief, now in the fuller words.
+    const more = store.apply({ op: 'create', kind: 'relationship', statement: 'Heer is my wife, married since 2019', excerpt: 'since 2019', sessionId: 's3' }, t0 + 2000)!;
+    expect(more.belief.id).toBe(first.belief.id);
+    expect(more.belief.statement).toBe('Heer is my wife, married since 2019');
+    expect(store.list().filter((b) => /heer/i.test(b.statement))).toHaveLength(1);
+  });
+
+  it('tidy folds copies already stored, keeps the owner\'s word, and never loses what a longer one adds', () => {
+    const { store, db } = make();
+    store.setOwnerNames(['salman']);
+    const t0 = Date.now();
+    // Copies written before the matcher existed: insert them as separate rows.
+    const raw = (statement: string, status = 'candidate', support = 1) => {
+      const id = `b${Math.random().toString(36).slice(2)}`;
+      db.connection.prepare(`INSERT INTO beliefs (id, owner_key, kind, statement, context, support, against, support_sessions, timescale, status, owner_stated, valid_from, last_supported_at, created_at, updated_at)
+        VALUES (?, 'user:owner', 'relationship', ?, '*', ?, 0, 1, 'stable', ?, ?, ?, ?, ?, ?)`).run(id, statement, support, status, status === 'confirmed' ? 1 : 0, t0, t0, t0, t0);
+      return id;
+    };
+    const mine = raw('Heer is my wife.', 'confirmed', 2);
+    raw("User's wife is Heer");
+    raw('User is married to someone named Heer.');
+    const father = raw('Married to Heer; about to become a father');
+    const friend = raw('Zaid is my friend');
+    const result = store.tidy(t0 + 1000);
+    expect(result.merged).toBe(2);
+    const live = store.list().map((b) => b.id).sort();
+    expect(live).toEqual([mine, father, friend].sort());
+    const kept = store.get(mine)!;
+    expect(kept.status).toBe('confirmed');
+    expect(kept.support).toBe(4);
+    expect(store.evidenceFor(mine).some((e) => e.excerpt.startsWith('merged with'))).toBe(true);
+    // Running it again changes nothing.
+    expect(store.tidy(t0 + 2000).merged).toBe(0);
+  });
 });
+

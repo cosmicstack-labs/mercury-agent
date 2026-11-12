@@ -16,6 +16,7 @@ import { BotAvatar } from "~/components/BotAvatar";
 import { ConfirmButton } from "~/components/ui/kit";
 import { Deliverables } from "./Deliverables";
 import { Activity } from "./Activity";
+import { Live } from "./Live";
 import { Usage } from "./Usage";
 import { BotInbox, InboxRow } from "./Inbox";
 import { PendingApprovals } from "./Approvals";
@@ -212,14 +213,15 @@ function describe(b: BotStatus): string {
   return "Idle";
 }
 
-type Tab = "overview" | "results" | "deliverables" | "activity" | "usage" | "settings";
+type Tab = "live" | "overview" | "results" | "deliverables" | "activity" | "usage" | "settings";
 
 function TabBar({ tab, onChange, fleet }: { tab: Tab; onChange: (t: Tab) => void; fleet: boolean }) {
   const tabs: Array<{ id: Tab; label: string }> = [
+    { id: "live", label: "Live" },
     { id: "overview", label: "Overview" },
     { id: "results", label: "Results" },
     { id: "deliverables", label: fleet ? "Fleet files" : "Files" },
-    { id: "activity", label: "Activity" },
+    { id: "activity", label: "History" },
     { id: "usage", label: "Usage" },
     { id: "settings", label: "Settings" },
   ];
@@ -237,14 +239,15 @@ function TabBar({ tab, onChange, fleet }: { tab: Tab; onChange: (t: Tab) => void
 
 function FleetDetail({ fleet, activity, onSelect }: { fleet: Fleet; activity: Record<string, string>; onSelect: (id: string | null) => void }) {
   const { lead, crew } = fleet;
-  const [tab, setTab] = useState<Tab>("overview");
-  useEffect(() => { setTab("overview"); }, [lead.id]);
+  const [tab, setTab] = useState<Tab>("live");
+  useEffect(() => { setTab("live"); }, [lead.id]);
   const members = [lead, ...crew];
   return (
     <div className="mx-auto flex max-w-[1000px] flex-col gap-6 px-8 py-7">
       <BotHeader id={lead.id} status={lead} subtitle={`Fleet lead · ${crew.length} crew`} crewCount={crew.length} onDeleted={() => onSelect(null)} />
-      {members.map((m) => <PendingApprovals key={m.id} botId={m.id} />)}
+      {tab !== "live" && <PendingApprovals botIds={members.map((m) => m.id)} />}
       <TabBar tab={tab} onChange={setTab} fleet />
+      {tab === "live" && <Live bots={members} defaultTarget={lead.id} />}
       {tab === "overview" && (
         <>
           <div className="flex flex-col gap-3">
@@ -278,14 +281,15 @@ function FleetDetail({ fleet, activity, onSelect }: { fleet: Fleet; activity: Re
 }
 
 function BotDetail({ id, status, onDeleted }: { id: string; status: BotStatus | null; onDeleted: () => void }) {
-  const [tab, setTab] = useState<Tab>("overview");
-  useEffect(() => { setTab("overview"); }, [id]);
+  const [tab, setTab] = useState<Tab>("live");
+  useEffect(() => { setTab("live"); }, [id]);
   const me = [{ id, name: status?.name ?? id, hasAvatar: status?.hasAvatar }];
   return (
     <div className="mx-auto flex max-w-[1000px] flex-col gap-6 px-8 py-7">
       <BotHeader id={id} status={status} onDeleted={onDeleted} />
-      <PendingApprovals botId={id} />
+      {tab !== "live" && <PendingApprovals botId={id} />}
       <TabBar tab={tab} onChange={setTab} fleet={false} />
+      {tab === "live" && status && <Live bots={[status]} defaultTarget={id} />}
       {tab === "overview" && status && !status.parent && status.fleetRole !== "lead" && <MakeFleet id={id} name={status.name} />}
       {tab === "overview" && <BotBody id={id} status={status} />}
       {tab === "results" && <BotInbox bots={status ? [status] : []} botId={id} />}

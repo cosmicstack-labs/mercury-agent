@@ -17,7 +17,7 @@ export interface TranscribeCreds {
 }
 
 export type SpeechEngine =
-  | { kind: 'openai'; label: string; apiKey: string; baseUrl?: string }
+  | { kind: 'openai'; label: string; apiKey: string; baseUrl?: string; headers?: Record<string, string>; model?: string }
   | { kind: 'deepgram'; label: string; apiKey: string }
   | { kind: 'elevenlabs'; label: string; apiKey: string }
   | { kind: 'gemini'; label: string; apiKey: string };

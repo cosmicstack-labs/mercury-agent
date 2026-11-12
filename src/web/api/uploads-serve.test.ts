@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { storeInlineAttachments, attachmentRefs, resolveUploadRef, uploadRef } from './uploads.js';
+import { withAttachments } from '../../core/attachments.js';
 
 // 1×1 PNG.
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -58,5 +59,34 @@ describe('stored uploads', () => {
     expect(ok.headers.get('X-Content-Type-Options')).toBe('nosniff');
     const missing = await chatRoutes.request('http://127.0.0.1:6174/api/chat/uploads/2026-10/00000000-0000-0000-0000-000000000000-none.png');
     expect(missing.status).toBe(404);
+  });
+
+  it('serves uploaded Markdown with HTML as inert UTF-8 text', async () => {
+    const { default: chatRoutes } = await import('./chat.js');
+    const text = '# Notes\n<script>alert(document.cookie)</script>';
+    const upload = storeInlineAttachments([{ name: '会议.md', data: Buffer.from(text).toString('base64') }]);
+    if (!upload.ok) throw new Error(upload.error);
+    const [ref] = attachmentRefs(upload.attachments);
+    const response = await chatRoutes.request(`http://127.0.0.1:6174/api/chat/uploads/${ref.ref}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('text/plain; charset=utf-8');
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(response.headers.get('Content-Disposition')).toContain(`filename*=UTF-8''${encodeURIComponent('会议.md')}`);
+    expect(await response.text()).toBe(text);
+  });
+
+  it.each(['x'.repeat(79) + '.md', '😀'.repeat(40) + '.md'])('preserves long filenames through storage, model input and retrieval: %s', async (name) => {
+    const { default: chatRoutes } = await import('./chat.js');
+    const upload = storeInlineAttachments([{ name, data: Buffer.from('Long name, real text').toString('base64') }]);
+    if (!upload.ok) throw new Error(upload.error);
+    expect(upload.attachments[0].name!.length).toBeLessThanOrEqual(80);
+    expect(upload.attachments[0].name).toMatch(/\.md$/);
+    const message = { id: '1', channelId: 'web', channelType: 'web' as const, senderId: 'owner', content: 'Summarize', timestamp: 0, metadata: { attachments: upload.attachments } };
+    const out = withAttachments([{ role: 'user', content: 'Summarize' }], message, 'deepseek', 'deepseek-chat');
+    expect(JSON.stringify(out)).toContain('Long name, real text');
+    const [ref] = attachmentRefs(upload.attachments);
+    const response = await chatRoutes.request(`http://127.0.0.1:6174/api/chat/uploads/${ref.ref}`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('Long name, real text');
   });
 });

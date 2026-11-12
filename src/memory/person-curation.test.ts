@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { getDefaultConfig } from '../utils/config.js';
-import { UserMemoryStore } from './user-memory.js';
+import { UserMemoryStore, findNameVariant } from './user-memory.js';
 import { isBetterSqlite3Available } from './second-brain-db.js';
 
 /**
@@ -159,4 +159,31 @@ describe.skipIf(!sqliteAvailable)('people curation', () => {
     expect(store.listPersons('Heer', 5)[0].relationshipToUser).toBe('wife');
     expect(store.listPersons('Sara', 5)[0].relationshipToUser).toBe('known');
   });
+
+  it('one person under a short and a full name becomes one person; the full name stays as an alias', () => {
+    const store = createStore();
+    remember(store, 'Shehzen is my friend from MTech.');
+    remember(store, 'Shehzen Sidiq Malla is my friend.');
+    remember(store, 'Shehzen brought biryani for dinner.');
+    const before = store.listPersons('', 50).map((p) => p.name).filter((n) => n.startsWith('Shehzen'));
+    expect(before.sort()).toEqual(['Shehzen', 'Shehzen Sidiq Malla']);
+    expect(store.tidyPersons()).toBe(1);
+    const after = store.listPersons('', 50).filter((p) => p.name.startsWith('Shehzen'));
+    expect(after.map((p) => p.name)).toEqual(['Shehzen']);
+    expect(store.listPersons('Sidiq', 5).map((p) => p.id)).toEqual([after[0].id]);
+  });
 });
+
+describe('name variants', () => {
+  const none = () => false;
+  it('a name that starts exactly one other name is that person', () => {
+    const names = new Map([['a', ['shehzen']], ['b', ['shehzen sidiq malla']], ['c', ['zaid']]]);
+    expect(findNameVariant(names, none, new Set())).toEqual(['a', 'b']);
+  });
+  it('ambiguous first names, the owner and part-words never merge', () => {
+    expect(findNameVariant(new Map([['a', ['ali']], ['b', ['ali khan']], ['c', ['ali raza']]]), none, new Set())).toBeNull();
+    expect(findNameVariant(new Map([['a', ['salman']], ['b', ['salman qureshi']]]), none, new Set(['salman']))).toBeNull();
+    expect(findNameVariant(new Map([['a', ['shaz']], ['b', ['shazain']]]), none, new Set())).toBeNull();
+  });
+});
+

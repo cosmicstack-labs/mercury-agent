@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import mediaRoutes from './api/media.js';
 import { isBunVirtualPath } from '../utils/bun-path.js';
 import { createAdaptorServer } from '@hono/node-server';
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
@@ -21,7 +22,8 @@ import artifactRoutes from './api/artifacts.js';
 import configRoutes from './api/config.js';
 import systemRoutes, { setScheduler } from './api/system.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
-import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setStatusSnapshotCallback, setSessionRepository, setSessionSyncEnabledCallback, setStopCallback, setSessionBusyLookup, setQueueControls, setResearchControls } from './api/chat.js';
+import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setStatusSnapshotCallback, setSessionRepository, setSessionSyncEnabledCallback, setStopCallback, setSessionBusyLookup, setQueueControls, setResearchControls, setTurnControls } from './api/chat.js';
+import suggestionRoutes from './api/suggestions.js';
 import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api/agents.js';
 import botsRoutes, { setBotManager, setBotsWebhookSecret } from './api/bots.js';
 import spotifyRoutes, { setSpotifyClient } from './api/spotify.js';
@@ -119,9 +121,11 @@ app.route('/', providerRoutes);
 app.route('/', cloudRoutes);
 app.route('/', transcribeRoutes);
 app.route('/', speakRoutes);
+app.route('/', mediaRoutes);
 app.route('/', budgetRoutes);
 app.route('/', channelRoutes);
 app.route('/', artifactRoutes);
+app.route('/', suggestionRoutes);
 app.route('/', configRoutes);
 app.route('/', systemRoutes);
 app.route('/', brainRoutes);
@@ -253,7 +257,7 @@ if (spaAvailable) {
 }
 
 export { setShutdownHandler, setMcpManager };
-export { setStopCallback, setSessionBusyLookup, setQueueControls, setResearchControls };
+export { setStopCallback, setSessionBusyLookup, setQueueControls, setResearchControls, setTurnControls };
 export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setStatusSnapshotCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders, setBotManager, setBotsWebhookSecret };
 
 let webServer: ReturnType<typeof createAdaptorServer> | null = null;

@@ -5,7 +5,7 @@ import { conversations, ConversationContext, useCodeSessions, listOf } from "~/a
 import { refreshThreads, openThread, setThreadSaved } from "~/app/events";
 import { Button } from "~/components/ui/Button";
 import { Tooltip } from "~/components/ui/Tooltip";
-import { Mark } from "~/components/Logo";
+import { SafeWelcome } from "./Welcome";
 import { ThreadList } from "./ThreadList";
 import { Conversation } from "./Conversation";
 import { VoiceConversation } from "./VoiceConversation";
@@ -51,6 +51,8 @@ export function ChatView() {
 
   // Saved chats are a bookmark, not a section: the list shows them on ⌘⇧S or the bookmark by search.
   const [savedOnly, setSavedOnly] = useState(false);
+  /** A picked suggestion, put in the box. */
+  const [draft, setDraft] = useState<string | null>(null);
   const saved = !!threads.find((t) => t.id === activeId)?.savedAt;
   const toggleSaved = () => { if (activeId) void setThreadSaved(activeId, !saved).catch(() => {}); };
 
@@ -121,17 +123,8 @@ export function ChatView() {
               )}
             </>
           }
-          empty={
-            <div className="flex flex-col items-center gap-4 px-6 pb-24 text-center">
-              <div className="relative flex items-center justify-center">
-                <span aria-hidden="true" className="absolute h-28 w-28 rounded-full animate-breathe" style={{ background: "radial-gradient(closest-side, rgb(var(--glow) / 0.22), rgb(var(--glow) / 0))" }} />
-                <Mark size={64} className="relative" />
-              </div>
-              <h2 className="text-2xl font-bold tracking-tight text-ink">Mercury Agent</h2>
-              <p className="max-w-[460px] text-base text-ink3">This chat is empty. Ask, delegate, or think out loud. Mercury remembers what matters.</p>
-            </div>
-          }
-          composer={{ surface: "chat", placeholder: "Ask anything…" }}
+          empty={<SafeWelcome onPick={setDraft} />}
+          composer={{ surface: "chat", placeholder: "Ask anything…", draft, onDraftConsumed: () => setDraft(null) }}
         />
         )}
       </div>

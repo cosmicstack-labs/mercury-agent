@@ -98,6 +98,20 @@ export interface ChatMessage {
   artifacts?: import("./artifacts").ArtifactRef[];
   /** This answer is a research report: how the run went. */
   research?: ResearchSnapshot;
+  /** What this reply cost: every model step of its turn (runtimes from #296 on). */
+  usage?: ReplyUsage;
+}
+
+/** One reply's tokens, steps, time and model. */
+export interface ReplyUsage {
+  inputTokens: number;
+  /** Of the input, how much the provider served from its prompt cache. */
+  cachedInputTokens: number;
+  outputTokens: number;
+  steps?: number;
+  elapsedMs?: number;
+  provider?: string;
+  model?: string;
 }
 
 /** A page a research run tried to read. */
@@ -154,22 +168,52 @@ export interface ResearchPlanPrompt {
 
 export interface ThoughtStep {
   id: number;
+  /** The tool call id (runtimes that send tool events live); matches its step_done. */
+  key?: string;
   tool: string;
   label: string;
+  /** "Read src/x.ts", "Run npm test": what the step did, in words. */
+  title?: string;
   /** "stopped": cut off by the stop button before it finished. */
   status: "running" | "done" | "error" | "stopped";
   summary?: string;
   startedAt: number;
   endedAt?: number;
+  /** How long the tool ran (the runtime's own measure where it sent one). */
+  durationMs?: number;
+  /** A media tool: what it is making, for a placeholder of the right shape. */
+  media?: { kind: "image" | "video" | "music" | "speech"; aspect?: string; count?: number; prompt?: string };
 }
+
+/** A video or song being made in the background for this chat (arrives with media_ready). */
+export interface PendingMedia {
+  jobId: string;
+  kind: "video" | "music";
+  aspect?: string;
+  prompt: string;
+  startedAt: number;
+}
+
+/** One entry of a turn's timeline, in the order it happened. */
+export type TraceItem =
+  | { kind: "reasoning"; text: string; startedAt: number; endedAt?: number }
+  | { kind: "step"; key: string }
+  | { kind: "text"; text: string }
+  | { kind: "note"; text: string; at: number };
 
 export interface ThoughtTrace {
   reasoning: string;
   steps: ThoughtStep[];
+  /** The order things happened in (newer runtimes and live turns). */
+  items?: TraceItem[];
   startedAt: number;
   endedAt?: number;
   /** The turn was stopped by you, not finished. */
   stopped?: boolean;
+  /** Live only: what the runtime says it is doing between tools ("Calling anthropic"). */
+  phase?: string;
+  /** Live only: when the runtime last sent anything for this turn. */
+  lastEventAt?: number;
 }
 
 export interface MessageAttachment {
@@ -180,7 +224,7 @@ export interface MessageAttachment {
   src?: string;
 }
 
-export type ReasoningLevel = "off" | "low" | "medium" | "high";
+export type ReasoningLevel = "off" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningChoice = ReasoningLevel | "auto";
 
 export interface ModelDescription {
@@ -192,8 +236,19 @@ export interface ModelDescription {
   reasoningLevels: ReasoningLevel[];
 }
 
+/** The effort a chat's requests carry, and where it comes from (#188). */
+export interface ChatEffort {
+  effective: ReasoningChoice;
+  source: "chat" | "model" | "auto";
+  modelDefault: ReasoningChoice;
+  chat: ReasoningChoice | null;
+  chatUnsupported?: boolean;
+}
+
 export interface ModelsResponse {
-  current: { name: string; model: string } & ModelDescription;
+  /** Lookups that failed, in words ("Mercury Cloud sign-in expired…"). */
+  notices?: string[];
+  current: { name: string; model: string; effort?: ChatEffort } & ModelDescription;
   providers: ({ name: string; model: string; available: boolean; isCurrent?: boolean } & ModelDescription)[];
 }
 
@@ -384,10 +439,25 @@ export interface CostReport {
   fleetPaused: boolean;
 }
 
+/** What a bot is doing right now (SSE bot_activity; GET /api/bots/activity for the recent past). */
 export interface BotActivityEvent {
   botId: string;
-  kind: "turn-start" | "step" | "tool" | "turn-end" | "thinking";
+  /** The run (job); "" for events outside a run (a delivery). */
+  jobId?: string;
+  kind: "turn-start" | "step" | "tool" | "turn-end" | "thinking" | "queued";
   label: string;
+  detail?: string;
+  stepIndex?: number;
+  elapsedMs?: number;
+  status?: "running" | "done" | "error";
+  reasoningTail?: string;
+  textTail?: string;
+  at?: number;
+  botName?: string;
+  /** What started the run: api (you), cron (a schedule), mailbox (another bot), … */
+  trigger?: string;
+  prompt?: string;
+  fromBot?: string;
 }
 
 // ── Plugins / MCP / Skills ──
@@ -479,4 +549,78 @@ export interface SkillDraft {
   intents: string[];
   instructions: string;
   allowedTools?: string[];
+}
+
+/** A chat a turn runs or waits in (runtimes from ADR-037 on). */
+export interface TurnChat {
+  /** The thread it belongs to — desktop chats always have one. */
+  sessionId?: string;
+  channelType: string;
+  channelId: string;
+}
+
+/** Chats running at once, and the limit. */
+export interface TurnsInfo {
+  /** In effect now. */
+  limit: number;
+  /** What was set: 0 = automatic. */
+  configured: number;
+  /** What automatic gives on this machine. */
+  auto: number;
+  running: Array<TurnChat & { startedAt: number; activity: string; steps: number }>;
+  waiting: Array<TurnChat & { waiting: number; position: number }>;
+}
+
+/* ── Media generation (ADR-042) ── */
+
+export type ImageAspect = "square" | "landscape" | "portrait";
+
+/** The composer's Create menu: this message asks for an image, a video or music. */
+export interface ImageIntent {
+  kind: "image" | "video" | "music";
+  aspect?: ImageAspect;
+}
+
+/** Models of one kind on the configured providers, the default and the automatic pick. */
+export interface MediaKindInfo {
+  models: MediaModelInfo[];
+  default: { ref: string; available: boolean } | null;
+  auto: { ref: string; label: string; group: string } | null;
+}
+
+export interface MediaModelInfo {
+  /** "provider::model" */
+  ref: string;
+  provider: string;
+  model: string;
+  label: string;
+  group: string;
+  canEdit: boolean;
+}
+
+export interface SpeechOptionInfo {
+  /** "openai" | "gemini" | "deepgram" | "elevenlabs", or "provider::model". */
+  id: string;
+  label: string;
+  group: string;
+  voices: string[];
+}
+
+export type VoiceReplies = "off" | "mirror" | "always";
+
+export interface SpeechInfo {
+  options: SpeechOptionInfo[];
+  current: { id: string; label: string; voice: string | null } | null;
+  /** The owner's pick; null follows Settings → Voice. */
+  choice: string | null;
+  voice: string | null;
+  replies: VoiceReplies;
+}
+
+export interface MediaModelsResponse {
+  /** Runtimes before phase 2 send no speech part, before phase 3 no video or music. */
+  speech?: SpeechInfo | null;
+  image: MediaKindInfo;
+  video?: MediaKindInfo;
+  music?: MediaKindInfo;
 }

@@ -40,6 +40,10 @@ export function PlanCard({ surface }: { surface: Surface }) {
   useEffect(() => { setMinimized(readFlag(minKey) === "1"); setClosedAt(Number(readFlag(closedKey) ?? 0)); }, [minKey, closedKey]);
 
   const steps = plan?.steps ?? [];
+  // Settled by the runtime when its turn ended unfinished; nothing is "in progress" then.
+  const unfinished = steps.some((s) => s.status !== "done");
+  // An unfinished plan in an idle chat isn't being worked on, whatever it says (plans saved before settling existed).
+  const settled = !busy && unfinished ? (plan?.state ?? "paused") : undefined;
   const done = steps.filter((s) => s.status === "done").length;
   const complete = steps.length > 0 && done === steps.length;
   const active = steps.find((s) => s.status === "active") ?? (complete ? null : steps.find((s) => s.status === "pending") ?? null);
@@ -62,15 +66,15 @@ export function PlanCard({ surface }: { surface: Surface }) {
           <div className="flex items-center gap-3 px-4 py-2.5">
             <button onClick={toggle} className="flex min-w-0 flex-1 items-center gap-3 text-left" aria-expanded={!minimized}>
               {complete ? <CheckCircle2 size={16} className="shrink-0 text-accent" /> : <ListChecks size={16} className="shrink-0 text-ink3" />}
-              <span className="shrink-0 text-sm font-medium text-ink">{complete ? "Plan complete" : "Plan"}</span>
+              <span className="shrink-0 text-sm font-medium text-ink">{complete ? "Plan complete" : settled === "stopped" ? "Plan stopped" : settled === "paused" ? "Plan paused" : "Plan"}</span>
               <span className="shrink-0 font-mono text-xs tabular-nums text-ink3">{done} of {steps.length}</span>
-              {minimized && active && <span className="min-w-0 truncate text-sm text-ink2">· {active.label}</span>}
+              {minimized && active && <span className="min-w-0 truncate text-sm text-ink2">· {settled ? `at ${active.label}` : active.label}</span>}
               <span className="ml-auto hidden h-1 w-24 shrink-0 overflow-hidden rounded-full bg-ink/[0.08] sm:block" aria-hidden="true">
                 <span className={cx("block h-full rounded-full transition-[width] duration-500", complete ? "bg-accent" : "bg-ink/60")} style={{ width: `${pct}%` }} />
               </span>
               <ChevronDown size={15} className={cx("shrink-0 text-ink4 transition-transform", !minimized && "rotate-180")} />
             </button>
-            {complete && !busy && (
+            {(complete || settled) && !busy && (
               <button onClick={close} className="rounded-md p-1 text-ink4 hover:bg-ink/[0.06] hover:text-ink" aria-label="Close the plan"><X size={14} /></button>
             )}
           </div>
@@ -78,14 +82,19 @@ export function PlanCard({ surface }: { surface: Surface }) {
             <ol className="flex max-h-56 flex-col gap-0.5 overflow-y-auto border-t border-line px-3 py-2">
               {steps.map((s, i) => (
                 <li key={`${i}-${s.label}`} className="flex items-start gap-2.5 rounded-lg px-1.5 py-1.5">
-                  <StepMark status={s.status} live={busy && s.status === "active"} />
+                  <StepMark status={settled && s.status === "active" ? "pending" : s.status} live={busy && s.status === "active"} />
                   <span className={cx("min-w-0 flex-1 text-sm leading-snug",
                     s.status === "done" && "text-ink3",
-                    s.status === "active" && "font-medium text-ink",
+                    s.status === "active" && (settled ? "text-ink2" : "font-medium text-ink"),
                     s.status === "pending" && "text-ink2")}>{s.label}</span>
                 </li>
               ))}
             </ol>
+          )}
+          {!minimized && settled && (
+            <p className="border-t border-line px-4 py-2 text-xs text-ink3">
+              {settled === "stopped" ? "Stopped before it finished." : "The reply came before these steps were done."} Say "continue" to pick it up from {active ? `"${active.label}"` : "where it stopped"}.
+            </p>
           )}
         </section>
       </div>

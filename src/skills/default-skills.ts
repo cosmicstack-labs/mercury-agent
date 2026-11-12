@@ -249,259 +249,225 @@ then try one shorter or rephrased query.
 `,
   },
   {
-    dirName: 'tweet-notifier',
+    dirName: 'computer-health',
     fileName: 'SKILL.md',
     content: `---
-name: tweet-notifier
-description: Schedule tweets with notifications to founders and supporters. Alerts founders when tweets are scheduled, and notifies supporters (approved Telegram users) when tweets are pending approval.
+name: computer-health
+description: Check what's wrong with this computer or a service on it — disk space, memory, CPU, processes, open ports, Docker containers and their logs, battery — with read-only commands, then explain what was found before suggesting any fix.
 version: 1.0.0
-category: social
-categories:
-  - social
-  - communication
-intents:
-  - schedule tweet
-  - approve tweet
-  - post tweet
-  - reject tweet
-  - pending tweets
-  - show tweets
-  - notify supporters
-  - cancel tweet
-  - tweet approval
-  - schedule a tweet
+category: system
 tags:
-  - twitter
-  - tweet
-  - scheduling
-  - notification
-  - social media
-allowed-tools:
-  - schedule_task
-  - send_message
-  - save_memory
-  - search_memory
-  - fetch_url
-  - github_api
+  - diagnostics
+  - disk
+  - memory
+  - processes
+  - docker
+  - ports
 ---
 
-# Tweet Notifier
+# Computer health
 
-Notification system for tweet scheduling and approval workflows. Alerts the founder (Optimus Prime) and supporters (approved Telegram users) at key states of the tweet lifecycle.
+Use this when the owner asks why the computer is slow, full, hot or noisy, what is running, what uses a port, or why a container or service is down.
 
-## States
+## Rules
 
-| State | Description | Notification Sent To |
-|---|---|---|
-| \`draft\` | Tweet is being composed | None (internal) |
-| \`scheduled\` | Tweet is queued with a time | Founder (send_message) |
-| \`pending_approval\` | Tweet needs review before posting | Founder + Supporters (send_message) |
-| \`approved\` | Tweet is cleared to post | Founder + Supporters |
-| \`posted\` | Tweet has been published | Supporters |
-| \`cancelled\` | Tweet was cancelled | Founder |
+- Look first, change nothing. Every command in "Checks" only reads. Anything that stops, deletes, restarts or installs is a separate step the owner agrees to.
+- Find the platform once (\`uname -s\`; on Windows the shell is PowerShell; on Android/Termux \`$PREFIX\` contains \`com.termux\`) and use the matching commands below.
+- Keep output small: sort, then \`head\` (PowerShell: \`Select-Object -First 15\`). Never dump a whole process list or log.
+- Report in plain words with the numbers that matter ("the disk is 94% full; 41 GB of it is ~/Library/Caches"), then the likely cause, then one or two fixes to choose from.
 
-## Workflow
+## Checks
 
-When the user wants to schedule or approve a tweet:
+| What | macOS | Linux / Termux | Windows (PowerShell) |
+|---|---|---|---|
+| Disk free | \`df -h /\` | \`df -h /\` (Termux: \`df -h $HOME\`) | \`Get-PSDrive -PSProvider FileSystem\` |
+| Biggest folders | \`du -sh ~/* 2>/dev/null \\| sort -rh \\| head -15\` | same | \`Get-ChildItem $HOME -Directory \\| ForEach-Object { [pscustomobject]@{Name=$_.Name; GB=[math]::Round((Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue \\| Measure-Object Length -Sum).Sum/1GB,2)} } \\| Sort-Object GB -Descending \\| Select-Object -First 15\` |
+| Memory | \`vm_stat\`, \`memory_pressure\` | \`free -h\` | \`Get-CimInstance Win32_OperatingSystem \\| Select-Object FreePhysicalMemory,TotalVisibleMemorySize\` |
+| Top CPU / memory | \`ps -Ao pid,pcpu,pmem,comm -r \\| head -15\` | \`ps -eo pid,pcpu,pmem,comm --sort=-pcpu \\| head -15\` | \`Get-Process \\| Sort-Object CPU -Descending \\| Select-Object -First 15 Id,CPU,WS,ProcessName\` |
+| Who uses a port | \`lsof -nP -iTCP:PORT -sTCP:LISTEN\` | \`ss -ltnp \\| grep :PORT\` | \`Get-NetTCPConnection -LocalPort PORT -State Listen\` |
+| Uptime / load | \`uptime\` | \`uptime\` | \`(Get-CimInstance Win32_OperatingSystem).LastBootUpTime\` |
+| Battery | \`pmset -g batt\` | \`upower -i $(upower -e \\| grep BAT)\` (Termux: \`termux-battery-status\`) | \`Get-CimInstance Win32_Battery\` |
 
-### 1. Schedule a Tweet
+## Docker and services
 
-1. Ask for the tweet content and desired posting time
-2. Use \`save_memory\` to store the tweet as a memory with type \`project\`:
-   - Summary: "Tweet: [content preview] scheduled for [time]"
-   - Include detail with full tweet content, scheduled time, status
-3. Use \`send_message\` to alert the founder:
-   - \`📅 **Tweet Scheduled** — @[time]: "[content preview]"\\nStatus: pending_approval — needs review before posting.\`
-4. Use \`schedule_task\` to set a delayed task:
-   - \`delay_seconds\`: seconds until posting time
-   - \`description\`: "Post scheduled tweet: [content preview]"
-   - \`prompt\`: "The following tweet is scheduled to post now. Check memory for full content and status. If approved, post it. If pending_approval, remind the user first."
+1. \`docker ps -a --format '{{.Names}}\\t{{.Status}}\\t{{.Image}}'\` — what runs, what exited, what is unhealthy.
+2. For one container: \`docker logs --tail 80 NAME\` and, when it reports a health status, \`docker inspect --format '{{json .State.Health}}' NAME\`.
+3. Resource use: \`docker stats --no-stream\`.
+4. Services (Linux): \`systemctl --failed\` and \`journalctl -u NAME -n 80 --no-pager\`. macOS: \`launchctl list | grep -i NAME\`.
 
-### 2. Tweet Requires Approval (Pending)
-
-When a tweet is in \`pending_approval\` state:
-
-1. Use \`send_message\` to notify the founder:
-   - \`✋ **Tweet Pending Approval** — "[content preview]"\\nPlease review and approve or reject this tweet.\\nTo approve, say: approve tweet [id]\\nTo reject, say: reject tweet [id]\`
-2. Use \`send_message\` to notify supporters (approved Telegram users):
-   - \`📢 **New Tweet for Review** — A new tweet is pending approval:\\n> "[content preview]"\\nThe founder will review it shortly.\`
-
-### 3. Approve or Reject a Tweet
-
-When the user approves:
-
-1. Use \`save_memory\` to update the tweet status to \`approved\`
-2. Use \`send_message\` to alert supporters:
-   - \`✅ **Tweet Approved** — "[content preview]"\\nThis tweet has been approved and will be posted at [time].\`
-3. If immediate posting, use \`fetch_url\` or \`github_api\` as appropriate for the posting platform
-4. Use \`send_message\` to notify supporters after posting:
-   - \`🐦 **Tweet Posted** — "[content preview]"\\nView it at: [url]\`
-
-When the user rejects:
-
-1. Use \`save_memory\` to update the tweet status to \`cancelled\`
-2. Use \`send_message\` to notify supporters:
-   - \`🚫 **Tweet Cancelled** — "[content preview]" was not approved for posting.\`
-
-### 4. Check Scheduled Tweets
-
-When asked "what tweets are scheduled" or "show pending tweets":
-
-1. Use \`search_memory\` with query "tweet" and type filter for \`project\`
-2. Summarize all tweets with their status, content preview, and scheduled time
-3. Present them grouped by status (pending_approval, approved, scheduled)
-
-## Notification Flow Examples
-
-### Founder Notification (via send_message)
-\`\`\`
-📅 Tweet Scheduled — @2:30 PM PST: "Exciting new features coming soon..."
-Status: pending_approval — needs review before posting.
-To approve, say: approve tweet t1
-To reject, say: reject tweet t1
-\`\`\`
-
-### Supporter Notification (via send_message)
-\`\`\`
-📢 New Tweet for Review
-
-A new tweet is pending approval:
-
-> "Exciting new features coming soon..."
-
-The founder will review it shortly. Stay tuned!
-\`\`\`
-
-## Memory Schema
-
-Store each tweet as a memory with:
-- Type: \`project\`
-- Summary: \`Tweet: [preview] scheduled for [time] — status: [state]\`
-- Detail: \`{"content": "full tweet text", "scheduledAt": "ISO time", "status": "draft|scheduled|pending_approval|approved|posted|cancelled", "id": "unique-id"}\`
-- Confidence: 0.95
-- Importance: 0.8
+Explain the error from the logs in one or two sentences and quote the decisive line. Restarting or rebuilding is the owner's call.
 `,
   },
   {
-    dirName: 'screenshot',
+    dirName: 'tidy-files',
     fileName: 'SKILL.md',
     content: `---
-name: screenshot
-description: Take full-page screenshots of any website with configurable viewport and color scheme (dark/light mode).
+name: tidy-files
+description: Organize, clean up or bulk-rename files and folders (Downloads, Desktop, photos, duplicates) safely — show the plan first, move instead of delete, and report exactly what changed.
 version: 1.0.0
-category: media
-categories:
-  - media
-  - web
-  - productivity
-intents:
-  - take a screenshot
-  - screenshot
-  - capture website
-  - screenshot website
-  - web screenshot
-  - capture page
-  - screenshot of
-  - take screenshot of
-  - mobile screenshot
-  - desktop screenshot
-  - dark mode screenshot
-  - light mode screenshot
+category: productivity
 tags:
-  - screenshot
-  - website
-  - capture
-  - playwright
-  - browser
-  - viewport
-  - dark mode
-  - light mode
-allowed-tools:
-  - run_command
-  - create_file
-  - write_file
-  - send_file
-  - cd
-  - send_message
+  - files
+  - cleanup
+  - organize
+  - rename
+  - duplicates
 ---
 
-# Screenshot
+# Tidy files
 
-Take full-page screenshots of any website with Playwright. Supports configurable viewport dimensions and dark/light display modes.
-
-## Prerequisites
-
-Playwright and Chromium are already installed globally on this system. The skill will create and run a temporary Node.js script to handle each screenshot request.
+Use this when the owner asks to clean up, sort, deduplicate or rename many files.
 
 ## Workflow
 
-When the user asks for a screenshot:
+1. **Look.** \`list_dir\` the folder, then measure with \`run_command\`: how many files, how much space, which types (\`find DIR -type f | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head\`). On Windows use PowerShell \`Get-ChildItem -Recurse -File | Group-Object Extension\`.
+2. **Plan.** Propose the rule in one or two sentences ("images into Pictures/2026, installers older than 30 days into _to-delete") and show a sample of what moves where with the total count.
+3. **Ask.** Get a clear yes (ask_user) before touching anything. A change of plan means a new plan and a new yes.
+4. **Move, don't delete.** Do it with one script or command for all files, not one call per file. Anything to remove goes into a dated folder such as \`_to-delete-2026-11-10\` inside the same folder, never straight to deletion. Never overwrite: add a suffix when a name already exists.
+5. **Report.** How many files moved, where to, how much space the \`_to-delete\` folder holds, and how to undo it (move the folder back). Deleting \`_to-delete\` for real is a separate yes.
 
-1. **Ask for the URL** if not provided — ensure it includes the protocol (https://).
-2. **Ask for viewport / dimensions** if not specified:
-   - \`mobile\` — iPhone-like viewport (375 × 812)
-   - \`desktop\` — Standard desktop viewport (1280 × 800)
-   - \`custom\` — Ask for specific width × height in pixels
-   - Default: desktop (1280 × 800)
-3. **Ask for display mode** if not specified:
-   - \`light\` — Light color scheme
-   - \`dark\` — Dark color scheme (emulates prefers-color-scheme: dark)
-   - Default: light
-4. **Generate a unique filename** — use the domain and a timestamp (e.g., \`example.com-2025-05-30-14-30-00.png\`). Store in \`~/Desktop/\` for easy access.
-5. **Create a temporary Playwright script** using \`create_file\` or \`write_file\`, then execute it with \`run_command\`.
+## Duplicates
 
-## Playwright Script Template
+Find them by content, not by name: group same-size files first, then hash only those (\`shasum -a 256\`, Linux \`sha256sum\`, PowerShell \`Get-FileHash\`). Keep the oldest copy, or the one in the better-named folder, and list the rest for \`_to-delete\`.
 
-Use this exact template, substituting the user's parameters:
+## Never
 
-\`\`\`javascript
-import { chromium } from 'playwright';
+- Touch system folders, app bundles, \`.git\` folders, or anything outside the folder the owner named.
+- Rename files a program depends on (projects, photo libraries, music libraries) without saying so first.
+`,
+  },
+  {
+    dirName: 'data-analysis',
+    fileName: 'SKILL.md',
+    content: `---
+name: data-analysis
+description: Analyse CSV, Excel or JSON data — look at the columns first, compute every number with a script instead of by eye, check the result, then summarize and chart it.
+version: 1.0.0
+category: productivity
+tags:
+  - data
+  - csv
+  - excel
+  - spreadsheet
+  - chart
+  - statistics
+---
 
-const url = '{{URL}}';
-const outputPath = '{{OUTPUT_PATH}}';
-const width = {{WIDTH}};
-const height = {{HEIGHT}};
-const colorScheme = '{{COLOR_SCHEME}}'; // 'light' or 'dark'
+# Data analysis
 
-const browser = await chromium.launch({ headless: true });
-const context = await browser.newContext({
-  viewport: { width, height },
-  colorScheme,
-});
-const page = await context.newPage();
-await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-await page.screenshot({ path: outputPath, fullPage: true });
-await browser.close();
-console.log('Screenshot saved to:', outputPath);
-\`\`\`
+Use this when the owner shares a spreadsheet, CSV or JSON file, or asks for totals, trends, comparisons or a chart from data.
 
-### Dark Mode Details
+## Workflow
 
-To emulate dark mode, set \`colorScheme: 'dark'\` in the browser context options. This triggers \`prefers-color-scheme: dark\` media queries on the target website.
+1. **Inspect before computing.** Row count, column names and types, a few sample rows, empty values. For a small file \`read_file\` is enough; for a large one use \`run_command\` (\`head -5 file.csv\`, \`wc -l file.csv\`) or a short script.
+2. **Compute with code, never by reading numbers.** Write one short script (Python with pandas or the csv module; \`python3 -c "import pandas"\` tells you which is available) and run it with \`run_command\`. Print only the results, not whole tables.
+3. **Check.** Totals add up, row counts match, no column was parsed as text by mistake (currency signs, thousands separators, dates). Say what you cleaned and how.
+4. **Answer the question first**, with the key numbers, then the detail. State the time range and any rows you excluded.
+5. **Chart when it helps.** Save a PNG next to the data (matplotlib), name it after what it shows, and send it with \`send_file\` on chat channels. Label axes and units.
 
-## Preset Viewport Dimensions
+## Rules
 
-| Preset | Width | Height | Notes |
-|---|---|---|---|
-| Mobile | 375 | 812 | iPhone X/11/12/13/14 proportions |
-| Mobile Small | 320 | 568 | iPhone SE |
-| Mobile Large | 414 | 896 | iPhone Plus/Pro Max |
-| Tablet | 768 | 1024 | iPad portrait |
-| Desktop (default) | 1280 | 800 | Standard laptop |
-| Desktop Wide | 1440 | 900 | Standard desktop |
-| Desktop HD | 1920 | 1080 | Full HD |
+- Never invent or round numbers you didn't compute.
+- Leave the original file unchanged; write results to a new file (\`name-summary.csv\`).
+- Excel: read with pandas (\`openpyxl\` engine). Say which sheet you used if there are several.
+- Money and percentages: keep the source's currency and say how you rounded.
+`,
+  },
+  {
+    dirName: 'long-documents',
+    fileName: 'SKILL.md',
+    content: `---
+name: long-documents
+description: Read and answer questions about long PDFs, logs, transcripts, books or code files — read them in sections, take notes as you go, and answer with page or line references instead of guessing from the first part.
+version: 1.0.0
+category: productivity
+tags:
+  - pdf
+  - documents
+  - logs
+  - summarize
+  - transcript
+---
 
-## Output
+# Long documents
 
-- Screenshots are saved as PNG files to \`~/Desktop/\` with the naming pattern: \`<domain>-<YYYY-MM-DD-HH-MM-SS>.png\`
-- After the screenshot is taken, use \`send_file\` to deliver the image to the user.
-- If the user is on Telegram, the image will be sent as a photo attachment.
+read_file returns at most 64 KB. Use this skill whenever a file is bigger than that, or the owner wants a summary, a specific detail or a comparison from a long file.
 
-## Error Handling
+## Workflow
 
-- If the page fails to load (timeout, DNS error, etc.), retry once with \`waitUntil: 'domcontentloaded'\` instead of \`networkidle\`.
-- If Playwright encounters an installation issue, run \`npx playwright install chromium\` and retry.
-- Inform the user if a site blocks automated screenshots (e.g., CAPTCHA, bot detection).
+1. **Size it up.** \`wc -l FILE\` and \`ls -lh FILE\`. A PDF: \`pdfinfo FILE\` for pages, then \`pdftotext -layout FILE out.txt\` (if pdftotext is missing, use Python \`pypdf\`). Word files: \`pandoc FILE -t plain -o out.txt\`.
+2. **Find before you read.** For a specific question, search first: \`grep -n -i "term" FILE | head -30\`, then read just around the hits (\`sed -n '120,180p' FILE\`).
+3. **For a summary, read in sections** of about 300–500 lines (\`sed -n 'START,ENDp'\`), and keep short notes per section: what it covers and anything the owner is likely to ask about. Use the document's own headings or pages as section boundaries when it has them.
+4. **Answer from the notes**, citing where each point is (page, section heading or line numbers). Say if you only read part of the document and which part.
+
+## Logs
+
+Start from the end (\`tail -200\`) and from errors (\`grep -n -iE "error|fail|exception|fatal" FILE | tail -40\`). Report the first error of a failure, not only the last one, with its timestamp.
+
+## Rules
+
+- Never claim the document says something you didn't read.
+- Quote exactly when the wording matters (contracts, specs, error messages).
+`,
+  },
+  {
+    dirName: 'documents',
+    fileName: 'SKILL.md',
+    content: `---
+name: documents
+description: Create or convert real files — Word, PDF, slides, spreadsheets, Markdown, HTML — with pandoc or a short script, check the result opens, and send it back.
+version: 1.0.0
+category: productivity
+tags:
+  - documents
+  - pdf
+  - docx
+  - convert
+  - pandoc
+  - slides
+---
+
+# Documents
+
+Use this when the owner wants a file they can open or share (a report, letter, CV, slide deck, spreadsheet), or a file converted from one format to another.
+
+## Workflow
+
+1. **Agree on the content first** when it is new writing: a short outline, then the full text in Markdown.
+2. **Pick the tool.** Check what is installed (\`command -v pandoc\`, \`python3 -c "import docx"\`):
+   - Markdown → Word / HTML / EPUB: \`pandoc in.md -o out.docx\`.
+   - Markdown → PDF: \`pandoc in.md -o out.pdf\` (needs a PDF engine; if none, make HTML and print it to PDF with the browser, or use Python \`reportlab\`).
+   - Slides: \`pandoc in.md -o out.pptx\` (headings become slides; put each slide under its own heading).
+   - Spreadsheets: Python \`openpyxl\` or pandas \`to_excel\`.
+   - Anything → Markdown or text: \`pandoc FILE -t gfm\`; PDFs with \`pdftotext\`.
+   If the tool is missing, say which one and offer to install it, or use the next option.
+3. **One command for many files.** Converting a folder is one loop or one script, not one call per file.
+4. **Check the result.** The file exists, has a sensible size, and opens: convert it back to text and look at the start (\`pandoc out.docx -t plain | head -20\`, \`pdftotext out.pdf - | head -20\`).
+5. **Deliver.** Save it where the owner asked, otherwise in the working directory, with a clear name. On chat channels send it with \`send_file\`. Say where it is.
+
+## Rules
+
+- Never overwrite the source file; write to a new name.
+- Keep the owner's wording in conversions; don't "improve" text you were asked to convert.
+- Fonts, logos and page size follow what the owner asked; otherwise use the tool's defaults.
 `,
   },
 ];
+
+/**
+ * Skills Mercury used to install on every start and no longer ships
+ * (ADR-040): `tweet-notifier` (one owner's workflow, wrong for everyone else)
+ * and `screenshot` (assumed a global Playwright install, and its
+ * allowed-tools elevated run_command and file writes to prompt-free for the
+ * turn). By SHA-256 of every version ever seeded: a copy that matches was
+ * never edited and is moved aside; an edited copy is the owner's and stays.
+ */
+export const RETIRED_SEEDS: Record<string, string[]> = {
+  'tweet-notifier': [
+    '0b777896e3b28d6568d35b01e1ea92de6ae3c4b51098fb9f3192d74b138f3b89',
+    '39624176a81dcedc554b548aa04b43e82a48c0952ee46b529554c7e155f5ba07',
+  ],
+  screenshot: [
+    'fcc32bf6b26b05353c7c9779a21980ba9968d7f95730827e0345aefb1a555c8b',
+  ],
+};

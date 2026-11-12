@@ -325,21 +325,21 @@ describe('asking the owner', () => {
     });
     let commandResult = '';
     mockedGenerateText.mockImplementation((async (opts: Opts) => {
-      commandResult = String(await opts.tools.run_command.execute({ command: 'echo approved | cat' }, {}));
+      commandResult = String(await opts.tools.run_command.execute({ command: 'printf approved | tee /dev/null' }, {}));
       const r = await opts.tools.bot_report.execute({ summary: 'Ran it.' }, {});
       opts.onStepFinish?.({ usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [{ toolName: 'bot_report', toolCallId: 'r' }], toolResults: [{ toolCallId: 'r', output: { type: 'text', value: r } }] });
       return { text: '', finishReason: 'stop', usage: {} };
     }) as never);
     manager.enqueue('ops', { trigger: 'api', prompt: 'run the check' });
     await idle(manager, 'ops');
-    expect(asked).toEqual(['Run command: echo approved | cat']);
+    expect(asked).toEqual(['Run command: printf approved | tee /dev/null']);
     expect(commandResult).toContain('approved');
     // A chain is remembered exactly as written, never as a whole family of commands.
-    expect(store.readPermissions('ops').autoApproveCommands).toEqual(['echo approved | cat']);
+    expect(store.readPermissions('ops').autoApproveCommands).toEqual(['printf approved | tee /dev/null']);
     // The question was an inbox entry; answered, it's read.
     const q = manager.inbox.list().find((e) => e.approvalId);
     expect(q).toMatchObject({ kind: 'needs-you', read: true });
-    expect(q!.title).toBe('Ops asks: Run command: echo approved | cat');
+    expect(q!.title).toBe('Ops asks: Run command: printf approved | tee /dev/null');
   });
 
   it('no answer in time is a no, and the run carries on without it', async () => {
@@ -350,7 +350,7 @@ describe('asking the owner', () => {
     try {
       let commandResult = '';
       mockedGenerateText.mockImplementation((async (opts: Opts) => {
-        const pending = opts.tools.run_command.execute({ command: 'echo nope | cat' }, {});
+        const pending = opts.tools.run_command.execute({ command: 'printf nope | tee /dev/null' }, {});
         await vi.advanceTimersByTimeAsync(61_000);
         commandResult = String(await pending);
         const r = await opts.tools.bot_report_failure.execute({ reason: 'Not allowed to run the check.' }, {});
@@ -380,3 +380,29 @@ describe('durable grants', () => {
     expect(durableGrant('MCP tool call\nServer: x')).toBeNull();
   });
 });
+
+describe('the live feed', () => {
+  it('a message from you: queued at once, then the run with its request, its steps and its end, kept for a screen opened later', async () => {
+    const { manager, store } = makeManager();
+    store.create({ id: 'w', name: 'Writer' });
+    mockedGenerateText.mockImplementation((async (opts: Opts) => {
+      const r = await opts.tools.bot_report.execute({ summary: 'Drafted.' }, {});
+      opts.onStepFinish?.({ usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [{ toolName: 'bot_report', toolCallId: 'r' }], toolResults: [{ toolCallId: 'r', output: { type: 'text', value: r } }] });
+      return { text: 'Drafted.', finishReason: 'stop', usage: {} };
+    }) as never);
+    const res = manager.enqueue('w', { trigger: 'api', prompt: 'Draft the post' });
+    manager.noteOwnerMessage('w', res.jobId, 'Draft the post');
+    await idle(manager, 'w');
+    const feed = manager.recentActivity({ bots: ['w'] });
+    const kinds = feed.map((e) => e.kind);
+    // An idle bot starts at once: no "queued" after its start.
+    expect(kinds[0]).toBe('turn-start');
+    expect(kinds).not.toContain('queued');
+    expect(kinds[kinds.length - 1]).toBe('turn-end');
+    const start = feed.find((e) => e.kind === 'turn-start')!;
+    expect(start).toMatchObject({ trigger: 'api', prompt: 'Draft the post', botName: 'Writer', jobId: res.jobId });
+    expect(feed.every((e) => typeof e.at === 'number')).toBe(true);
+    expect(manager.recentActivity({ bots: ['someone-else'] })).toEqual([]);
+  });
+});
+

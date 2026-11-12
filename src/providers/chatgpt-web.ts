@@ -21,8 +21,10 @@ const UNSUPPORTED_FIELDS = [
 function sanitiseBody(raw: string, providerName: string): string {
   const body = JSON.parse(raw);
 
-  // User-chosen reasoning level for this model (dashboard reasoning picker).
-  if (typeof body.model === 'string') applyReasoningToBody(body, effectiveReasoning(providerName, body.model));
+  // User-chosen reasoning level for this model (dashboard reasoning picker),
+  // and a summary of the reasoning so a screen can show the model thinking
+  // (the Codex backend serves summaries on every ChatGPT plan).
+  if (typeof body.model === 'string') applyReasoningToBody(body, effectiveReasoning(providerName, body.model), { summary: true });
 
   // Required
   body.store = false;

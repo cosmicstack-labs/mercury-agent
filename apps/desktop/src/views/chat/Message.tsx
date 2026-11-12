@@ -2,13 +2,16 @@ import { Check, ChevronRight, Copy, Square, Wrench } from "lucide-react";
 import { CommandChip } from "./CommandChip";
 import { splitCommand } from "./picker";
 import { memo, useState } from "react";
-import type { ChatMessage, ThoughtTrace } from "~/api/types";
+import type { ChatMessage, ReplyUsage, ThoughtTrace } from "~/api/types";
+import { compact } from "~/views/bots/Usage";
 import { Mark } from "~/components/Logo";
 import { Markdown } from "~/components/Markdown";
 import { StreamCaret } from "~/components/indicators/Thinking";
 import { ActionResult } from "~/components/indicators/Activity";
 import { Attachments } from "~/components/Attachments";
 import { ThoughtProcess } from "~/components/ThoughtProcess";
+import { LiveStatus, TraceTimeline, useNow } from "~/components/TurnTimeline";
+import type { AgentState } from "~/app/store";
 import { cx } from "~/lib/cx";
 import { isStopNote } from "~/app/events";
 import { UserAvatar, useDisplayName } from "~/components/UserAvatar";
@@ -75,16 +78,22 @@ export const Message = memo(function Message({ message, undoable = false }: { me
         {stopped && <StoppedMarker partial={!!body} />}
         {message.research
           ? <ResearchReport run={message.research} content={body} />
-          : message.artifacts && message.artifacts.length > 0 && <ArtifactStrip items={message.artifacts} />}
+          : message.artifacts && message.artifacts.length > 0 && <ArtifactStrip items={message.artifacts} fresh={isFresh(message.timestamp)} />}
         {message.research && message.artifacts && message.artifacts.filter((a) => a.id !== message.research?.report?.id).length > 0 && (
           <ArtifactStrip items={message.artifacts.filter((a) => a.id !== message.research?.report?.id)} />
         )}
-        <MessageMeta timestamp={message.timestamp} copy={body || undefined} listen={body ? { id: message.id, text: body } : undefined} />
+        <MessageMeta timestamp={message.timestamp} copy={body || undefined} listen={body ? { id: message.id, text: body } : undefined} usage={message.usage} />
         <ReadAloudNotice id={message.id} />
       </div>
     </div>
   );
 });
+
+/** Arrived just now (not loaded from history): a generated picture is revealed, not just shown. */
+function isFresh(timestamp: string): boolean {
+  const t = Date.parse(timestamp);
+  return Number.isFinite(t) && Date.now() - t < 60_000;
+}
 
 /** The honest end of a stopped turn: nothing after this was done. */
 function StoppedMarker({ partial }: { partial: boolean }) {
@@ -108,7 +117,22 @@ function Speaker({ who }: { who: "you" | "mercury" }) {
 }
 
 /** Time and copy, shown on hover so the conversation stays quiet. */
-function MessageMeta({ timestamp, copy, listen, undo, align = "start" }: { timestamp: string; copy?: string; listen?: { id: string; text: string }; undo?: ChatMessage; align?: "start" | "end" }) {
+/** "14k tokens · 82% cached · 6 steps · 12s" for a reply, and the detail for its tooltip. */
+export function usageLabel(u: ReplyUsage): { short: string; detail: string } {
+  const total = u.inputTokens + u.outputTokens;
+  const cachedPct = u.inputTokens > 0 ? Math.round((u.cachedInputTokens / u.inputTokens) * 100) : 0;
+  const parts = [`${compact(total)} tokens`];
+  if (u.cachedInputTokens > 0) parts.push(`${cachedPct}% cached`);
+  if (u.steps && u.steps > 1) parts.push(`${u.steps} steps`);
+  if (u.elapsedMs && u.elapsedMs >= 1000) parts.push(`${Math.round(u.elapsedMs / 1000)}s`);
+  const detail = [
+    `${u.inputTokens.toLocaleString()} in (${u.cachedInputTokens.toLocaleString()} from cache) · ${u.outputTokens.toLocaleString()} out`,
+    u.model ? `${u.provider ? `${u.provider} · ` : ""}${u.model}` : "",
+  ].filter(Boolean).join("\n");
+  return { short: parts.join(" · "), detail };
+}
+
+function MessageMeta({ timestamp, copy, listen, undo, usage, align = "start" }: { timestamp: string; copy?: string; listen?: { id: string; text: string }; undo?: ChatMessage; usage?: ReplyUsage; align?: "start" | "end" }) {
   const [copied, setCopied] = useState(false);
   const reading = useReadingThis(listen?.id ?? "");
   const time = formatTime(timestamp);
@@ -127,6 +151,7 @@ function MessageMeta({ timestamp, copy, listen, undo, align = "start" }: { times
       {listen && <ReadAloudButton id={listen.id} text={listen.text} />}
       {undo && <UndoMessage message={undo} />}
       {time && <span className="px-1.5 text-xs text-ink4">{time}</span>}
+      {usage && (() => { const u = usageLabel(usage); return <span className="px-1.5 font-mono text-2xs text-ink4" title={u.detail}>{u.short}</span>; })()}
     </div>
   );
 }
@@ -189,16 +214,24 @@ function ToolActivity({ content }: { content: string }) {
   );
 }
 
-/** The answer being written, with its thought process above it (open while it runs). */
-export function StreamingMessage({ text, live, stopping = false }: { text: string; live: ThoughtTrace | null; stopping?: boolean }) {
+/**
+ * The turn being worked on, as a timeline in the order things happen
+ * (thinking, tools, the answer as it streams, notes), with a status line
+ * at the bottom: what is running now and for how long.
+ */
+export function StreamingMessage({ text, live, agent, stopping = false }: { text: string; live: ThoughtTrace | null; agent: AgentState; stopping?: boolean }) {
+  const now = useNow(true);
+  const trace = live ?? null;
+  // Older runtimes may stream text without a trace of it: show it as written.
+  const textInTrace = !!trace?.items?.some((i) => i.kind === "text");
   return (
     <div className="flex gap-4">
       <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center" aria-hidden="true"><Mark size={22} /></span>
-      <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col gap-2.5">
         <Speaker who="mercury" />
-        {live && <ThoughtProcess trace={live} live={!text} stopping={stopping} />}
-        {stopping && text && <div className="mb-2 text-sm text-ink3">Stopping…</div>}
-        {text && <><Markdown text={text} streaming /><StreamCaret /></>}
+        {trace && <TraceTimeline trace={trace} live now={now} />}
+        {text && !textInTrace && <div className="min-w-0"><Markdown text={text} streaming /><StreamCaret /></div>}
+        {trace && <LiveStatus trace={trace} agent={agent} stopping={stopping} now={now} />}
       </div>
     </div>
   );

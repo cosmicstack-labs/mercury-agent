@@ -32,10 +32,16 @@ export interface SkillDiscovery {
   description: string;
   /** e.g. "self-made" for skills Mercury wrote (ADR-027). */
   category?: string;
+  /** From a folder other agents share (~/.agents/skills): read-only, listed compactly. */
+  shared?: boolean;
 }
 
 export interface Skill extends SkillMeta {
   instructions: string;
+  /** The skill's folder: the files its instructions mention (references/, scripts/) are relative to it. */
+  dir?: string;
+  /** From a shared folder (~/.agents/skills): its allowed-tools never raise Mercury's permissions. */
+  shared?: boolean;
   scriptsDir?: string;
   referencesDir?: string;
 }

@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import type { SqliteDatabase } from '../utils/sqlite-driver.js';
 import { logger } from '../utils/logger.js';
 import { looksLikeIdentity } from '../learning/text.js';
+import { claimSignature, sameClaim, sameWording, type ClaimSignature } from './claim-match.js';
 
 export type BeliefKind = 'fact' | 'preference' | 'trait' | 'situation' | 'relationship' | 'goal' | 'project' | 'episode';
 export type BeliefStatus = 'candidate' | 'held' | 'confirmed' | 'contested' | 'retired' | 'forgotten';
@@ -143,7 +144,18 @@ interface BeliefRow {
 }
 
 export class BeliefStore {
+  /** The owner's own names ("salman qureshi", "salman"): the same person as "user", "my", "I". */
+  private ownerNames: string[] = [];
+
   constructor(private db: SqliteDatabase, private ownerKey: string = 'user:owner') {}
+
+  setOwnerNames(names: Iterable<string>): void {
+    this.ownerNames = [...names].map((n) => n.trim().toLowerCase()).filter((n) => n && n !== 'user' && n !== 'the user');
+  }
+
+  private signature(text: string): ClaimSignature {
+    return claimSignature(text, this.ownerNames);
+  }
 
   init(): void {
     this.db.exec(`
@@ -219,8 +231,14 @@ export class BeliefStore {
     const weight = op.weight ?? 1;
     if (op.op === 'create' || op.op === 'owner_stated') {
       if (!op.statement || !op.kind) return null;
-      const existing = this.findSameClaim(op.statement, op.kind, op.context ?? '*', op.dimension);
+      const existing = this.findSameClaim(op.statement, op.kind, op.context ?? '*', op.dimension, op.op === 'owner_stated');
       if (existing) {
+        // The same claim with a little more detail: keep one belief, in the fuller words
+        // (never over the owner's own wording unless the owner is the one saying it).
+        if (!existing.dimension && this.signature(op.statement).words.size > this.signature(existing.statement).words.size
+          && (op.op === 'owner_stated' || !(existing.ownerStated || existing.status === 'confirmed'))) {
+          this.update(existing.id, { statement: op.statement.trim() }, now);
+        }
         if (op.op !== 'owner_stated') return this.apply({ ...op, op: 'support', beliefId: existing.id, statement: undefined }, now);
         // The owner stated a claim Mercury already held or suspected: confirm it (once).
         if (existing.ownerStated || existing.status === 'confirmed') return { belief: existing, change: 'unchanged', behaviorChanging: false };
@@ -571,15 +589,86 @@ export class BeliefStore {
 
   // ── internals ──────────────────────────────────────────────────────────
 
-  private findSameClaim(statement: string, kind: BeliefKind, context: string, dimension?: string): Belief | null {
+  /**
+   * A live belief that already says this (claim-match.ts): another wording,
+   * another kind ("fact" vs "relationship"), or the same claim with a
+   * little more detail. Trait levels keep their own rule (same dimension).
+   */
+  private findSameClaim(statement: string, kind: BeliefKind, context: string, dimension?: string, ownerSaid = false): Belief | null {
     const norm = normalizeClaim(statement);
-    for (const b of this.findSimilar(statement, kind, 8)) {
+    const sig = this.signature(statement);
+    for (const b of this.findSimilar(statement, dimension ? kind : undefined, 12)) {
       if (b.status === 'forgotten' || b.status === 'retired') continue;
       if (b.context !== context) continue;
-      if (dimension && b.dimension !== dimension) continue;
-      if (normalizeClaim(b.statement) === norm || tokenOverlap(norm, normalizeClaim(b.statement)) >= 0.8) return b;
+      if (dimension || b.dimension) {
+        if (b.dimension !== (dimension ?? null) || b.kind !== kind) continue;
+        if (normalizeClaim(b.statement) === norm || tokenOverlap(norm, normalizeClaim(b.statement)) >= 0.8) return b;
+        continue;
+      }
+      if (normalizeClaim(b.statement) === norm) return b;
+      const other = this.signature(b.statement);
+      if (!sameClaim(sig, other)) continue;
+      // Says more than the owner's own wording: a new belief, not support (the extra isn't the owner's word).
+      if ((b.ownerStated || b.status === 'confirmed') && sig.words.size > other.words.size && !sameWording(sig, other) && !ownerSaid) continue;
+      return b;
     }
     return null;
+  }
+
+  /**
+   * Fold copies already in the brain: every live belief that says the same
+   * thing as another (claim-match.ts) is merged into the better one, which
+   * keeps all the evidence. Two claims are compared only as they stand after
+   * earlier folds, so a chain of near-matches never merges two that differ.
+   * Local and cheap: no model calls. Returns how many beliefs were folded.
+   */
+  tidy(now = Date.now()): { merged: number; groups: number } {
+    const live = this.list({ statuses: ['candidate', 'held', 'confirmed', 'contested'], limit: 100_000 }).filter((b) => !b.dimension);
+    if (live.length < 2) return { merged: 0, groups: 0 };
+    const sigs = live.map((b) => this.signature(b.statement));
+    // Candidate pairs share a word; very common words don't propose pairs on their own.
+    const postings = new Map<string, number[]>();
+    sigs.forEach((sg, i) => { for (const w of sg.words) { let p = postings.get(w); if (!p) postings.set(w, (p = [])); p.push(i); } });
+    const busy = Math.max(30, Math.floor(live.length * 0.1));
+    const pairs: Array<[number, number, number]> = [];
+    const seen = new Set<string>();
+    for (const list of postings.values()) {
+      if (list.length > busy) continue;
+      for (let x = 0; x < list.length; x++) for (let y = x + 1; y < list.length; y++) {
+        const i = list[x];
+        const j = list[y];
+        const key = `${i}:${j}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (live[i].context !== live[j].context || !sameClaim(sigs[i], sigs[j])) continue;
+        let shared = 0;
+        for (const w of sigs[i].words) if (sigs[j].words.has(w)) shared++;
+        pairs.push([i, j, shared / (sigs[i].words.size + sigs[j].words.size - shared)]);
+      }
+    }
+    pairs.sort((a, b) => b[2] - a[2]);
+    const into = live.map((_, i) => i);
+    const root = (i: number): number => (into[i] === i ? i : (into[i] = root(into[i])));
+    let merged = 0;
+    const keepers = new Set<number>();
+    for (const [i, j] of pairs) {
+      const a = root(i);
+      const b = root(j);
+      if (a === b) continue;
+      // Compare what the two groups say now, not the original pair.
+      if (!sameClaim(sigs[a], sigs[b])) continue;
+      const [keep, lose] = betterBelief(live[a], sigs[a], live[b], sigs[b]) ? [a, b] : [b, a];
+      // The one to keep says less than the other: folding would lose what the other adds. Keep both.
+      if (sigs[keep].words.size < sigs[lose].words.size && !sameWording(sigs[keep], sigs[lose])) continue;
+      if (!this.merge(live[keep].id, live[lose].id, now)) continue;
+      live[keep] = this.get(live[keep].id) ?? live[keep];
+      into[lose] = keep;
+      keepers.add(keep);
+      keepers.delete(lose);
+      merged++;
+    }
+    if (merged) logger.info({ merged, groups: keepers.size, ownerKey: this.ownerKey }, 'Second Brain: folded duplicate beliefs');
+    return { merged, groups: keepers.size };
   }
 
   /** Live beliefs on the same dimension and context with a different level. */
@@ -716,6 +805,15 @@ function toBelief(r: BeliefRow): Belief {
     supersededBy: r.superseded_by, lastSupportedAt: Number(r.last_supported_at), lastUsedAt: r.last_used_at == null ? null : Number(r.last_used_at),
     createdAt: Number(r.created_at), updatedAt: Number(r.updated_at), shareable: Number(r.shareable ?? 0) === 1,
   };
+}
+
+/** Which of two copies to keep: the owner's word, then the surer one, then the one that says more, then the better supported. */
+function betterBelief(a: Belief, sa: ClaimSignature, b: Belief, sb: ClaimSignature): boolean {
+  const rank = (x: Belief) => (x.ownerStated || x.status === 'confirmed' ? 2 : x.status === 'held' ? 1 : 0);
+  if (rank(a) !== rank(b)) return rank(a) > rank(b);
+  if (sa.words.size !== sb.words.size) return sa.words.size > sb.words.size;
+  if (a.support !== b.support) return a.support > b.support;
+  return a.createdAt <= b.createdAt;
 }
 
 export function normalizeClaim(s: string): string {

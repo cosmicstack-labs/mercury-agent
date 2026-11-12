@@ -36,7 +36,7 @@ export const RESERVED_PLUGIN_IDS: ReadonlySet<string> = new Set(['mcp']);
  * TUI's SLASH_COMMANDS by src/plugins/commands.test.ts.
  */
 export const RESERVED_COMMANDS: ReadonlySet<string> = new Set([
-  'agents', 'bg', 'bot', 'bots', 'budget', 'call', 'calls', 'chat', 'cloud', 'code', 'google', 'halt', 'help', 'log', 'memory', 'menu', 'models', 'model',
+  'agents', 'bg', 'bot', 'bots', 'budget', 'call', 'calls', 'chat', 'cloud', 'code', 'effort', 'google', 'halt', 'image', 'imagine', 'img', 'media', 'say', 'tts', 'video', 'music', 'song', 'help', 'log', 'memory', 'menu', 'models', 'model',
   'permissions', 'plugin', 'plugins', 'progress', 'research', 'reset', 'server', 'saver', 'session', 'sessions', 'skills', 'spotify',
   'status', 'stop', 'stream', 'tools', 'update', 'view', 'whatsnew', 'ws', 'start', 'skip', 'new', 'compact', 'clear',
   'approve', 'deny', 'yes', 'no', 'cancel', 'pair', 'unpair', 'telegram', 'discord', 'slack', 'signal', 'web', 'exit', 'quit',
@@ -79,6 +79,11 @@ const toolDecl = z.object({
   readOnly: z.boolean().default(false),
   /** Per-call timeout; capped by Mercury at 300s. */
   timeoutMs: z.number().int().min(1000).max(300_000).default(60_000),
+  /**
+   * The tool returns screenshots: Mercury passes `mercury_screenshot`
+   * ({ include, max_width, max_height }) sized for the model in use (ADR-043).
+   */
+  screenshots: z.boolean().optional(),
 }).strict();
 
 const commandDecl = z.object({

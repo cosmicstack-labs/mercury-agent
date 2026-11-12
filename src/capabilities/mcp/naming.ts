@@ -2,9 +2,11 @@ import { createHash } from 'node:crypto';
 
 export const MCP_TOOL_PREFIX = 'mcp__';
 export const MAX_TOOL_NAME_LENGTH = 64;
+export const MCP_LIST_RESOURCES_TOOL = 'list_mcp_resources';
+export const MCP_READ_RESOURCE_TOOL = 'read_mcp_resource';
 
 export function isMcpToolName(name: string): boolean {
-  return name.startsWith(MCP_TOOL_PREFIX);
+  return name.startsWith(MCP_TOOL_PREFIX) || name === MCP_LIST_RESOURCES_TOOL || name === MCP_READ_RESOURCE_TOOL;
 }
 
 export function sanitizeToolPart(name: string): string {

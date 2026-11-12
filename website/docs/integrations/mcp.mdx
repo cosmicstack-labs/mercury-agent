@@ -9,7 +9,7 @@ You stay in control. A server's tools are hidden until you allow them, every cal
 
 :::info[What is supported]
 
-MCP **tools** over **stdio** (a local command Mercury starts) and **Streamable HTTP** (a remote URL), with static headers for authentication. MCP resources, prompts, sampling, OAuth sign-in and legacy SSE servers are not supported yet. Mercury Bots do not get MCP tools.
+MCP **tools** and opt-in **text resources** over **stdio** (a local command Mercury starts) and **Streamable HTTP** (a remote URL), with static headers for authentication. Resource templates and subscriptions, prompts, sampling, OAuth sign-in and legacy SSE servers are not supported yet. Mercury Bots do not get MCP tools or resources.
 
 :::
 
@@ -138,8 +138,43 @@ mcp:
 | `tools.allow` | both | Tool names the agent may see; `"*"` means all. **Default: none.** |
 | `tools.deny` | both | Tool names that are always hidden; wins over `allow` |
 | `tools.autoApprove` | both | Exact tool names that run without asking (no wildcards) |
+| `resources.allow` | both | Resource URIs the agent may list and read; `"*"` allows all. **Default: none.** Independent of `tools.allow`. |
+| `resources.deny` | both | Resource URIs that stay hidden and cannot be read; wins over `allow` |
+| `resources.autoApprove` | both | Exact allowed URIs that may be read without asking, including unattended. No wildcards. |
 
 An invalid server entry is skipped with a warning in the log and in `mercury doctor --mcp`; the rest still load. A missing `${env:NAME}` variable marks that server as failed with `env NAME is not set`.
+
+## Reading resource context
+
+Some servers expose documents, database schemas or reference material as MCP resources. Enable the URIs you want in that server's configuration, then restart Mercury:
+
+```yaml
+mcp:
+  servers:
+    docs:
+      transport: http
+      url: https://mcp.example.com/mcp
+      headers:
+        Authorization: "Bearer ${env:DOCS_MCP_TOKEN}"
+      resources:
+        allow: ["docs://handbook", "docs://database-schema"]
+        autoApprove: ["docs://database-schema"]
+```
+
+`mercury mcp list` displays these filters. Existing tool allowlists never enable resources. A server that exposes only resources is supported too.
+
+Ask Mercury to consult the handbook or schema. Two tools become available when a connected server supports resources and has an explicit resource allowlist:
+
+- `list_mcp_resources` lists enabled resource servers without a network request. With `server`, it asks before listing one page of allowed resource metadata. Pass the returned `cursor` with the same server to continue. Listing does not read contents.
+- `read_mcp_resource` reads an exact `server` and `uri` through that server, including a resource link returned by one of its tools. The URI is never opened as a local file or fetched as an ordinary web URL. Results identify their server and source URI; text is untrusted data and cannot grant permissions.
+
+Resource approvals are separate from tool approvals. **Allow All still asks**, including in the web dashboard and attached terminal. **Always** on a read remembers only that server and exact URI in the current source chat; it never approves a different document or the catalog. Listing has its own approval. Unattended runs cannot list; they can only read exact allowed URIs named in `resources.autoApprove`. Bots, non-admin channel members and plan mode do not receive resource tools.
+
+Reads return at most 32,768 characters. Binary contents are omitted, registered secrets are redacted, and oversized text is marked as truncated. Catalog responses are capped at 8,192 characters and 50 entries; larger server pages continue through bounded metadata buffers. If a server exceeds those buffers, Mercury reports omitted metadata rather than silently claiming the catalog is complete. A known allowed URI can still be read directly. Cursors expire after five minutes or a reconnect.
+
+Read responses include only content whose returned source URI exactly matches the requested URI. Extra documents are omitted even if their URIs are otherwise allowed; they need their own read request and approval. Source URIs are server assertions: Mercury cannot verify whether an untrusted server mislabeled the bytes it returned. Retained resource helpers recheck the current caller's role and exact tool allowlist, including when listing server IDs locally.
+
+Catalog pagination is explicit: the SDK is not allowed to fetch every remote page automatically. Read results bypass its content cache. Requests use the server's existing timeout and cancellation signal. Disconnects reconnect the server without replaying the interrupted request. These caps limit retained catalog data and model context; the MCP SDK still parses the server's incoming response before Mercury formats it.
 
 ## How Mercury runs servers
 
@@ -148,7 +183,7 @@ An invalid server entry is skipped with a warning in the log and in `mercury doc
 - **Tool changes.** If a server announces that its tool list changed (`tools/list_changed`), Mercury refreshes it. New tools are hidden unless your `allow` list covers them, and run without asking only if their exact name is in `autoApprove`.
 - **Tool names.** Tools are exposed as `mcp__<server>__<tool>`. Characters outside `A-Z a-z 0-9 _ -` become `_`, and names are capped at 64 characters (some model providers reject longer names); a shortened or clashing name gets a short hash suffix. `mercury mcp test` shows the exact names.
 - **Unusable tools.** A tool whose input schema can't be passed to the model (not an object, larger than 16 KB, or referencing a remote `$ref`) is skipped and reported with the reason. Descriptions inside a schema are shortened to 300 characters, since the model reads them on every turn.
-- **Results.** Text is passed to the model, capped at 32 KB per call. Images and audio are replaced by a short placeholder such as `[image/png, 12.3 KB — not shown]`. An error result from the server reaches the agent as `Error: …`.
+- **Results.** Text is passed to the model, capped at 32 KB per call. Up to 4 images per call (PNG, JPEG, WebP or GIF, about 6 MB each) reach the model as pictures when the model and its provider can take images in tool results (today Anthropic, and OpenAI's Responses API); elsewhere the model gets a note that an image was left out. Other media, and images beyond those limits, are replaced by a short placeholder such as `[image/png, 12.3 KB — not shown]`. Chat history and logs keep only the text. An error result from the server reaches the agent as `Error: …`.
 
 ## Permissions
 
@@ -159,7 +194,7 @@ MCP tools have their own rules, separate from the shell and file tools:
 | Tool not in `allow` (or in `deny`) | The agent can't see it |
 | Ask Me mode | You're asked before every call, with server, tool and arguments (shown whole up to 4,000 characters; longer ones show the start and the end) |
 | You answer **Always** | That tool runs without asking in that chat until Mercury restarts |
-| **Allow All** mode | You're **still asked** — Allow All never covers MCP tools |
+| **Allow All** mode | You're **still asked** — Allow All never covers MCP tools, in the terminal, the web dashboard and Mercury Cloud alike |
 | Tool in `autoApprove` | Runs without asking, in chats and in unattended runs |
 | Scheduled tasks and sub-agents | They ask on the chat they came from, like a normal call; nothing is approved for them. A run with no one to ask (fail-closed, internal) only runs `autoApprove` tools |
 | Plan mode | MCP tools are not available |
@@ -213,3 +248,4 @@ In chat, `/mcp` shows the live status of the running Mercury; the dashboard's **
 - **Windows.** Commands such as `npx` that are `.cmd` shims work as `command: npx`.
 - **Standalone binaries.** MCP is built into the standalone binaries (verified on the Windows binary; macOS and Linux run the same bundled code). Stdio servers still need their own runtime installed — Node.js for `npx`, Python for `uvx`.
 - **Termux.** MCP is untested on Termux. Install Mercury with npm there; stdio servers that only need Node.js are expected to work.
+- **Mercury Cloud.** Servers are configured only on the machine that runs Mercury, in `mercury.yaml` or with `mercury mcp` in a terminal. Chats from Mercury Cloud reach that Mercury, so they can use its MCP tools and get the same prompts, even in an Allow All session. Cloud can't add or change servers, and your `${env:…}` secrets stay in the local `.env`.

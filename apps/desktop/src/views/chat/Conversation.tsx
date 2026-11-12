@@ -5,16 +5,40 @@ import { jumpLabel, useFollowBottom } from "./follow";
 import { cx } from "~/lib/cx";
 import { useConversation, useConversationStore } from "~/app/conversation";
 import { answerPrompt } from "~/app/events";
+import { runningStep } from "~/app/trace";
 import { StateLabel } from "~/components/indicators/StateOrb";
-import { Approval } from "~/components/indicators/Approval";
+import { NeedsYou, rolesFor } from "~/components/needs-you/NeedsYou";
+import { describePrompt } from "~/components/needs-you/describe";
 import { ThinkingDots } from "~/components/indicators/Thinking";
 import { Message, StreamingMessage } from "./Message";
+import { MediaSkeleton } from "~/components/MediaSkeleton";
+import { useNow } from "~/components/TurnTimeline";
+import { Mark } from "~/components/Logo";
+import type { PendingMedia } from "~/api/types";
 import { Composer, type ComposerProps } from "./Composer";
 import { WaitingNotice } from "./Waiting";
 import { ResearchBar, ResearchPlan } from "./Research";
 import { AlertTriangle, Info } from "lucide-react";
 
 const PAGE = 30;
+
+/** Videos and songs being made in the background: their places in the chat, until they arrive (media_ready). */
+function PendingMediaList({ items }: { items: PendingMedia[] }) {
+  const now = useNow(true);
+  return (
+    <>
+      {items.map((p) => (
+        <div key={p.jobId} className="flex gap-4">
+          <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center" aria-hidden="true"><Mark size={22} /></span>
+          <div className="min-w-0 flex-1">
+            <MediaSkeleton shape={{ kind: p.kind, aspect: p.aspect, prompt: p.prompt }} startedAt={p.startedAt} now={now} />
+            <p className="mt-1 text-2xs text-ink4">It will appear here when it's ready — you can keep chatting.</p>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
 
 /**
  * One conversation column: header, messages (newest PAGE, older on
@@ -35,12 +59,14 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
   const waiting = useConversation((s) => s.waiting);
   const stopping = useConversation((s) => s.stopping);
   const notice = useConversation((s) => s.notice);
+  const pendingMedia = useConversation((s) => s.pendingMedia);
   const researching = useConversation((s) => s.research?.run?.state === "running");
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(PAGE);
   const prepend = useRef<{ height: number; top: number } | null>(null);
   const follow = useFollowBottom(scroller, content, activeId);
+  const liveStep = live ? runningStep(live) : undefined;
   const busy = !!streaming || stopping || agent === "thinking" || agent === "working" || agent === "streaming";
 
   // While the reader is up the page: count what arrived, and notice the reply ending.
@@ -80,7 +106,7 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
     <section className="flex min-w-0 flex-1 flex-col">
       <header className="flex h-[52px] shrink-0 items-center gap-2 border-b border-line px-4" data-tauri-drag-region>
         <div className="flex min-w-0 flex-1 items-center gap-3">{header}</div>
-        <StateLabel state={agent} detail={step?.tool ? `${step.tool}${step.total ? ` ${step.current}/${step.total}` : ""}` : undefined} />
+        <StateLabel state={agent} detail={liveStep ? (liveStep.title || liveStep.tool) : step?.tool || undefined} />
       </header>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -107,8 +133,9 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
             )}
             {shown.map((m) => <Message key={m.id} message={m} undoable={m.id === lastYours} />)}
             {(streaming || (live && (agent === "thinking" || agent === "working" || agent === "streaming" || agent === "needs-you"))) && (
-              <StreamingMessage text={streaming} live={live} stopping={stopping} />
+              <StreamingMessage text={streaming} live={live} agent={agent} stopping={stopping} />
             )}
+            {pendingMedia.length > 0 && <PendingMediaList items={pendingMedia} />}
             {waiting && !streaming ? (
               <WaitingNotice threadId={activeId} waiting={waiting} />
             ) : !streaming && !live && (agent === "thinking" || agent === "working") && (
@@ -121,11 +148,6 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
               </p>
             )}
             <ResearchPlan />
-            {prompts.map((p, i) => (
-              <div key={p.id} className="min-w-0 pl-10">
-                <Approval prompt={p} onAnswer={(v) => answerPrompt(store, p, v)} keys={i === prompts.length - 1} />
-              </div>
-            ))}
           </div>
         )}
       </div>
@@ -145,6 +167,20 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
 
       <ResearchBar />
       {/* While research runs, its bar shows the questions (and Details the checklist): one progress display, not two. */}
+      {prompts.length > 0 && (
+        <div className="shrink-0 px-8 pt-1">
+          <div className="mx-auto w-full max-w-[780px]">
+            <NeedsYou items={prompts.map((p) => ({
+              id: p.id,
+              described: describePrompt(p),
+              options: rolesFor(p.options),
+              list: p.kind === "choice" || p.options.some((o) => o.label.length > 32),
+              cancelable: p.kind === "choice",
+              onAnswer: (v) => answerPrompt(store, p, v),
+            }))} />
+          </div>
+        </div>
+      )}
       {!researching && <PlanCard surface={composer.surface} />}
       <Composer {...composer} />
     </section>

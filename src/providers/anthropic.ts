@@ -1,6 +1,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { generateText, streamText } from 'ai';
 import { BaseProvider } from './base.js';
+import { withAnthropicThinking } from './reasoning-wire.js';
 import type { ProviderConfig } from '../utils/config.js';
 import type { LLMResponse, LLMStreamChunk } from './base.js';
 
@@ -8,7 +9,7 @@ export class AnthropicProvider extends BaseProvider {
   readonly name = 'anthropic';
   readonly model: string;
   private client: ReturnType<typeof createAnthropic>;
-  private modelInstance: ReturnType<ReturnType<typeof createAnthropic>['languageModel']>;
+  private modelInstance: ReturnType<typeof withAnthropicThinking>;
 
   constructor(config: ProviderConfig) {
     super(config);
@@ -17,7 +18,8 @@ export class AnthropicProvider extends BaseProvider {
     this.client = createAnthropic({
       apiKey: config.apiKey,
     });
-    this.modelInstance = this.client(config.model);
+    // Thinking shown as a summary and the owner's effort level, per request.
+    this.modelInstance = withAnthropicThinking(this.client(config.model), this.name, config.model);
   }
 
   async generateText(prompt: string, systemPrompt: string): Promise<LLMResponse> {
@@ -56,5 +58,9 @@ export class AnthropicProvider extends BaseProvider {
 
   getModelInstance(): any {
     return this.modelInstance;
+  }
+
+  supportsToolResultImages(): boolean {
+    return true;
   }
 }

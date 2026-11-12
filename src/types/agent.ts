@@ -48,6 +48,8 @@ export type SubAgentPriority = 'low' | 'normal' | 'high';
 export interface SubAgentConfig {
   id: string;
   task: string;
+  /** What untrusted content the delegating turn had read (ADR-044): the sub-agent starts with it. */
+  exposure?: import('../security/provenance.js').Exposure;
   workingDirectory?: string;
   allowedTools?: string[];
   maxSteps?: number;
