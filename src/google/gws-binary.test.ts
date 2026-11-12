@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,7 @@ import {
   GWS_VERSION,
   findGws,
   gwsArchiveName,
+  gwsBinaryName,
   gwsTarget,
   installGws,
   withMercuryGwsOnPath,
@@ -98,17 +99,18 @@ describe('finding gws', () => {
   }
 
   it("prefers a gws on the owner's PATH, then the one Mercury installed", () => {
+    const platform = process.platform === 'win32' ? 'win32' : 'linux';
     const own = join(work, 'gws-bin');
-    const ownGws = program(own, 'gws');
+    const ownGws = program(own, gwsBinaryName(platform));
     const onPath = program(join(work, 'path-bin'), 'gws');
-    expect(findGws({ platform: 'linux', env: { PATH: join(work, 'path-bin') }, mercuryDir: own })).toEqual({ path: onPath, source: 'path' });
-    expect(findGws({ platform: 'linux', env: { PATH: join(work, 'elsewhere') }, mercuryDir: own })).toEqual({ path: ownGws, source: 'mercury' });
-    expect(findGws({ platform: 'linux', env: {}, mercuryDir: join(work, 'none') })).toBeNull();
+    expect(findGws({ platform, env: { PATH: join(work, 'path-bin') }, mercuryDir: own })).toEqual({ path: realpathSync(onPath), source: 'path' });
+    expect(findGws({ platform, env: { PATH: join(work, 'elsewhere') }, mercuryDir: own })).toEqual({ path: ownGws, source: 'mercury' });
+    expect(findGws({ platform, env: {}, mercuryDir: join(work, 'none') })).toBeNull();
   });
 
   it("reads Windows' Path key", () => {
     const onPath = program(join(work, 'npm'), 'gws.cmd');
-    expect(findGws({ platform: 'win32', env: { Path: join(work, 'npm') }, mercuryDir: join(work, 'none') })?.path).toBe(onPath);
+    expect(findGws({ platform: 'win32', env: { Path: join(work, 'npm') }, mercuryDir: join(work, 'none') })?.path).toBe(realpathSync(onPath));
   });
 });
 
@@ -139,7 +141,7 @@ describe("Mercury's gws on run_command's PATH", () => {
       mkdirSync(dir);
       if (process.platform === 'win32') writeFileSync(join(dir, 'gws.cmd'), '@echo fake-gws-ok\r\n');
       else {
-        writeFileSync(join(dir, 'gws'), '#!/bin/sh\necho fake-gws-ok\n');
+        writeFileSync(join(dir, 'gws'), `#!${process.execPath}\nconsole.log('fake-gws-ok');\n`);
         chmodSync(join(dir, 'gws'), 0o755);
       }
       const result = await executeCommand('gws', work, 20_000);
