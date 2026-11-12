@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.5.2 — bots you can watch, approvals one at a time, complex work done properly
 
 ### Chat: complex work done the way Mercury Code does it
 A real chat ("install the HyperFrames skills, then make an intro video with an ElevenLabs beat") went wrong in a chain:
