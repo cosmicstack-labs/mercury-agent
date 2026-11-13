@@ -31,6 +31,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+          check-latest: true
           cache: npm
       - run: npm ci
       - run: npm run typecheck
@@ -43,6 +44,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
       - run: npm ci
       - run: npm run lint
@@ -76,6 +78,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+          check-latest: true
           cache: npm
       - run: npm ci
       - run: npm run build
@@ -124,6 +127,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
       - run: npm ci
       - run: npm run eval
@@ -140,6 +144,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
       - run: npm ci
       - run: npm run typecheck
@@ -164,6 +169,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+          check-latest: true
           cache: npm
       - run: npm ci
       - run: npm run build
@@ -193,6 +199,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
       - uses: oven-sh/setup-bun@v2
         with:
