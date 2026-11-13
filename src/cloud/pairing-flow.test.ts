@@ -28,12 +28,14 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../utils/config.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../utils/config.js')>()
+  // Keep the real isProviderConfigured so the disconnect path is exercised with
+  // the production rules; only the file/persistence helpers are faked.
+  const actual = (await importOriginal()) as { isProviderConfigured: (p: unknown) => boolean }
   return {
-    ...actual,
     loadConfig: mocks.loadConfig,
     saveConfig: mocks.saveConfig,
     updateConfig: mocks.updateConfig,
+    isProviderConfigured: actual.isProviderConfigured,
   }
 });
 vi.mock('./pairing.js', () => ({
