@@ -38,7 +38,7 @@ app.get('/api/bots', (c: any) => {
 // The owner's inbox (Bots 2.0): results, reported failures and runs that need
 // the owner, newest first. `?unread=1` for unread only, `?bot=<id>` for one bot.
 // The live feed's recent history (the stream sends what happens next).
-app.get('/api/bots/activity', (c: any) => {
+app.get('/api/bots/activity', (c: Context) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
   const bots = String(c.req.query('bots') ?? '').split(',').map((s: string) => s.trim()).filter(Boolean);
   const since = Number(c.req.query('since') ?? 0) || 0;
