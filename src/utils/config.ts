@@ -49,6 +49,8 @@ export interface ProviderConfig {
    */
   username?: string;
   password?: string;
+  /** OpenRouter only: pin one endpoint of the model (see ProviderRouting). */
+  routing?: ProviderRouting;
 }
 
 export interface TelegramAccessUser {
@@ -83,12 +85,24 @@ export type ProviderName =
   | 'ollamaLocal'
   | 'atomicChat'
   | 'openaiCompat'
+  | 'openrouter'
   | 'mimo'
   | 'mimoTokenPlan'
   | 'lmStudio'
   | 'chatgptWeb'
   | 'githubCopilot'
   | 'litellm';
+
+/**
+ * OpenRouter-only: which endpoint of the model to use. The gateway fronts many
+ * hosts for the same weights, and `order` + `quantizations` is how a caller
+ * pins one — e.g. `inference-net` in `fp8` rather than whatever answers first.
+ */
+export interface ProviderRouting {
+  order?: string[];
+  quantizations?: string[];
+  allowFallbacks?: boolean;
+}
 
 export interface CloudConfig {
   enabled: boolean;
@@ -129,6 +143,7 @@ export interface MercuryConfig {
     ollamaLocal: ProviderConfig;
     atomicChat: ProviderConfig;
     openaiCompat: ProviderConfig;
+    openrouter: ProviderConfig;
     mimo: ProviderConfig;
     mimoTokenPlan: ProviderConfig;
     lmStudio: ProviderConfig;
@@ -340,6 +355,14 @@ function getEnvNum(key: string, fallback: number): number {
   return val ? parseInt(val, 10) : fallback;
 }
 
+/** A comma-separated env var as a list, trimmed, with the blanks dropped. */
+function listFromEnv(key: string): string[] {
+  return (process.env[key] ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 function getEnvBool(key: string, fallback: boolean): boolean {
   const val = process.env[key]?.toLowerCase();
   if (val === 'true') return true;
@@ -478,6 +501,28 @@ export function getDefaultConfig(): MercuryConfig {
         model: getEnv('OPENAI_COMPAT_MODEL', ''),
         enabled: getEnvBool('OPENAI_COMPAT_ENABLED', false),
         vision: getEnvOptionalBool('OPENAI_COMPAT_VISION'),
+      },
+      // A copy of openaiCompat with OpenRouter's endpoint already in it: the
+      // gateway is OpenAI-compatible, so the only thing worth pinning is the
+      // URL, and a named slot keeps `openaiCompat` free for a local rig.
+      openrouter: {
+        name: 'openrouter',
+        apiKey: getEnv('OPENROUTER_API_KEY', ''),
+        baseUrl: getEnv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
+        model: getEnv('OPENROUTER_MODEL', ''),
+        enabled: getEnvBool('OPENROUTER_ENABLED', false),
+        // Left absent, not empty, when unset: the request then carries no
+        // routing block at all and the gateway picks the endpoint itself.
+        ...(() => {
+          const order = listFromEnv('OPENROUTER_PROVIDER');
+          const quantizations = listFromEnv('OPENROUTER_QUANTIZATIONS');
+          const routing = {
+            ...(order.length > 0 ? { order } : {}),
+            ...(quantizations.length > 0 ? { quantizations } : {}),
+            ...(order.length > 0 ? { allowFallbacks: false } : {}),
+          };
+          return Object.keys(routing).length > 0 ? { routing } : {};
+        })(),
       },
       mimo: {
         name: 'mimo',
@@ -876,6 +921,11 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
   }
   if (provider.name === 'openaiCompat' || provider.name === 'litellm') {
     return provider.baseUrl.length > 0 && provider.model.length > 0;
+  }
+  // A hosted gateway without a key answers 401 on every turn: unlike the local
+  // proxies above, the key is part of being configured here.
+  if (provider.name === 'openrouter') {
+    return provider.apiKey.length > 0 && provider.baseUrl.length > 0 && provider.model.length > 0;
   }
   if (provider.name === 'lmStudio') {
     return provider.baseUrl.length > 0 && provider.model.length > 0;
