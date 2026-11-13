@@ -27,11 +27,15 @@ const mocks = vi.hoisted(() => ({
   waitForCloudRuntimeOnline: vi.fn(),
 }));
 
-vi.mock('../utils/config.js', () => ({
-  loadConfig: mocks.loadConfig,
-  saveConfig: mocks.saveConfig,
-  updateConfig: mocks.updateConfig,
-}));
+vi.mock('../utils/config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/config.js')>()
+  return {
+    ...actual,
+    loadConfig: mocks.loadConfig,
+    saveConfig: mocks.saveConfig,
+    updateConfig: mocks.updateConfig,
+  }
+});
 vi.mock('./pairing.js', () => ({
   PairingFailureError: class PairingFailureError extends Error {
     constructor(message: string, public readonly details: Record<string, unknown> = {}) {

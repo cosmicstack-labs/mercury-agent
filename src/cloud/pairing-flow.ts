@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { loadConfig, saveConfig, updateConfig, type MercuryConfig } from '../utils/config.js';
+import { isProviderConfigured, loadConfig, saveConfig, updateConfig, type MercuryConfig } from '../utils/config.js';
 import { openUrl } from '../utils/open-url.js';
 import { PairingFailureError, startPairingFlow, pollPairingComplete, refreshToken, redeemAgentApiKey } from './pairing.js';
 import { clearCloudTokenStore, getCloudTokenStore, initCloudTokenStore } from './token-store.js';
@@ -288,7 +288,7 @@ export async function runCloudDisconnect(): Promise<void> {
     if (latest.providers.default !== 'mercuryCloud') return;
     const configured = Object.values(latest.providers)
       .filter((p): p is import('../utils/config.js').ProviderConfig =>
-        typeof p === 'object' && p.name !== 'mercuryCloud' && isProviderConfiguredSafe(p)
+        typeof p === 'object' && p.name !== 'mercuryCloud' && isProviderConfigured(p)
       );
     if (configured.length > 0) {
       latest.providers.default = configured[0].name as import('../utils/config.js').ProviderName;
@@ -304,7 +304,7 @@ export async function runCloudDisconnect(): Promise<void> {
   console.log(chalk.dim('  The cloud agent remains registered remotely. Delete it in the dashboard to revoke server-side credentials.'));
 
   const hasOfflineProvider = Object.values(config.providers).some((provider) =>
-    typeof provider === 'object' && provider.name !== 'mercuryCloud' && isProviderConfiguredSafe(provider)
+    typeof provider === 'object' && provider.name !== 'mercuryCloud' && isProviderConfigured(provider)
   );
   if (runtimeWasRunning && hasOfflineProvider) {
     console.log(chalk.dim('  Restarting Mercury with the configured offline provider...'));
@@ -408,21 +408,6 @@ function startManagedRuntime(): void {
   } else {
     startBackground();
   }
-}
-
-function isProviderConfiguredSafe(p: import('../utils/config.js').ProviderConfig): boolean {
-  if (!p.enabled) return false;
-  if (p.name === 'ollamaLocal' || p.name === 'atomicChat') return p.baseUrl.length > 0 && p.model.length > 0;
-  if (p.name === 'ollamaCloud') return p.apiKey.length > 0 && p.baseUrl.length > 0;
-  if (p.name === 'atlascloud' || p.name === 'runcrate' || p.name === 'cloudgpu') return p.apiKey.length > 0 && p.baseUrl.length > 0 && p.model.length > 0;
-  // Keep this in sync with isProviderConfigured(): a local/keyless provider that
-  // is configured without an API key must not be treated as "not configured"
-  // here, or disconnecting Cloud reports that no offline provider exists.
-  if (p.name === 'openaiCompat' || p.name === 'litellm' || p.name === 'lmStudio')
-    return p.baseUrl.length > 0 && p.model.length > 0;
-  if (p.name === 'chatgptWeb' || p.name === 'githubCopilot' || p.name === 'mercuryCloud')
-    return p.model.length > 0;
-  return p.apiKey.length > 0;
 }
 
 async function tryOpenBrowser(url: string): Promise<void> {
