@@ -216,6 +216,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'atlascloud', label: 'Atlas Cloud' },
   { key: 'runcrate', label: 'Runcrate' },
   { key: 'cloudgpu', label: 'CloudGPU' },
+  { key: 'standardcompute', label: 'Standard Compute' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
   { key: 'atomicChat', label: 'Atomic Chat' },
@@ -1529,6 +1530,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.cloudgpu.apiKey = result.apiKey;
           config.providers.cloudgpu.model = result.model;
           config.providers.cloudgpu.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'standardcompute') {
+        const mask = isReconfig && config.providers.standardcompute.apiKey ? ` [${maskKey(config.providers.standardcompute.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'standardcompute',
+          'Standard Compute',
+          chalk.white(`  Standard Compute API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.standardcompute.apiKey = result.apiKey;
+          config.providers.standardcompute.model = result.model;
+          config.providers.standardcompute.enabled = true;
         }
         continue;
       }
