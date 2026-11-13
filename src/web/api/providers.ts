@@ -297,11 +297,12 @@ providers.post('/api/providers/:name/test', async (c) => {
   }
 
   // LiteLLM proxies, local Ollama, LM Studio, and Atomic Chat are keyless - only require baseUrl
-  const needsKey = providerName !== 'litellm' && providerName !== 'ollamaLocal' && providerName !== 'lmStudio' && providerName !== 'atomicChat';
+  // Bedrock signs with AWS credentials and has a regional endpoint, so needs neither.
+  const needsKey = providerName !== 'bedrock' && providerName !== 'litellm' && providerName !== 'ollamaLocal' && providerName !== 'lmStudio' && providerName !== 'atomicChat';
   if (needsKey && !p.apiKey) {
     return c.json({ error: 'No API key configured' }, 400);
   }
-  if (!needsKey && !p.baseUrl) {
+  if (!needsKey && !p.baseUrl && providerName !== 'bedrock') {
     return c.json({ error: 'No base URL configured' }, 400);
   }
 

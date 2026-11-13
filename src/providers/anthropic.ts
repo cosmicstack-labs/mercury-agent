@@ -4,6 +4,7 @@ import { BaseProvider } from './base.js';
 import { withAnthropicThinking } from './reasoning-wire.js';
 import type { ProviderConfig } from '../utils/config.js';
 import type { LLMResponse, LLMStreamChunk } from './base.js';
+import { anthropicApiRoot } from './anthropic-url.js';
 
 export class AnthropicProvider extends BaseProvider {
   readonly name = 'anthropic';
@@ -17,6 +18,9 @@ export class AnthropicProvider extends BaseProvider {
 
     this.client = createAnthropic({
       apiKey: config.apiKey,
+      // Without this the configured base URL was ignored and every request
+      // went to api.anthropic.com, whatever mercury.yaml said.
+      baseURL: anthropicApiRoot(config.baseUrl),
     });
     // Thinking shown as a summary and the owner's effort level, per request.
     this.modelInstance = withAnthropicThinking(this.client(config.model), this.name, config.model);

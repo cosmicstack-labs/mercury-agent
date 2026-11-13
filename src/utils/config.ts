@@ -49,6 +49,13 @@ export interface ProviderConfig {
    */
   username?: string;
   password?: string;
+  /** Amazon Bedrock: AWS region the requests go to. */
+  region?: string;
+  /**
+   * Amazon Bedrock: named AWS profile (SSO, assumed role, static keys). Empty
+   * uses the standard AWS credential chain, which already honours AWS_PROFILE.
+   */
+  awsProfile?: string;
 }
 
 export interface TelegramAccessUser {
@@ -88,7 +95,8 @@ export type ProviderName =
   | 'lmStudio'
   | 'chatgptWeb'
   | 'githubCopilot'
-  | 'litellm';
+  | 'litellm'
+  | 'bedrock';
 
 export interface CloudConfig {
   enabled: boolean;
@@ -135,6 +143,7 @@ export interface MercuryConfig {
     chatgptWeb: ProviderConfig;
     githubCopilot: ProviderConfig;
     litellm: ProviderConfig;
+    bedrock: ProviderConfig;
   };
   channels: {
     telegram: {
@@ -523,6 +532,19 @@ export function getDefaultConfig(): MercuryConfig {
         enabled: getEnvBool('LITELLM_ENABLED', false),
         vision: getEnvOptionalBool('LITELLM_VISION'),
       },
+      bedrock: {
+        name: 'bedrock',
+        // Optional Bedrock API key. Without one, requests are SigV4-signed with
+        // credentials from the AWS chain (profile, SSO, env, instance role).
+        apiKey: getEnv('AWS_BEARER_TOKEN_BEDROCK', ''),
+        // Optional endpoint override, e.g. a VPC interface endpoint.
+        baseUrl: getEnv('BEDROCK_BASE_URL', ''),
+        region: getEnv('BEDROCK_REGION', getEnv('AWS_REGION', 'us-east-1')),
+        awsProfile: getEnv('BEDROCK_AWS_PROFILE', ''),
+        model: getEnv('BEDROCK_MODEL', 'us.anthropic.claude-sonnet-4-6'),
+        enabled: getEnvBool('BEDROCK_ENABLED', false),
+        vision: getEnvOptionalBool('BEDROCK_VISION'),
+      },
     },
     channels: {
       telegram: {
@@ -879,6 +901,10 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
   }
   if (provider.name === 'lmStudio') {
     return provider.baseUrl.length > 0 && provider.model.length > 0;
+  }
+  if (provider.name === 'bedrock') {
+    // AWS credentials come from the credential chain, so no key is required.
+    return provider.model.length > 0;
   }
   if (provider.name === 'chatgptWeb') {
     // ChatGPT Web uses browser session auth, not API keys.

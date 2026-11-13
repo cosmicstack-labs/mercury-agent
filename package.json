@@ -66,15 +66,18 @@
     "src/web/static"
   ],
   "dependencies": {
+    "@ai-sdk/amazon-bedrock": "^4.0.107",
     "@ai-sdk/anthropic": "^3.0.71",
     "@ai-sdk/deepseek": "^2.0.29",
     "@ai-sdk/openai": "^3.0.53",
+    "@aws-sdk/credential-provider-node": "^3.972.97",
     "@grammyjs/auto-retry": "^2.0.2",
     "@hono/node-server": "^2.0.0",
     "@modelcontextprotocol/client": "^2.3.1",
     "@slack/bolt": "^4.7.3",
     "@types/ws": "^8.18.1",
     "ai": "^6.0.168",
+    "aws4fetch": "^1.0.20",
     "bcryptjs": "^3.0.3",
     "chalk": "^5.4.0",
     "commander": "^12.1.0",
