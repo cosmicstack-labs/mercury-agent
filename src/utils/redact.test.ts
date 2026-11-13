@@ -40,6 +40,34 @@ describe('secret redaction', () => {
     expect(redactSecrets(`Authorization: Basic ${token}`)).toBe('Authorization: Basic ****');
   });
 
+  it('masks a Basic credential by its shape, wherever it is written', () => {
+    const token = Buffer.from('alice:s3cret').toString('base64');
+    const masked = (before: string, after = '') => [`${before}Basic ${token}${after}`, `${before}Basic ****${after}`];
+    for (const [input, expected] of [
+      masked('Authorization: '),
+      masked('authorization: '),
+      masked('-H "Authorization: ', '"'),
+      masked('{"Authorization":"', '"}'),
+      masked("{'Authorization': '", "'}"),
+      masked("res.setHeader('Authorization', '", "')"),
+      masked('{\\"Authorization\\":\\"', '\\"}'),
+      masked(''),
+    ]) {
+      expect(redactSecrets(input)).toBe(expected);
+    }
+    const utf8 = Buffer.from('zoë:pässwörd').toString('base64');
+    expect(redactSecrets(`Basic ${utf8}`)).toBe('Basic ****');
+    const latin1 = Buffer.from('zoë:pässwörd', 'latin1').toString('base64');
+    expect(redactSecrets(`Basic ${latin1}`)).toBe('Basic ****');
+    const withNewline = Buffer.from('alice:s3cret\n').toString('base64');
+    expect(redactSecrets(`Basic ${withNewline}`)).toBe('Basic ****');
+  });
+
+  it('leaves the word after Basic alone when it is not a credential', () => {
+    const prose = 'Basic authentication is required. Use Basic credentials, Basic configuration and Basic functionality.';
+    expect(redactSecrets(prose)).toBe(prose);
+  });
+
   it('leaves ordinary code and config untouched', () => {
     const code = 'const apiKeyField = "name";\nskylight.trim();\nconst tokenCount = 123456789012;';
     expect(redactSecrets(code)).toBe(code);

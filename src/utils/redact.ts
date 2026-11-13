@@ -42,11 +42,23 @@ const SECRET_PATTERNS: RegExp[] = [
 ];
 
 // Masked whole: a password has no recognizable prefix worth keeping, and a short
-// one would be mostly shown by maskMatch. Covers yaml/env values and Basic headers.
+// one would be mostly shown by maskMatch. Covers yaml/env values.
 const FULL_MASK_PATTERNS: RegExp[] = [
   /(?<=\bpassword\s*[:=]\s*["']?)[^\s"']+/gi,
-  /(?<=\bBasic\s+)[A-Za-z0-9+/]{8,}={0,2}/g,
 ];
+
+// A Basic credential is base64 of "user:pass". It is matched by shape, not by header
+// name: redactDeep and the MCP config check see a header value without its key. A word
+// after "Basic" ("Basic authentication") does not decode to bytes that hold a colon and no
+// control character. Decoded as latin1 so each byte is one char: Latin-1 and UTF-8
+// passwords both qualify, and invalid UTF-8 cannot hide a credential.
+const BASIC_CREDENTIAL = /(?<=\bBasic\s{1,8})[A-Za-z0-9+/]{8,}={0,2}/gi;
+
+function maskBasicCredential(candidate: string): string {
+  // `echo user:pass | base64` leaves a newline at the end of the credential.
+  const decoded = Buffer.from(candidate, 'base64').toString('latin1').replace(/[\r\n]+$/, '');
+  return decoded.includes(':') && !/[\x00-\x1f\x7f]/.test(decoded) ? '****' : candidate;
+}
 
 /** Keep enough of the key to identify it, mask the rest. */
 function maskMatch(match: string): string {
@@ -72,6 +84,7 @@ export function redactSecrets(text: string): string {
   for (const pattern of FULL_MASK_PATTERNS) {
     out = out.replace(pattern, '****');
   }
+  out = out.replace(BASIC_CREDENTIAL, maskBasicCredential);
   return out;
 }
 
