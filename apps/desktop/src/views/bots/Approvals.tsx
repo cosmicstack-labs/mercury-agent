@@ -12,11 +12,14 @@ export function botQuestionItems(approvals: BotApproval[], now = Date.now()): Ne
     id: a.id,
     described: describePrompt({ kind: "permission", text: a.prompt }),
     from: `${a.botName} · waits ${Math.max(0, Math.ceil((a.expiresAt - now) / 60_000))} min, then it's a no`,
-    options: [
-      { value: "yes", label: "Allow once", role: "primary" },
-      { value: "always", label: `Always allow for ${a.botName}`, role: "secondary" },
-      { value: "no", label: "Deny", role: "quiet" },
-    ],
+    // After reading something untrusted there is nothing to "always" allow: once, or no.
+    options: /^(⚠ Possible prompt injection|Mercury read content from outside)/.test(a.prompt)
+      ? [{ value: "yes", label: "Allow once", role: "primary" }, { value: "no", label: "Deny", role: "quiet" }]
+      : [
+        { value: "yes", label: "Allow once", role: "primary" },
+        { value: "always", label: `Always allow for ${a.botName}`, role: "secondary" },
+        { value: "no", label: "Deny", role: "quiet" },
+      ],
     onAnswer: async (v: string | null) => { await api.bots.answer(a.id, (v ?? "no") as "yes" | "always" | "no").catch(() => {}); void refreshApprovals(); },
   }));
 }

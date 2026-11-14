@@ -30,7 +30,8 @@ import { createBotDeliverTool } from './tools/bot-deliver.js';
 import { createBotScheduleTool, type BotScheduler } from './tools/bot-schedule.js';
 import { createFleetStatusTool } from './tools/fleet-status.js';
 import { createBotSpawnTool } from './tools/bot-spawn.js';
-import { runBotTurn, isTransientFailure, isTurnLimitFailure, type BotExpectedOutcome, type BotTurnMail, type BotActivityEvent } from './bot-turn.js';
+import { runBotTurn, isTransientFailure, isTurnLimitFailure, taintOf, type BotExpectedOutcome, type BotTurnMail, type BotActivityEvent, type BotTaint } from './bot-turn.js';
+import { guardTools } from '../security/tool-guard.js';
 import { parsePersonaAccess, stripPersonaAccessSection } from './persona-access.js';
 import { mergePathScopes } from './registry-factory.js';
 import { synthesizeSkill, MIN_TOOLS_FOR_SYNTHESIS } from './skill-synthesis.js';
@@ -365,6 +366,14 @@ export class BotManager {
     this.activityListeners.add(listener);
     return () => this.activityListeners.delete(listener);
   }
+  /**
+   * ADR-044 across the fleet: what the sender had read when it handed work on
+   * (a delegated job), and what each finished run had read (its result, and
+   * any digest built from it, carries that on). In memory; a restart forgets.
+   */
+  private jobTaint = new Map<string, BotTaint>();
+  private runTaint = new Map<string, BotTaint>();
+
   /** What each running job was asked, by whom, for the live feed (set when the turn starts). */
   private jobContext = new Map<string, { trigger: string; prompt: string; fromBot?: string }>();
   /**
@@ -487,7 +496,7 @@ export class BotManager {
     return this.journalFor(botId);
   }
 
-  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string; attachments?: ChannelAttachment[]; manualReplay?: boolean }): { jobId: string; accepted: boolean; reasonCode?: string; duplicated?: boolean } {
+  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string; attachments?: ChannelAttachment[]; manualReplay?: boolean; taint?: BotTaint }): { jobId: string; accepted: boolean; reasonCode?: string; duplicated?: boolean } {
     const manifest = this.store.get(botId);
     if (!manifest) return { jobId: '', accepted: false, reasonCode: 'target_unknown' };
     if (!manifest.enabled || this.disabled.has(botId)) return { jobId: '', accepted: false, reasonCode: 'target_disabled' };
@@ -542,6 +551,8 @@ export class BotManager {
     }
     const id = durable.job.id;
     queue.push({ id, botId, trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, createdAt: durable.job.createdAt, attempts: durable.job.attempts, routineId: job.routineId });
+    // Before the pump: an idle bot starts the job right away.
+    if (job.taint) this.jobTaint.set(id, job.taint);
     this.pump(botId);
     return { jobId: id, accepted: true };
   }
@@ -692,7 +703,9 @@ export class BotManager {
     const requesterName = this.store.get(input.requester)?.name ?? input.requester;
     // Pipeline stages chain on the lead's behalf: one level below it.
     const level = depth ?? Math.max(0, ...[...(this.running.get(input.requester) ?? [])].map((j) => this.jobDepth.get(j) ?? 0)) + 1;
-    const job = this.enqueue(input.assignee, { trigger: 'mailbox', prompt: renderTaskPrompt(created.task, requesterName, previous), fromBot: input.requester });
+    // The requester's untrusted reads travel with the task (called inside its turn).
+    const handedOn = taintOf();
+    const job = this.enqueue(input.assignee, { trigger: 'mailbox', prompt: renderTaskPrompt(created.task, requesterName, previous), fromBot: input.requester, ...(handedOn ? { taint: handedOn } : {}) });
     if (job.accepted && job.jobId) this.jobDepth.set(job.jobId, level);
     if (!job.accepted) {
       this.tasks.update(created.task.id, { status: 'failed', completedAt: Date.now(), result: { outcome: 'none', summary: `could not dispatch: ${job.reasonCode}`, deliverables: [], reasonCode: job.reasonCode } });
@@ -805,7 +818,9 @@ export class BotManager {
       if (one) digest = `Late result for batch "${batch.label ?? batchId}":\n` + renderBatchDigest(batch, [one], name);
     }
     if (!digest) return;
-    const sent = this.sendToBot(batch.requester, 'fleet', digest);
+    const taints = tasks.map((t) => (t.jobId ? this.runTaint.get(t.jobId) : undefined)).filter((t): t is BotTaint => !!t);
+    const digestTaint = taints.length ? { sources: [...new Set(taints.flatMap((t) => t.sources))].slice(0, 6), suspicious: taints.some((t) => t.suspicious) } : undefined;
+    const sent = this.sendToBot(batch.requester, 'fleet', digest, digestTaint ?? null);
     if (!sent.accepted) logger.warn({ requester: batch.requester, batchId, reason: sent.reasonCode }, 'Fleet digest not delivered');
   }
 
@@ -833,7 +848,10 @@ export class BotManager {
   }
 
   /** Fire-and-forget mailbox delivery from another bot. */
-  sendToBot(targetBotId: string, fromBot: string, content: string): BotSendResult {
+  sendToBot(targetBotId: string, fromBot: string, content: string, taint?: BotTaint | null): BotSendResult {
+    // Sent from inside a turn (bot_send, the owner's dispatch): that turn's reads travel with the mail.
+    // null: the caller knows it's clean (a result sent after its run ended).
+    const carried = taint === undefined ? taintOf() : taint ?? undefined;
     const manifest = this.store.get(targetBotId);
     if (!manifest) return { accepted: false, reasonCode: 'target_unknown' };
     if (!manifest.enabled || this.disabled.has(targetBotId)) return { accepted: false, reasonCode: 'target_disabled' };
@@ -845,7 +863,7 @@ export class BotManager {
     // Durable-before-ack for handoffs too: a bot_send that returns "queued"
     // must survive a crash before the target's next turn drains it.
     this.queue.enqueueMail({ botId: targetBotId, from: fromBot, content, createdAt: Date.now() });
-    box.push({ from: fromBot, content });
+    box.push({ from: fromBot, content, ...(carried ? { taint: carried } : {}) });
     this.mailboxes.set(targetBotId, box);
 
     // If the bot is idle (no running turn, empty job queue), wake it with a
@@ -986,12 +1004,20 @@ export class BotManager {
       if (taskForJob) this.tasks.update(taskForJob.id, { status: 'running', startedAt: Date.now() });
       const turn = this.buildTurn(botId, manifest, job, controller.signal);
       this.jobContext.set(job.id, { trigger: job.trigger, prompt: job.prompt ?? '', ...(job.fromBot ? { fromBot: job.fromBot } : {}) });
+      const handed = this.jobTaint.get(job.id);
       const output = await runBotTurn({
         ...turn.input,
         jobId: job.id,
+        ...(job.fromBot ? { fromBot: job.fromBot } : {}),
+        ...(handed ? { taint: handed } : {}),
         onActivity: (ev) => this.emitBotActivity(ev),
       });
       turn.cleanup();
+      this.jobTaint.delete(job.id);
+      if (output.taint) {
+        this.runTaint.set(job.id, output.taint);
+        if (this.runTaint.size > 500) this.runTaint.delete(this.runTaint.keys().next().value as string);
+      }
 
       // Decided up front so the journal row can carry the needs-you flag:
       // a failure that will retry is not an escalation; one headed for the
@@ -1285,7 +1311,7 @@ export class BotManager {
           : output.status === 'failed'
             ? `❌ Task FAILED (job ${job.id})${output.reasonCode ? ` [reason: ${output.reasonCode}]` : ''}: ${(output.error ?? output.output).slice(0, 1000)}`
             : `⏹ Task halted (job ${job.id}) — it was stopped; see /bots journal ${botId}.`;
-        const sent = this.sendToBot(replyTarget, botId, reply);
+        const sent = this.sendToBot(replyTarget, botId, reply, output.taint ?? null);
         if (!sent.accepted) {
           logger.warn({ botId, replyTarget, reason: sent.reasonCode }, 'Fleet result reply not delivered');
         }
@@ -1509,6 +1535,12 @@ export class BotManager {
     if (this.scheduler) {
       filtered.bot_schedule = createBotScheduleTool(this.scheduler, botId);
     }
+    // The bot's own tools (added after the registry's guard) get the same ADR-044 gate:
+    // a schedule, a new bot or a message to the fleet after reading something
+    // untrusted needs the owner (asked from the app; no answer is a no).
+    const own = ['bot_send', 'bot_deliver', 'bot_state', 'fleet_delegate', 'fleet_tasks', 'fleet_pipeline', 'bot_spawn', 'bot_retire', 'bot_schedule'];
+    const guarded = guardTools(Object.fromEntries(own.filter((n) => filtered[n]).map((n) => [n, filtered[n]])), { permissions: registry.permissions });
+    Object.assign(filtered, guarded);
     this.registries.set(botId, { registry, tools: filtered, skillsPrompt, manifest, permsMtimeMs });
     return { registry, tools: filtered, skillsPrompt };
   }

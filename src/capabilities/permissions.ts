@@ -640,6 +640,11 @@ export class PermissionManager {
     return this.ctx().senderRole;
   }
 
+  /** Someone can be asked in this context (a bot's runtime routes it to the owner). */
+  canAsk(): boolean {
+    return this.askHandler !== null && this.askHandler !== undefined;
+  }
+
   onAsk(handler: (prompt: string, options?: AskOptions) => Promise<string>): void {
     // Every answer the owner gives is evidence for the Owner Model (autonomy,
     // risk per action type); the learning loop drains it once per turn.

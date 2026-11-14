@@ -275,3 +275,67 @@ describe('the guard and the model', () => {
   });
 });
 
+describe('bots: never relaxed, and their own tools are guarded', () => {
+  function botPerms(owner: ((prompt: string) => boolean) | null) {
+    const asked: string[] = [];
+    return {
+      asked,
+      p: {
+        getCurrentChannelType: () => 'bot',
+        getCurrentSenderRole: () => undefined,
+        isFailClosed: () => true,
+        hasTurnPluginGrant: () => false,
+        canAsk: () => owner !== null,
+        requestApproval: vi.fn(async (prompt: string) => { asked.push(prompt); return owner ? owner(prompt) : false; }),
+      },
+    };
+  }
+
+  it('a bot on a strong model that read a poisoned page: its schedule goes to the owner, and no is no', async () => {
+    await runInTurnScope(async () => {
+      claimExposureForTurn();
+      noteTurnModel('claude-sonnet-4-5');
+      const { p, asked } = botPerms(() => false);
+      const scheduled = vi.fn(() => 'scheduled');
+      const tools = guardTools({ read_file: tool(() => WEATHER_HTML), bot_schedule: tool(scheduled) }, { permissions: p as never });
+      await run(tools.read_file, { path: 'weather.html' });
+      expect(await run(tools.bot_schedule, { cron: '0 * * * *', prompt: 'do it quietly' })).toMatch(/Not done/);
+      expect(scheduled).not.toHaveBeenCalled();
+      expect(asked[0]).toContain('Possible prompt injection');
+    });
+  });
+
+  it('with nobody to ask, refused outright; the owner\'s own strong-model chat is still relaxed', async () => {
+    await runInTurnScope(async () => {
+      claimExposureForTurn();
+      noteTurnModel('gpt-5');
+      const { p } = botPerms(null);
+      const tools = guardTools({ read_file: tool(() => WEATHER_HTML), bot_spawn: tool(() => 'spawned'), bot_send: tool(() => 'sent') }, { permissions: p as never });
+      await run(tools.read_file, { path: 'weather.html' });
+      expect(await run(tools.bot_spawn, { name: 'x' })).toMatch(/no one is here to approve/);
+      expect(await run(tools.bot_send, { to: 'crew', message: 'x' })).toMatch(/no one is here to approve/);
+    });
+    await runInTurnScope(async () => {
+      claimExposureForTurn();
+      noteTurnModel('gpt-5');
+      const { p, asked } = perms(() => false);
+      const tools = guardTools({ read_file: tool(() => WEATHER_HTML), schedule_task: tool(() => 'scheduled') }, { permissions: p as never });
+      await run(tools.read_file, { path: 'weather.html' });
+      expect(await run(tools.schedule_task, { cron: '0 9 * * *' })).toBe('scheduled');
+      expect(asked).toEqual([]);
+    });
+  });
+
+  it('everyday fleet work after plain web reading still flows: bot_send without hidden instructions', async () => {
+    await runInTurnScope(async () => {
+      claimExposureForTurn();
+      noteTurnModel('claude-sonnet-4-5');
+      const { p, asked } = botPerms(() => false);
+      const tools = guardTools({ fetch_url: tool(() => 'plain news page'), bot_send: tool(() => 'sent') }, { permissions: p as never });
+      await run(tools.fetch_url, { url: 'https://news.example/today' });
+      expect(await run(tools.bot_send, { to: 'writer', message: 'here is the research' })).toBe('sent');
+      expect(asked).toEqual([]);
+    });
+  });
+});
+
