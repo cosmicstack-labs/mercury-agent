@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Google Workspace
+- **Connect Gmail, Drive and Docs with `mercury google connect`.** It installs Google's `gws` tool if needed (gws 0.22.5, checked against checksums built into Mercury), signs you in to your own Google account and installs Mercury's `google-workspace` skill. Read-only by default; `--write` adds drafts and document edits. `mercury google status` and `disconnect` go with it. Mercury doesn't bundle gws, so the package doesn't grow. See [Google Workspace](https://mercuryagent.sh/docs/integrations/google-workspace) and ADR-045.
+- **`/google connect` from any chat**, for the owner or an admin. Mercury sends the sign-in link; from a phone, send back the address the browser ends on. The Google app's secret is set up once on the computer and never goes through a chat.
+- **Sends, shares, uploads and deletes always ask.** Mercury reads every gws command first: these ask even under Allow All and after "Always", and are refused in scheduled tasks and for bots. Gmail drafts, reads and other writes follow your permission mode, and "Always" on a read covers that service's reads for the rest of the chat. gws sign-in commands such as `gws auth export` are refused in every mode.
+- **Google sign-ins stay out of reach.** Mercury's file and shell tools refuse gws's `~/.config/gws`, the gws Mercury installed in `~/.mercury/gws-bin`, and workspace-mcp's `~/.google_workspace_mcp`, and Google tokens, client secrets and private keys are masked in command output.
+- **`mercury doctor --security` checks gws:** a sign-in stored unencrypted, an encryption key kept in a file on macOS or Windows, and a background service that can't find gws.
+
+### Skills
+- **`mercury skills install --from` accepts a SKILL.md without an `id`**, such as the gws project's skills, and installs it under its name the way `/skills install` does.
+
 ## 1.5.2 — bots you can watch, approvals one at a time, complex work done properly
 
 ### Chat: complex work done the way Mercury Code does it

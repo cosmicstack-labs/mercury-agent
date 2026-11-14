@@ -1,4 +1,4 @@
-import { commandTouchesMercuryCredentials, isMercuryCredentialPath } from '../security/protected-paths.js';
+import { commandTouchesMercuryCredentials, commandTouchesMercuryPrograms, commandTouchesOtherAppCredentials, isMercuryCredentialPath, isMercuryProgramPath, isOtherAppCredentialPath } from '../security/protected-paths.js';
 import { ownerApprovedThisCall } from '../security/call-approval.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, lstatSync } from 'node:fs';
 import { join, resolve, sep, dirname, basename } from 'node:path';
@@ -9,6 +9,7 @@ import { isReadOnlySegment, shellPaths, stripHeredocs } from './shell-paths.js';
 import { logger } from '../utils/logger.js';
 import { redactSecrets } from '../utils/redact.js';
 import { BLOCKED_COMMANDS } from './shell/blocklist.js';
+import { classifyGws, setsGwsCredentials, type GwsCommand } from './shell/gws.js';
 import {
   evaluateArgvPolicy,
   pinnedBinary,
@@ -640,6 +641,10 @@ export class PermissionManager {
     return this.ctx().senderRole;
   }
 
+  setUnattendedTurn(value: boolean): void {
+    this.updateContext(() => ({ unattended: value }));
+  }
+
   onAsk(handler: (prompt: string, options?: AskOptions) => Promise<string>): void {
     // Every answer the owner gives is evidence for the Owner Model (autonomy,
     // risk per action type); the learning loop drains it once per turn.
@@ -819,6 +824,12 @@ export class PermissionManager {
     // Mercury's login credentials are off limits to its own tools, whatever the scopes or mode.
     if (isMercuryCredentialPath(path)) {
       return { allowed: false, reason: "Permission denied: that is one of Mercury's login credential files (device tokens, password, sessions). Manage devices with /server.", code: 'denied' };
+    }
+    if (isOtherAppCredentialPath(path)) {
+      return { allowed: false, reason: "Permission denied: that file holds another program's sign-in (Google Workspace). Mercury's tools never read it.", code: 'denied' };
+    }
+    if (isMercuryProgramPath(path)) {
+      return { allowed: false, reason: "Permission denied: that is the gws program Mercury installed. Mercury's tools can run gws but never read or change its files.", code: 'denied' };
     }
     if (mode === 'write') return this.checkScopedAccess(path, mode);
 
@@ -1049,6 +1060,12 @@ export class PermissionManager {
     if (commandTouchesMercuryCredentials(trimmed)) {
       return { allowed: false, reason: "Blocked: the command names one of Mercury's login credential files (device tokens, password, sessions). Manage devices with /server.", needsApproval: false };
     }
+    if (commandTouchesOtherAppCredentials(trimmed)) {
+      return { allowed: false, reason: "Permission denied: that file holds another program's sign-in (Google Workspace). Mercury's tools never read it.", needsApproval: false };
+    }
+    if (commandTouchesMercuryPrograms(trimmed)) {
+      return { allowed: false, reason: "Permission denied: that is the gws program Mercury installed. Mercury's tools can run gws but never read or change its files.", needsApproval: false };
+    }
     const segments = splitShellSegments(trimmed);
     const ctx = this.ctx();
     const cwd = options.cwd ?? this.cwd;
@@ -1062,6 +1079,21 @@ export class PermissionManager {
           return { allowed: false, reason: `Blocked command: matches "${pattern}"`, needsApproval: false };
         }
       }
+    }
+
+    const gwsParts = /\$\(|`/.test(trimmed) ? [...segments, trimmed] : segments;
+    const gwsCommands = gwsParts.map((part) => classifyGws(part)).filter((c): c is GwsCommand => c !== null);
+    if (setsGwsCredentials(trimmed) || gwsCommands.some((c) => c.kind === 'credentials')) {
+      return { allowed: false, reason: 'Blocked: gws sign-in commands are for the owner. Run it yourself in a terminal.', needsApproval: false };
+    }
+    if (gwsCommands.some((c) => c.kind === 'sensitive')) {
+      if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed || ctx.unattended) {
+        return { allowed: false, reason: 'Sending, sharing, uploading or deleting in Google Workspace needs you to approve it, and nobody can be asked here.', needsApproval: false };
+      }
+      const answer = await this.askOwner(`Run command (sends, shares, uploads or deletes in Google Workspace, so it always asks): ${trimmed}`);
+      return answer === 'yes' || answer === 'always'
+        ? { allowed: true, needsApproval: false, lane: 'shell' }
+        : { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
     }
 
     // Adding or changing an MCP server is an owner action (ADR-029): a shell
@@ -1515,6 +1547,8 @@ const SUBCOMMAND_TOOLS = new Set(['git', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'p
  * no plain program name.
  */
 export function commandFamily(segment: string): string | null {
+  const gws = classifyGws(segment);
+  if (gws) return gws.kind === 'read' && gws.service ? `gws ${gws.service} read` : null;
   const tokens = segment.trim().split(/\s+/).filter(Boolean);
   let i = 0;
   while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;

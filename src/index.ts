@@ -92,6 +92,7 @@ import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { registerBotsCommand } from './bots/cli.js';
+import { registerGoogleCommand } from './google/cli.js';
 import { getManual } from './utils/manual.js';
 import { ask, InputClosedError } from './cli/ask.js';
 import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntimeProcess, releaseRuntimeProcess, restartDaemon, tryAutoDaemonize, isStandaloneBinary, getForegroundRuntimeStatus, stopForegroundRuntime } from './cli/daemon.js';
@@ -5721,5 +5722,6 @@ cloud
 
 registerSkillsCommand(program);
 registerBotsCommand(program);
+registerGoogleCommand(program);
 
 program.parse();

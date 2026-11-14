@@ -80,6 +80,8 @@ mercury skills list                          # what's installed locally
 mercury skills doctor                        # install root + registry + cache
 ```
 
+`--from` installs a SKILL.md with an `id: <category>/<slug>` in its frontmatter under that id. A SKILL.md without an `id`, such as the [gws project's skills](../integrations/google-workspace#more-commands-the-gws-projects-skills), is installed under its `name`, the way `/skills install <url>` does. Those skills load like any other but don't appear in `mercury skills list`, `update` or `remove`; manage them with `/skills` in a chat.
+
 ### Shared flags and environment variables
 
 | Flag | Purpose |

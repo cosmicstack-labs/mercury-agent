@@ -9,6 +9,11 @@ describe('URL opening', () => {
     ]);
   });
 
+  it("hands Windows the whole URL, so cmd.exe can't cut it at an &", () => {
+    const url = 'https://accounts.google.com/o/oauth2/auth?client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A5&scope=a';
+    expect(getUrlOpeners(url, {}, 'win32')[0]).toEqual({ command: 'rundll32', args: ['url.dll,FileProtocolHandler', url] });
+  });
+
   it('falls back safely and never throws when openers fail', async () => {
     const succeedsSecond = vi.fn()
       .mockRejectedValueOnce(new Error('missing'))

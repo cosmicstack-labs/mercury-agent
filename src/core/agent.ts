@@ -121,6 +121,7 @@ import { setToolVision } from '../capabilities/tool-images.js';
 import { visionProfile } from './vision-profile.js';
 import { handleCallCommand } from '../plugins/call-schedule.js';
 import { handlePluginsCommand, tryPluginCommand, hasPluginDialog, answerPluginDialog } from '../plugins/commands.js';
+import { handleGoogleCommand } from '../google/chat-command.js';
 import { handleChatCommand as handleChatCommandImpl } from './commands/chat-command.js';
 import { formatCounts, formatLearnedLine } from './commands/memory-commands.js';
 import { handleBgCommand as handleBgCommandImpl } from './commands/bg-command.js';
@@ -1061,9 +1062,8 @@ export class Agent {
   }
 
   enqueueMessage(msg: ChannelMessage): void {
-    logger.info({ from: msg.channelType, content: msg.content.slice(0, 50) }, 'Message enqueued');
-
     const trimmed = msg.content.trim();
+    logger.info({ from: msg.channelType, content: /^\/google(\s|$)/i.test(trimmed) ? '/google' : msg.content.slice(0, 50) }, 'Message enqueued');
 
     // "approve K7Q2M": the owner answering a security question (a new device,
     // a remote sensitive action) from their messaging channel.
@@ -1133,6 +1133,16 @@ export class Agent {
       if (channel) {
         handlePluginsCommand(trimmed, msg, channel).catch((err) => {
           logger.error({ err: err instanceof Error ? err.message : err, content: trimmed.slice(0, 50) }, '/plugins command failed');
+        });
+      }
+      return;
+    }
+
+    if (/^\/google(\s|$)/i.test(trimmed)) {
+      const channel = this.channels.getChannelForMessage(msg);
+      if (channel) {
+        handleGoogleCommand(trimmed, msg, channel).catch((err) => {
+          logger.error({ err: err instanceof Error ? err.message : err }, '/google command failed');
         });
       }
       return;
@@ -3816,6 +3826,7 @@ export class Agent {
       // previous local/owner turn must not determine remote recall access.
       this.capabilities.setChannelContext(msg.channelId, msg.channelType, canonicalSession.id);
       this.capabilities.permissions.setCurrentSenderRole(msg.senderRole);
+      this.capabilities.permissions.setUnattendedTurn(msg.senderId === 'system');
 
       // Stable part = the cached system prefix; the parts that change between
       // turns (owner brief, bots, clock, cwd, memory count) go in the per-turn
