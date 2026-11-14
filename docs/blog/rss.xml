@@ -4,11 +4,22 @@
         <title>Mercury Blog</title>
         <link>https://mercuryagent.sh/blog</link>
         <description>News, engineering notes and field reports from the team building Mercury.</description>
-        <lastBuildDate>Thu, 05 Nov 2026 00:00:00 GMT</lastBuildDate>
+        <lastBuildDate>Wed, 11 Nov 2026 00:00:00 GMT</lastBuildDate>
         <docs>https://validator.w3.org/feed/docs/rss2.html</docs>
         <generator>https://github.com/jpmonette/feed</generator>
         <language>en</language>
         <copyright>© 2026 Cosmic Stack</copyright>
+        <item>
+            <title><![CDATA[What Is a Personal AI Assistant? 10 Real Tasks in 2026]]></title>
+            <link>https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant</link>
+            <guid>https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant</guid>
+            <pubDate>Wed, 11 Nov 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[An AI personal assistant acts for one person across their accounts, files, apps and connected services. Here is what it is, ten tasks it can handle, and the permissions each one needs.]]></description>
+            <category>Product</category>
+            <category>Security</category>
+            <category>AI Agents</category>
+            <category>Self-Hosted AI</category>
+        </item>
         <item>
             <title><![CDATA[9 Safest, Most Secure, and Permission-Aware AI Agents for Real-World Tasks]]></title>
             <link>https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work</link>
@@ -23,21 +34,21 @@
             <category>AI Agent Memory</category>
         </item>
         <item>
-            <title><![CDATA[Mercury 1.5: Mercury Desktop]]></title>
-            <link>https://mercuryagent.sh/blog/mercury-1-5</link>
-            <guid>https://mercuryagent.sh/blog/mercury-1-5</guid>
-            <pubDate>Tue, 03 Nov 2026 00:00:00 GMT</pubDate>
-            <description><![CDATA[Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.]]></description>
-            <category>News</category>
-            <category>Releases</category>
-        </item>
-        <item>
             <title><![CDATA[A tour of Mercury Desktop: one app, every Mercury you run]]></title>
             <link>https://mercuryagent.sh/blog/mercury-desktop-tour</link>
             <guid>https://mercuryagent.sh/blog/mercury-desktop-tour</guid>
             <pubDate>Tue, 03 Nov 2026 00:00:00 GMT</pubDate>
             <description><![CDATA[What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.]]></description>
             <category>Product</category>
+            <category>Releases</category>
+        </item>
+        <item>
+            <title><![CDATA[Mercury 1.5: Mercury Desktop]]></title>
+            <link>https://mercuryagent.sh/blog/mercury-1-5</link>
+            <guid>https://mercuryagent.sh/blog/mercury-1-5</guid>
+            <pubDate>Tue, 03 Nov 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.]]></description>
+            <category>News</category>
             <category>Releases</category>
         </item>
         <item>
