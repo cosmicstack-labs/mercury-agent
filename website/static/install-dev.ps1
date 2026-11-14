@@ -13,11 +13,13 @@
 $ErrorActionPreference = 'Stop'
 
 # Running from a checkout: prefer the sibling stable installer.
-$sibling = Join-Path $PSScriptRoot 'install.ps1'
-if (Test-Path $sibling) {
-    $env:MERCURY_CHANNEL = 'dev'
-    & $sibling
-    return
+if (-not [string]::IsNullOrEmpty($PSScriptRoot)) {
+    $sibling = Join-Path $PSScriptRoot 'install.ps1'
+    if (Test-Path $sibling -PathType Leaf) {
+        $env:MERCURY_CHANNEL = 'dev'
+        & $sibling
+        return
+    }
 }
 
 # Otherwise pull the stable installer from the always-current site URL. The
