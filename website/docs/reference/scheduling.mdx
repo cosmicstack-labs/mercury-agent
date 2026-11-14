@@ -18,6 +18,10 @@ Tell Mercury in conversation:
 - "Ping me in 2 hours about the deployment"
 
 Tasks persist to `~/.mercury/schedules.yaml` and restore on restart. Responses route back to the channel (CLI or Telegram) where the task was created.
+
+## Where a notice lands
+
+A scheduled task's notice goes to **ntfy** when ntfy is enabled, ahead of Signal, Telegram, Discord, Slack and WhatsApp (and the terminal, last). ntfy is a doorbell rather than a chat — one HTTP request to `<NTFY_URL>/<topic>`, the phone shows a notification, nothing is read back — which is what an unattended notice wants: it does not need a conversation to land in, and it should not appear in the middle of one. The chat channels keep carrying conversations. With ntfy off, notices keep going to the channel the task was created from.
 ## Time zones and overlap
 
 Use a timezone for recurring work, for example: “Every weekday at 9am in
