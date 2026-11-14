@@ -1,11 +1,18 @@
 #!/usr/bin/env node
-const { execSync } = require('child_process');
-const { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } = require('fs');
-const { join, resolve } = require('path');
+const { execSync, execFileSync } = require('child_process');
+const { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, writeFileSync, mkdtempSync } = require('fs');
+const assert = require('node:assert/strict');
+const { dirname, join, resolve } = require('path');
 const { tmpdir } = require('os');
+const { packageVerificationEnv } = require('./package-verification-env.cjs');
 
 const ROOT = resolve(__dirname, '..');
-const TMP = join(tmpdir(), `mercury-pv-${process.pid}`);
+// Single source of truth for the packaged skill count. The slug list itself is
+// derived from the directory below; this constant exists only so an accidental
+// stray directory or a forgotten skill cannot pass silently.
+const EXPECTED_SKILLS = 9;
+const TMP = mkdtempSync(join(tmpdir(), 'mercury-pv-'));
+let tarballPath;
 
 let failed = false;
 
@@ -19,23 +26,33 @@ function check(label, fn) {
   }
 }
 
+try {
 console.log('\u263F Mercury Agent \u2014 Pack & Verify\n');
 console.log('1/5 Building...');
 execSync('npm run build', { cwd: ROOT, stdio: 'inherit' });
 
 console.log('\n2/5 Packing tarball...');
-if (existsSync(TMP)) rmSync(TMP, { recursive: true, force: true });
-mkdirSync(TMP, { recursive: true });
-
-const tarball = execSync('npm pack', { cwd: ROOT, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim().split('\n').pop();
-const tarballPath = join(ROOT, tarball);
+// execFileSync cannot execute .cmd files on Windows. Use npm's JavaScript
+// entry point there instead of a shell, preserving paths with spaces as data.
+const npmCli = process.platform === 'win32'
+  ? (process.env.npm_execpath || join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'))
+  : null;
+if (npmCli && !existsSync(npmCli)) throw new Error(`npm CLI not found: ${npmCli}`);
+const npm = npmCli ? process.execPath : 'npm';
+const npmArgs = npmCli ? [npmCli] : [];
+const tarball = JSON.parse(execFileSync(npm, [...npmArgs, 'pack', '--json', '--pack-destination', TMP], {
+  cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+}))[0].filename;
+tarballPath = join(TMP, tarball);
 console.log(`  Tarball: ${tarball}`);
 
 console.log('\n3/5 Installing from tarball...');
 const installDir = join(TMP, 'install');
 mkdirSync(installDir, { recursive: true });
 writeFileSync(join(installDir, 'package.json'), '{}');
-execSync(`npm install "${tarballPath}" --omit=dev --no-save`, { cwd: installDir, stdio: 'pipe' });
+execFileSync(npm, [...npmArgs, 'install', tarballPath, '--omit=dev', '--no-save', '--no-audit', '--no-fund'], {
+  cwd: installDir, stdio: 'pipe', timeout: 300_000,
+});
 
 const modDir = join(installDir, 'node_modules', '@cosmicstack', 'mercury-agent');
 
@@ -115,13 +132,55 @@ check('engines requires >=22', () => {
   }
 });
 
-console.log('\n5/5 Cleaning up...');
-try { rmSync(TMP, { recursive: true, force: true }); } catch {}
-try { rmSync(tarballPath, { force: true }); } catch {}
+// Exercise the installed package, not the checkout. A fresh home prevents
+// accidental access to the owner's daemon, plugin state or skill index.
+const cliEnv = packageVerificationEnv(TMP);
+function cli(...args) {
+  return execFileSync(process.execPath, [join(modDir, 'dist', 'index.js'), ...args], {
+    cwd: installDir, env: cliEnv, encoding: 'utf8', timeout: 60_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+check('all nine packaged skills install and reload byte-identically via the CLI', () => {
+  const sourceRoot = join(ROOT, 'skills', 'mercury-adapted');
+  const shippedRoot = join(modDir, 'skills', 'mercury-adapted');
+  for (const name of ['README.md', 'LICENSE']) {
+    assert.equal(readFileSync(join(shippedRoot, name), 'utf8'), readFileSync(join(sourceRoot, name), 'utf8'));
+  }
+  const slugs = readdirSync(sourceRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+  assert.equal(slugs.length, EXPECTED_SKILLS);
+  assert.deepEqual(readdirSync(shippedRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort(), slugs);
+  const ids = [];
+  for (const slug of slugs) {
+    const source = readFileSync(join(sourceRoot, slug, 'SKILL.md'), 'utf8');
+    const file = join(shippedRoot, slug, 'SKILL.md');
+    assert.equal(readFileSync(file, 'utf8'), source, `packaged bytes: ${slug}`);
+    const installed = JSON.parse(cli('skills', '--json', 'install', '--from', file, '-y'));
+    assert.equal(installed.ok, true, slug);
+    assert.equal(typeof installed.id, 'string', slug);
+    ids.push(installed.id);
+    assert.equal(cli('skills', 'view', installed.id, '--raw'), source, `reloaded bytes: ${slug}`);
+  }
+  const listed = JSON.parse(cli('skills', '--json', 'list'));
+  assert.deepEqual(listed.skills.map((skill) => skill.id).sort(), ids.sort());
+  assert.equal(new Set(ids).size, EXPECTED_SKILLS);
+});
+
+} catch (err) {
+  console.error(`  \u2717 Package verification failed: ${err.stack || err.message}`);
+  failed = true;
+} finally {
+  console.log('\n5/5 Cleaning up...');
+  try { rmSync(TMP, { recursive: true, force: true }); } catch (err) {
+    console.error(`Could not clean ${TMP}: ${err.message}`);
+    failed = true;
+  }
+}
 
 if (failed) {
   console.log('\n\u2717 Verification FAILED \u2014 do not publish!\n');
-  process.exit(1);
+  process.exitCode = 1;
 } else {
-  console.log('\n\u2713 All checks passed \u2014 safe to publish.\n');
+  console.log('\n\u2713 Package checks passed (credentials and release approval are separate).\n');
 }

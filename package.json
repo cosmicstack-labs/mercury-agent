@@ -63,7 +63,8 @@
   },
   "files": [
     "dist",
-    "src/web/static"
+    "src/web/static",
+    "skills/mercury-adapted"
   ],
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.71",
