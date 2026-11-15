@@ -304,6 +304,8 @@ export class BotManager {
         }
       } catch { /* a journal we can't read starts the day at zero */ }
     }
+    const fleetCap = this.config.bots?.fleetDailyTokenBudget ?? 0;
+    if (fleetCap > 0 && this.fleetDailyTokens.tokens >= fleetCap) this.fleetPausedDay = today;
     // Resume work a crashed predecessor left behind: pending jobs (and
     // expired-lease claimed jobs) re-enter the in-memory queues. Durable
     // enqueue happens before any ack, so nothing was lost (§2.6).
