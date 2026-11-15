@@ -36,6 +36,7 @@ export async function openUrl(
     execFileAsync(command, args, { windowsHide: true, timeout: 10_000 }),
   openers: UrlOpener[] = getUrlOpeners(url),
 ): Promise<boolean> {
+  if (!isWebUrl(url)) return false;
   for (const opener of openers) {
     try {
       await run(opener.command, opener.args);
@@ -45,4 +46,13 @@ export async function openUrl(
     }
   }
   return false;
+}
+
+function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
 }

@@ -24,4 +24,23 @@ describe('URL opening', () => {
     const alwaysFails = vi.fn().mockRejectedValue(new Error('headless'));
     expect(await openUrl('https://example.com', alwaysFails, openers)).toBe(false);
   });
+
+  it.each([
+    'file:///C:/Windows/System32/calc.exe',
+    'C:\\Windows\\System32\\calc.exe',
+    '/usr/bin/xcalc',
+    'javascript:alert(1)',
+    'ms-settings:privacy',
+    'not a url',
+  ])('opens nothing for %s', async (url) => {
+    const run = vi.fn().mockResolvedValue(undefined);
+    expect(await openUrl(url, run, getUrlOpeners(url, {}, 'win32'))).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it.each(['http://127.0.0.1:5000/callback', 'HTTPS://accounts.google.com/o/oauth2/auth?a=1&b=2'])('opens %s', async (url) => {
+    const run = vi.fn().mockResolvedValue(undefined);
+    expect(await openUrl(url, run, getUrlOpeners(url, {}, 'win32'))).toBe(true);
+    expect(run).toHaveBeenCalledWith('rundll32', ['url.dll,FileProtocolHandler', url]);
+  });
 });
