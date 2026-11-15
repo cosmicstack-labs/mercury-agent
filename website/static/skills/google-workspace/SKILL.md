@@ -41,7 +41,7 @@ Put JSON in double quotes and escape the inner quotes. This works in every shell
 gws gmail users messages list --params "{\"userId\":\"me\",\"q\":\"is:unread\",\"maxResults\":20}"
 ```
 
-Avoid `$`, backticks and `~` in gws commands: Mercury can't read them safely, so the command always asks the owner.
+Run gws directly. Avoid `$`, backticks and `~` in gws commands, and don't run gws through a variable, a copy, `xargs` or another program: Mercury can't read those, so the command always asks the owner.
 
 ## Read
 

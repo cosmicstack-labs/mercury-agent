@@ -122,7 +122,7 @@ When you connect [Google Workspace](../integrations/google-workspace), Mercury r
 | Send, share, upload, delete | `gws gmail +send`, Drive sharing, `--upload` | **Always asks, even in Allow All** and after **Always**. Refused in scheduled tasks and for bots |
 | Sign-in | `gws auth export`, `gws auth login` | **Refused** in every mode. Signing in is `mercury google connect`'s job |
 
-A gws command Mercury can't read counts as send, share, upload or delete. Mercury's file and shell tools also refuse gws's own sign-in files (`~/.config/gws`) and the gws program Mercury installed (`~/.mercury/gws-bin`) in every mode.
+A gws command Mercury can't read counts as send, share, upload or delete. So does any command that names gws without running it directly: through a variable, a copy, `xargs` or another program, or a plain mention such as `grep gws notes.txt`. Lookups such as `which gws` and `command -v gws` don't. Mercury's file and shell tools also refuse gws's own sign-in files (`~/.config/gws`) and the gws program Mercury installed (`~/.mercury/gws-bin`) in every mode.
 
 ## File System Scopes
 

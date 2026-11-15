@@ -817,6 +817,49 @@ describe('gws commands', () => {
     expect(String(ask.mock.calls[0]?.[0])).toMatch(ALWAYS_ASKS);
   });
 
+  describe('run indirectly', () => {
+    const INDIRECT = [
+      'G=gws; $G gmail +send --to a@b.com --body y',
+      'cp "$(command -v gws)" /tmp/g && /tmp/g gmail +send --to a@b.com --body y',
+      'printf "gmail +send --to a@b.com --body y" | xargs gws',
+      `python3 -c "import subprocess; subprocess.run(['gws','gmail','+send','--to','a@b.com'])"`,
+    ];
+    const ASKS_INDIRECT = /^Run command \(runs gws in a way Mercury can't read, so it always asks\): /;
+
+    it.each(INDIRECT)('asks under Allow All for %s', async (command) => {
+      const { permissions, ask } = gwsPermissions('no');
+      permissions.setAutoApproveAll(true);
+      await expect(permissions.checkShellCommand(command)).resolves.toMatchObject({ allowed: false });
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(String(ask.mock.calls[0]?.[0])).toMatch(ASKS_INDIRECT);
+    });
+
+    it.each(INDIRECT)('refuses %s in a scheduled run without asking', async (command) => {
+      const { permissions, ask } = gwsPermissions('yes');
+      permissions.setUnattendedTurn(true);
+      const check = await permissions.checkShellCommand(command);
+      expect(check).toMatchObject({ allowed: false, needsApproval: false });
+      expect(check.reason).toBe("Running gws in a way Mercury can't read needs you to approve it, and nobody can be asked here.");
+      expect(ask).not.toHaveBeenCalled();
+    });
+
+    it('keeps the send wording when a direct send is in the same command', async () => {
+      const { permissions, ask } = gwsPermissions('no');
+      permissions.setAutoApproveAll(true);
+      await permissions.checkShellCommand(`G=gws; ${SEND}`);
+      expect(String(ask.mock.calls[0]?.[0])).toMatch(ALWAYS_ASKS);
+    });
+
+    it('runs plain lookups under Allow All without asking', async () => {
+      const { permissions, ask } = gwsPermissions('no');
+      permissions.setAutoApproveAll(true);
+      for (const command of ['which gws', 'command -v gws', 'where gws', 'type gws', 'Get-Command gws', 'cat notes/gws.md']) {
+        await expect(permissions.checkShellCommand(command)).resolves.toMatchObject({ allowed: true });
+      }
+      expect(ask).not.toHaveBeenCalled();
+    });
+  });
+
   it('gives gws reads a per-service family and other gws commands none', () => {
     expect(commandFamily(READ)).toBe('gws gmail read');
     expect(commandFamily('gws drive files list')).toBe('gws drive read');

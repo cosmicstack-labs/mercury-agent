@@ -1086,11 +1086,15 @@ export class PermissionManager {
     if (setsGwsCredentials(trimmed) || gwsCommands.some((c) => c.kind === 'credentials')) {
       return { allowed: false, reason: 'Blocked: gws sign-in commands are for the owner. Run it yourself in a terminal.', needsApproval: false };
     }
-    if (gwsCommands.some((c) => c.kind === 'sensitive')) {
+    const sensitiveGws = gwsCommands.filter((c) => c.kind === 'sensitive');
+    if (sensitiveGws.length > 0) {
+      const indirect = sensitiveGws.every((c) => c.indirect);
       if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed || ctx.unattended) {
-        return { allowed: false, reason: 'Sending, sharing, uploading or deleting in Google Workspace needs you to approve it, and nobody can be asked here.', needsApproval: false };
+        const what = indirect ? "Running gws in a way Mercury can't read" : 'Sending, sharing, uploading or deleting in Google Workspace';
+        return { allowed: false, reason: `${what} needs you to approve it, and nobody can be asked here.`, needsApproval: false };
       }
-      const answer = await this.askOwner(`Run command (sends, shares, uploads or deletes in Google Workspace, so it always asks): ${trimmed}`);
+      const why = indirect ? "runs gws in a way Mercury can't read" : 'sends, shares, uploads or deletes in Google Workspace';
+      const answer = await this.askOwner(`Run command (${why}, so it always asks): ${trimmed}`);
       return answer === 'yes' || answer === 'always'
         ? { allowed: true, needsApproval: false, lane: 'shell' }
         : { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };

@@ -7,6 +7,7 @@ export interface GwsCommand {
   service?: string;
   target: string;
   reason: string;
+  indirect?: boolean;
 }
 
 interface Word {
@@ -22,15 +23,10 @@ const RUNNER_FLAGS = new Set(['-y', '--yes', '-q', '--quiet', '--silent', '--pre
 const GWS_PACKAGE = /^@googleworkspace\/cli(?:@\S+)?$/i;
 const GWS_PACKAGE_MENTION = /@googleworkspace\/cli/i;
 
-const OPEN_SERVICES = ['drive', 'sheets', 'gmail', 'calendar', 'docs', 'slides', 'tasks', 'people', 'chat', 'classroom', 'forms', 'keep', 'meet', 'events', 'modelarmor', 'workflow', 'wf', 'script'];
-const GUARDED_SERVICES = ['admin', 'admin-reports', 'reports', 'groupssettings', 'cloudidentity', 'licensing', 'reseller'];
-const OPEN_SERVICE_SET = new Set(OPEN_SERVICES);
+const OPEN_SERVICE_SET = new Set(['drive', 'sheets', 'gmail', 'calendar', 'docs', 'slides', 'tasks', 'people', 'chat', 'classroom', 'forms', 'keep', 'meet', 'events', 'modelarmor', 'workflow', 'wf', 'script']);
 
-const SERVICE_WORDS = [...OPEN_SERVICES, ...GUARDED_SERVICES].join('|');
-const GWS_MENTION = new RegExp(
-  String.raw`(?:^|[\s"'\x60(=;|&/\\])gws(?:\.exe|\.cmd)?["']?\s+["']?(?:\+[a-z]|--(?:dry-run|format|sanitize|api-version|help|version)\b|(?:auth|schema|generate-skills)(?=[\s"']|$)|[a-z][a-z0-9-]*:[a-z0-9_.]+|(?:${SERVICE_WORDS})["']?\s+["']?(?:\+[a-z]|[a-z][a-z0-9_]*["']?\s+["']?[a-z]))`,
-  'i',
-);
+const GWS_WORD = /(?<![\w.-])gws(?:\.exe|\.cmd)?(?![\w-]|\.\w)/i;
+const GWS_LOOKUP = /^(?:which(?:\s+-a)?|where(?:\.exe)?|whereis|type(?:\s+-[apPt]+)?|get-command|gcm)\s+["']?gws(?:\.exe|\.cmd)?["']?$/i;
 
 const GLOBAL_VALUE_FLAGS = ['--format', '--sanitize', '--api-version'];
 const HELP = new Set(['--help', '-h']);
@@ -67,9 +63,11 @@ export function setsGwsCredentials(command: string): boolean {
 
 export function classifyGws(segment: string): GwsCommand | null {
   const words = splitWords(segment);
-  const start = words ? gwsArgsStart(words) : -1;
-  if (!words || start < 0) {
-    return GWS_PACKAGE_MENTION.test(segment) || GWS_MENTION.test(segment) ? unreadable() : null;
+  if (!words) return GWS_PACKAGE_MENTION.test(segment) || GWS_WORD.test(segment) ? unreadable() : null;
+  const start = gwsArgsStart(words);
+  if (start < 0) {
+    if (GWS_PACKAGE_MENTION.test(segment)) return indirect();
+    return GWS_WORD.test(segment) && !GWS_LOOKUP.test(segment.trim()) ? indirect() : null;
   }
   const args = argTokens(words.slice(start));
   return args ? classifyArgs(args) : unreadable();
@@ -282,4 +280,8 @@ function sensitive(service: string | undefined, target: string, reason: string):
 
 function unreadable(reason = 'Mercury could not read this gws command'): GwsCommand {
   return { kind: 'sensitive', target: 'gws', reason };
+}
+
+function indirect(): GwsCommand {
+  return { kind: 'sensitive', target: 'gws', reason: "runs gws in a way Mercury can't read (through a variable, a copy, xargs or another program)", indirect: true };
 }

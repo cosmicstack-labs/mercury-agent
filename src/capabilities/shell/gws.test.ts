@@ -29,17 +29,56 @@ describe('classifyGws: recognising gws', () => {
 
   it.each([
     'ls',
-    'echo gws',
-    'grep gws notes.md',
-    'grep -rn "gws" docs',
-    'rg gws docs website',
     'gwsx drive files list',
     'my-gws drive files list',
+    'cat notes/gws.md',
+    'ls ~/projects/gws-tools',
+    'GWS_DEBUG=1 ls',
     'npm install -g some-cli',
     'npx prettier --write .',
     'pnpm install',
+    'which gws',
+    'which -a gws',
+    'where gws',
+    'where.exe gws',
+    'whereis gws',
+    'type gws',
+    'type -a gws',
+    'Get-Command gws',
+    'gcm gws.exe',
   ])('ignores %s', (command) => {
     expect(classifyGws(command)).toBeNull();
+  });
+
+  it('reads command -v gws as a lookup', () => {
+    expect(kindOf('command -v gws')).toBe('read');
+  });
+});
+
+describe('classifyGws: gws run indirectly', () => {
+  it.each([
+    'G=gws',
+    'cp "$(command -v gws)" /tmp/g',
+    'xargs gws',
+    `python3 -c "import subprocess; subprocess.run(['gws','gmail','+send','--to','a@b.com'])"`,
+    'ln -s /usr/local/bin/gws ~/bin/g',
+    "$g = 'gws.exe'",
+    `Start-Process gws -ArgumentList 'gmail','+send'`,
+    'iex "gws gmail +send --to a@b.com"',
+    'echo gws',
+    'grep gws notes.md',
+    'grep -rn "gws" docs',
+    'npm exec @googleworkspace/cli -- drive files list',
+  ])('%s is sensitive', (command) => {
+    expect(classifyGws(command)).toMatchObject({ kind: 'sensitive', target: 'gws', indirect: true });
+  });
+
+  it('says why it asks', () => {
+    expect(classifyGws('xargs gws')?.reason).toBe("runs gws in a way Mercury can't read (through a variable, a copy, xargs or another program)");
+  });
+
+  it('keeps a direct gws call with broken quotes unreadable, not indirect', () => {
+    expect(classifyGws('gws drive files list --params "unterminated')).toEqual({ kind: 'sensitive', target: 'gws', reason: 'Mercury could not read this gws command' });
   });
 });
 
