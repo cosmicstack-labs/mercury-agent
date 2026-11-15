@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { Command } from 'commander';
+import { GOOGLE_WORKSPACE_SKILL } from './skill.js';
 import {
+  installGoogleSkill,
   readGoogleClientFile,
   registerGoogleCommand,
   runGoogleConnect,
@@ -216,13 +218,33 @@ describe('mercury google connect', () => {
     expect(h.deps.installSkill).not.toHaveBeenCalled();
   });
 
-  it('shows the install command when the skill download fails', async () => {
-    const h = harness({ installSkill: vi.fn(async () => { throw new Error('offline'); }) });
+  it('says why the skill could not be installed, and still connects', async () => {
+    const h = harness({ installSkill: vi.fn(async () => { throw new Error('disk full'); }) });
     const run = runGoogleConnect({}, h.deps);
     await settle();
     h.finish();
     await expect(run).resolves.toBe(0);
-    expect(h.text()).toContain('mercury skills install --from https://mercuryagent.sh/skills/google-workspace/SKILL.md');
+    expect(h.text()).toContain("Couldn't install Mercury's skill: disk full");
+  });
+});
+
+describe("installing Mercury's google-workspace skill", () => {
+  const previous = process.env.MERCURY_SKILLS_INSTALL_ROOT;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (previous === undefined) delete process.env.MERCURY_SKILLS_INSTALL_ROOT;
+    else process.env.MERCURY_SKILLS_INSTALL_ROOT = previous;
+  });
+
+  it('installs the copy inside Mercury without the network, once', async () => {
+    const fetch = vi.fn(async () => { throw new Error('offline'); });
+    vi.stubGlobal('fetch', fetch);
+    process.env.MERCURY_SKILLS_INSTALL_ROOT = join(work, 'skills');
+    await expect(installGoogleSkill()).resolves.toBe('installed');
+    expect(readFileSync(join(work, 'skills', 'google-workspace', 'SKILL.md'), 'utf8')).toBe(GOOGLE_WORKSPACE_SKILL);
+    await expect(installGoogleSkill()).resolves.toBe('present');
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

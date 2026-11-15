@@ -135,12 +135,13 @@ describe('/google connect in a chat', () => {
     expect(h.deps.installSkill).not.toHaveBeenCalled();
   });
 
-  it('gives the install command when the skill download fails', async () => {
-    const h = harness({ installSkill: vi.fn(async () => { throw new Error('offline'); }) });
+  it('says why the skill could not be installed, and still connects', async () => {
+    const h = harness({ installSkill: vi.fn(async () => { throw new Error('disk full'); }) });
     await h.run('/google connect');
     h.finish();
     await tick();
-    expect(h.replies[1]).toContain('/skills install https://mercuryagent.sh/skills/google-workspace/SKILL.md');
+    expect(h.replies[1]).toContain('✓ Connected as');
+    expect(h.replies[1]).toContain("Couldn't install Mercury's skill: disk full");
   });
 });
 

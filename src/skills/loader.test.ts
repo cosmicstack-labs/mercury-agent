@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { classifyGws } from '../capabilities/shell/gws.js';
+import { GOOGLE_WORKSPACE_SKILL } from '../google/skill.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SkillLoader } from './loader.js';
@@ -87,7 +87,7 @@ describe('SkillLoader extra skill roots (per-bot libraries)', () => {
 });
 
 describe("Mercury's google-workspace skill", () => {
-  const content = readFileSync(fileURLToPath(new URL('../../website/static/skills/google-workspace/SKILL.md', import.meta.url)), 'utf-8').replace(/\r\n/g, '\n');
+  const content = GOOGLE_WORKSPACE_SKILL;
   let root: string;
 
   beforeEach(() => {

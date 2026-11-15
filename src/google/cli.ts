@@ -20,8 +20,8 @@ import {
   submitGoogleRedirect,
   type GoogleStatus,
 } from './connect.js';
+import { GOOGLE_WORKSPACE_SKILL } from './skill.js';
 
-export const GOOGLE_SKILL_URL = 'https://mercuryagent.sh/skills/google-workspace/SKILL.md';
 const GOOGLE_APP_DOCS = 'https://mercuryagent.sh/docs/integrations/google-workspace#before-you-start-your-own-google-app';
 
 export interface GoogleCliDeps {
@@ -59,7 +59,7 @@ export async function installGoogleSkill(): Promise<'installed' | 'present'> {
   const root = process.env.MERCURY_SKILLS_INSTALL_ROOT || join(getMercuryHome(), 'skills');
   const loader = new SkillLoader(root, { seedDefaults: false });
   if (loader.discover().some((skill) => skill.name === 'google-workspace')) return 'present';
-  await loader.installFromUrl(GOOGLE_SKILL_URL);
+  loader.installFromContent(GOOGLE_WORKSPACE_SKILL);
   return 'installed';
 }
 
@@ -235,8 +235,8 @@ export async function runGoogleConnect(opts: GoogleConnectOptions, deps: GoogleC
     try {
       const skill = await deps.installSkill();
       say(chalk.green(skill === 'installed' ? "✓ Installed Mercury's google-workspace skill." : "✓ Mercury's google-workspace skill is already installed."));
-    } catch {
-      say(`• Couldn't download Mercury's skill. Install it with: mercury skills install --from ${GOOGLE_SKILL_URL}`);
+    } catch (err) {
+      say(`• Couldn't install Mercury's skill: ${err instanceof Error ? err.message : String(err)}`);
     }
     say('');
     say('  Ask Mercury: "Summarize my unread email".');

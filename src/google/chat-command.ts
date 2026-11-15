@@ -9,7 +9,7 @@ import {
   startGoogleLogin,
   submitGoogleRedirect,
 } from './connect.js';
-import { GOOGLE_SKILL_URL, installGoogleSkill } from './cli.js';
+import { installGoogleSkill } from './cli.js';
 import { GOOGLE_PERMISSIONS_URL, accessLabel, disconnectGoogle, googleOverview } from './overview.js';
 
 export interface GoogleChatChannel {
@@ -133,8 +133,8 @@ async function connect(write: boolean, reply: (text: string) => Promise<void>, d
       let skill: string;
       try {
         skill = (await deps.installSkill()) === 'installed' ? "Installed Mercury's google-workspace skill." : "Mercury's google-workspace skill is already installed.";
-      } catch {
-        skill = `Couldn't download Mercury's skill. Install it with \`/skills install ${GOOGLE_SKILL_URL}\`.`;
+      } catch (err) {
+        skill = `Couldn't install Mercury's skill: ${err instanceof Error ? err.message : String(err)}`;
       }
       await reply(`✓ Connected as ${result.account ?? 'your Google account'} (${granted}). ${skill}\nTry: "Summarize my unread email".`);
     }, async (err: Error) => {
