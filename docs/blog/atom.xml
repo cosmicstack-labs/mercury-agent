@@ -2,12 +2,27 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://mercuryagent.sh/blog</id>
     <title>Mercury Blog</title>
-    <updated>2026-11-05T00:00:00.000Z</updated>
+    <updated>2026-11-11T00:00:00.000Z</updated>
     <generator>https://github.com/jpmonette/feed</generator>
     <link rel="alternate" href="https://mercuryagent.sh/blog"/>
     <subtitle>News, engineering notes and field reports from the team building Mercury.</subtitle>
     <icon>https://mercuryagent.sh/img/logo-light.png</icon>
     <rights>© 2026 Cosmic Stack</rights>
+    <entry>
+        <title type="html"><![CDATA[What Is a Personal AI Assistant? 10 Real Tasks in 2026]]></title>
+        <id>https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant</id>
+        <link href="https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant"/>
+        <updated>2026-11-11T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[An AI personal assistant acts for one person across their accounts, files, apps and connected services. Here is what it is, ten tasks it can handle, and the permissions each one needs.]]></summary>
+        <author>
+            <name>Tashir Khan</name>
+            <uri>https://github.com/tashiriskhan</uri>
+        </author>
+        <category label="Product" term="Product"/>
+        <category label="Security" term="Security"/>
+        <category label="AI Agents" term="AI Agents"/>
+        <category label="Self-Hosted AI" term="Self-Hosted AI"/>
+    </entry>
     <entry>
         <title type="html"><![CDATA[9 Safest, Most Secure, and Permission-Aware AI Agents for Real-World Tasks]]></title>
         <id>https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work</id>

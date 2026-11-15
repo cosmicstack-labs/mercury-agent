@@ -1,5 +1,6 @@
 import { streamText, stepCountIs, tool, zodSchema } from 'ai';
-import { noteTurnModel, runWithExposure } from '../security/provenance.js';
+import { exposure, noteExposure, noteTurnModel, runWithExposure, type Exposure, type ExposureSource } from '../security/provenance.js';
+import { scanForInjection } from '../security/injection-scan.js';
 import { summarizeSilentTurn } from '../core/silent-turn.js';
 import { z } from 'zod';
 import { withAttachments } from '../core/attachments.js';
@@ -23,6 +24,35 @@ import type { BotManifest, BotTrigger } from './types.js';
 export interface BotTurnMail {
   from: string;
   content: string;
+  /** The sender had read untrusted content when it sent this (ADR-044): its record travels with the mail. */
+  taint?: BotTaint;
+}
+
+/**
+ * What a bot (or the owner's turn) had read when it handed work on: the
+ * labels of its untrusted sources and whether hidden instructions were found.
+ * Carried on mail and delegated jobs so an injection can't be laundered by
+ * passing it to a bot that starts clean.
+ */
+export interface BotTaint {
+  sources: string[];
+  suspicious: boolean;
+}
+
+/** The current turn's exposure as a taint to hand on, or undefined when it read nothing untrusted. */
+export function taintOf(e: Exposure = exposure()): BotTaint | undefined {
+  if (!e.sources.length && !e.suspicious) return undefined;
+  return { sources: e.sources.map((s) => s.label).slice(0, 6), suspicious: e.suspicious };
+}
+
+/** Record mail on the receiving turn: the sender's taint, and hidden instructions in the mail itself. */
+function noteMailExposure(m: BotTurnMail): void {
+  const scan = scanForInjection(m.content);
+  if (!m.taint && !scan.suspicious) return;
+  const read = m.taint?.sources.length ? ` (it had read: ${m.taint.sources.slice(0, 3).join(', ')})` : '';
+  const source: ExposureSource = { label: `a message from bot ${m.from}${read}` };
+  const findings = [...scan.findings, ...(m.taint?.suspicious ? [{ where: 'text' as const, excerpt: `${m.from} had read content with instructions to an AI` }] : [])];
+  noteExposure(findings.length ? { ...source, findings } : source);
 }
 
 /**
@@ -113,6 +143,10 @@ export interface BotTurnInput {
   /** Durable job id — correlates activity events with the run. */
   jobId?: string;
   prompt: string;
+  /** The bot that sent this work (delegated tasks). */
+  fromBot?: string;
+  /** What the sender had read when it handed this work on (ADR-044). */
+  taint?: BotTaint;
   /**
    * The conversation of an interrupted run of this job (a retry after a
    * provider error, a step-budget pause, a restart mid-run): the turn picks up
@@ -174,6 +208,8 @@ export interface BotToolTraceEntry {
 
 export interface BotTurnOutput {
   status: 'completed' | 'failed' | 'halted' | 'paused';
+  /** What this run read that was untrusted, to carry on with any result it hands to another bot. */
+  taint?: BotTaint;
   output: string;
   tokensIn: number;
   tokensOut: number;
@@ -256,7 +292,11 @@ export function turnCaption(prompt: string, files: ChannelAttachment[]): string 
  * (ADR-044): what one bot reads never gates another, or the main agent.
  */
 export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
-  return runWithExposure({ sources: [], suspicious: false }, () => runBotTurnInScope(input));
+  // Work handed on by a tainted bot starts tainted (ADR-044): never clean.
+  const start: Exposure = input.taint
+    ? { sources: [{ label: `work handed on by ${input.fromBot ?? 'another bot'} (it had read: ${input.taint.sources.slice(0, 3).join(', ') || 'outside content'})`, ...(input.taint.suspicious ? { findings: [{ where: 'text' as const, excerpt: 'the sender had read content with instructions to an AI' }] } : {}) }], suspicious: input.taint.suspicious }
+    : { sources: [], suspicious: false };
+  return runWithExposure(start, () => runBotTurnInScope(input));
 }
 
 async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
@@ -283,6 +323,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
     messages.push(...input.resume!, { role: 'user', content: RESUME_NOTE });
   }
   for (const m of resuming ? [] : input.mail) {
+    noteMailExposure(m);
     messages.push({ role: 'user', content: `Message from 🤖 ${m.from}:\n\n${m.content}` });
   }
   const files = resuming ? [] : input.attachments ?? [];
@@ -366,6 +407,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
   };
 
   const baseOutput = () => ({
+    ...(taintOf() ? { taint: taintOf() } : {}),
     tokensIn, tokensOut, toolsUsed: [...toolsUsed], startedAt, steps: stepIndex, toolCalls: trace.length,
     peakInputTokens, deliverables: [...deliveries], outcomeNudged, trace: [...trace], ...(report ? { report } : {}),
   });
@@ -522,6 +564,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
         const fresh = input.pollMail();
         if (fresh.length > 0) {
           for (const m of fresh) {
+            noteMailExposure(m);
             messages.push({ role: 'user', content: `Message from 🤖 ${m.from}:\n\n${m.content}` });
           }
           continue;

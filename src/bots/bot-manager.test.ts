@@ -961,7 +961,8 @@ describe('Bot fleets (lead + crew)', () => {
     expect(dispatch.accepted).toBe(true);
     await vi.waitFor(() => {
       // ADR-021: the result arrives as a typed batch digest from the fleet, not as crew mail.
-      expect(sendSpy).toHaveBeenCalledWith('ceo', 'fleet', expect.stringContaining('MARKET REPORT'));
+      // null: the crew's run read nothing untrusted, so the digest carries no taint (ADR-044).
+      expect(sendSpy).toHaveBeenCalledWith('ceo', 'fleet', expect.stringContaining('MARKET REPORT'), null);
     });
     sendSpy.mockRestore();
   });

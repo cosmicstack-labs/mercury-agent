@@ -204,6 +204,30 @@ maybe_update_path() {
   PATH_UPDATED=1
 }
 
+# Keep backups until both artifacts have been promoted. A failed rollback leaves
+# its recovery directory intact rather than deleting the only working copy.
+cleanup_install() {
+  rollback_failed=0
+  if [ -n "$transaction_dir" ] && [ "$promotion_started" = 1 ] && [ "$promotion_complete" = 0 ]; then
+    for part in binary web; do
+      if [ "$part" = binary ]; then target="$bin_path"; candidate="$candidate_dir/$BIN_NAME";
+      else target="$bin_dir/web"; candidate="$candidate_dir/web"; fi
+      backup="$transaction_dir/previous-$part"
+      if [ -e "$backup" ] || [ -L "$backup" ]; then
+        if ! { rm -rf "$target" && mv "$backup" "$target"; }; then rollback_failed=1; fi
+      elif [ ! -e "$candidate" ]; then
+        rm -rf "$target" || rollback_failed=1
+      fi
+    done
+  fi
+  if [ "$rollback_failed" = 1 ]; then
+    err "Could not fully restore the previous installation. Recovery files: $transaction_dir"
+  elif [ -n "$transaction_dir" ]; then
+    rm -rf "$transaction_dir"
+  fi
+  rm -rf "$tmp_dir"
+}
+
 # ----- main ------------------------------------------------------------------
 
 main() {
@@ -253,7 +277,12 @@ Install the supported Node.js package instead:
   web_tmp="$tmp_dir/web.tar.gz"
   checksums_tmp="$tmp_dir/checksums.txt"
   stage_dir="$tmp_dir/stage"
-  trap 'rm -rf "$tmp_dir"' EXIT INT TERM
+  transaction_dir=''
+  promotion_started=0
+  promotion_complete=0
+  trap cleanup_install EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   checksum_url="${release_dir}/checksums.txt"
   info "Downloading checksums.txt ..."
@@ -303,29 +332,27 @@ Install the supported Node.js package instead:
   tar -xzf "$web_tmp" -C "$stage_dir" || die "Failed to extract web dashboard assets"
   [ -d "$stage_dir/web" ] || die "web.tar.gz does not contain the required web directory"
 
+  # Stage on the install filesystem (not a potentially noexec /tmp), with
+  # dashboard assets beside the executable just as in the final installation.
   mkdir -p "$bin_dir"
-  mv "$binary_tmp" "$bin_path"
-  chmod +x "$bin_path"
-  rm -rf "$bin_dir/web"
-  mv "$stage_dir/web" "$bin_dir/web"
-  info "Web dashboard assets installed"
+  transaction_dir=$(mktemp -d "$bin_dir/.mercury-install.XXXXXX")
+  candidate_dir="$transaction_dir/candidate"
+  mkdir -p "$candidate_dir"
+  candidate_bin="$candidate_dir/$BIN_NAME"
+  mv "$binary_tmp" "$candidate_bin"
+  chmod +x "$candidate_bin"
+  mv "$stage_dir/web" "$candidate_dir/web"
 
-  # macOS: strip the quarantine attribute so Gatekeeper doesn't bark on
-  # unsigned binaries downloaded via curl.
+  # macOS: strip quarantine before testing the staged executable.
   if [ "$os" = "macos" ] && have xattr; then
-    xattr -d com.apple.quarantine "$bin_path" 2>/dev/null || true
+    xattr -d com.apple.quarantine "$candidate_bin" 2>/dev/null || true
   fi
 
-  info "Installed to $bin_path"
-
-  # Post-install smoke: the binary must at least report its version. A
-  # wrong-arch download, a glibc mismatch or a quarantined binary fails
-  # here with a readable message instead of at first use.
-  # `if` form: under set -e a failing command substitution exits the script
-  # (the 1.3.4 installer died with "Illegal instruction" instead of switching builds).
-  if smoke_out=$("$bin_path" --version 2>&1); then smoke_status=0; else smoke_status=$?; fi
+  # Validate before touching the working installation, including CPU fallback.
+  # The if form retains the failure status under set -e.
+  if smoke_out=$("$candidate_bin" --version 2>&1); then smoke_status=0; else smoke_status=$?; fi
   # SIGILL (exit 132) on the default build = a CPU without AVX2 that
-  # /proc/cpuinfo did not reveal: switch to the baseline build in place.
+  # /proc/cpuinfo did not reveal: switch to the staged baseline build.
   if [ "$smoke_status" -ne 0 ] && [ "$os" = "linux" ] && [ "$arch" = "x64" ] && [ "$asset" != "mercury-linux-x64-baseline" ] \
      && { [ "$smoke_status" -eq 132 ] || printf '%s' "$smoke_out" | grep -qi 'illegal instruction'; } \
      && has_asset "$checksums_tmp" "mercury-linux-x64-baseline"; then
@@ -333,19 +360,32 @@ Install the supported Node.js package instead:
     asset="mercury-linux-x64-baseline"
     fetch_to "${release_dir}/${asset}" "$tmp_dir/$asset" || die "Failed to download ${release_dir}/${asset}"
     [ "$(sha256_file "$tmp_dir/$asset")" = "$(checksum_for "$checksums_tmp" "$asset")" ] || die "Checksum mismatch for $asset"
-    mv "$tmp_dir/$asset" "$bin_path"
-    chmod +x "$bin_path"
-    if smoke_out=$("$bin_path" --version 2>&1); then smoke_status=0; else smoke_status=$?; fi
+    mv "$tmp_dir/$asset" "$candidate_bin"
+    chmod +x "$candidate_bin"
+    if smoke_out=$("$candidate_bin" --version 2>&1); then smoke_status=0; else smoke_status=$?; fi
   fi
   if [ "$smoke_status" -eq 0 ]; then
     info "Smoke test passed: $BIN_NAME --version → $smoke_out"
   else
-    err "The installed binary failed to run: $bin_path --version"
+    err "The downloaded binary failed to run: $candidate_bin --version"
     printf '%s\n' "$smoke_out" | sed 's/^/    /' >&2
-    die "Mercury ${version_label} is installed but not runnable on ${os}-${arch}. Please report this at https://github.com/${REPO}/issues (include the lines above)."
+    die "Mercury ${version_label} cannot run on ${os}-${arch}; the previous installation was preserved. Please report this at https://github.com/${REPO}/issues (include the lines above)."
   fi
 
-  rm -rf "$tmp_dir"
+  promotion_started=1
+  if [ -e "$bin_path" ] || [ -L "$bin_path" ]; then
+    mv "$bin_path" "$transaction_dir/previous-binary"
+  fi
+  if [ -e "$bin_dir/web" ] || [ -L "$bin_dir/web" ]; then
+    mv "$bin_dir/web" "$transaction_dir/previous-web"
+  fi
+  mv "$candidate_bin" "$bin_path"
+  mv "$candidate_dir/web" "$bin_dir/web"
+  promotion_complete=1
+  info "Web dashboard assets installed"
+  info "Installed to $bin_path"
+
+  cleanup_install
   trap - EXIT INT TERM
 
   PATH_UPDATED=0

@@ -29,8 +29,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, label: macOS arm64, args: '--target aarch64-apple-darwin', rust: aarch64-apple-darwin }
-          - { os: macos-14, label: macOS x64, args: '--target x86_64-apple-darwin', rust: x86_64-apple-darwin }
+          - { os: macos-latest, label: macOS arm64, args: '--target aarch64-apple-darwin', rust: aarch64-apple-darwin }
+          - { os: macos-latest, label: macOS x64, args: '--target x86_64-apple-darwin', rust: x86_64-apple-darwin }
           - { os: ubuntu-22.04, label: Linux x64, args: '', rust: '' }
           - { os: windows-latest, label: Windows x64, args: '', rust: '' }
     runs-on: ${{ matrix.os }}

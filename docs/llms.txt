@@ -21,6 +21,7 @@ Install: `curl -fsSL https://mercuryagent.sh/install.sh | sh` (macOS/Linux), `ir
 
 ## Blog
 
+- [What Is a Personal AI Assistant? 10 Real Tasks in 2026](https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant.md) (2026-11-11): An AI personal assistant acts for one person across their accounts, files, apps and connected services. Here is what it is, ten tasks it can handle, and the permissions each one needs.
 - [9 Safest, Most Secure, and Permission-Aware AI Agents for Real-World Tasks](https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work.md) (2026-11-05): Grok, ChatGPT Work, Mercury, OpenClaw, Manus, Gemini agent for work, Devin, Claude Cowork and Comet compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.
 - [Mercury 1.5: Mercury Desktop](https://mercuryagent.sh/blog/mercury-1-5.md) (2026-11-03): Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.
 - [A tour of Mercury Desktop: one app, every Mercury you run](https://mercuryagent.sh/blog/mercury-desktop-tour.md) (2026-11-03): What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.

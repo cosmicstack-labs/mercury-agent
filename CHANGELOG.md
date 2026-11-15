@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Security: bots can't be steered by what they read
+- **Bots are never relaxed.** 1.5.2 stopped asking about planted instructions when a strong model was in use, because large models resist them. That also applied to bots, which have nobody watching. A bot on a strong model that read a poisoned file or page could schedule runs, save memory or message the fleet. Bots and scheduled runs now keep the full protection, whatever the model; it's relaxed only in a chat you're in.
+- **A bot's own tools are guarded too.** They were added after the protection and were never checked.
+  - **After a bot reads outside content:** scheduling its own runs (`bot_schedule`), creating or retiring bots (`bot_spawn`, `bot_retire`) need your yes.
+  - **Once hidden instructions are found:** messaging or delegating to the fleet (`bot_send`, `fleet_tasks`, `fleet_delegate`, `fleet_pipeline`), writing its standing notes (`bot_state`) and delivering files (`bot_deliver`) need your yes too.
+
+  Plain web research doesn't ask, so fleets keep working.
+- **Bots ask instead of failing.** The question comes to the Needs-you card in Mercury Desktop and to your phone. No answer within the bot's wait time (10 minutes by default) is a no. These questions offer only "Allow once" or "Deny".
+- **No laundering across the fleet.** Work handed from one bot to another used to start clean. Now mail, delegated tasks, results and batch digests carry what the sender had read, including "hidden instructions found". Hidden instructions inside the mail itself are caught as well.
+
 ### Google Workspace
 - **Connect Gmail, Drive and Docs with `mercury google connect`.** It installs Google's `gws` tool if needed (gws 0.22.5, checked against checksums built into Mercury), signs you in to your own Google account and installs Mercury's `google-workspace` skill. Read-only by default; `--write` adds drafts and document edits. `mercury google status` and `disconnect` go with it. Mercury doesn't bundle gws, so the package doesn't grow. See [Google Workspace](https://mercuryagent.sh/docs/integrations/google-workspace) and ADR-045.
 - **`/google connect` from any chat**, for the owner or an admin. Mercury sends the sign-in link; from a phone, send back the address the browser ends on. The Google app's secret is set up once on the computer and never goes through a chat.

@@ -47,6 +47,8 @@ const SOURCE_TOOLS = new Set([
 const CONTROL_TOOLS = new Set([
   'schedule_task', 'save_memory', 'correct_belief', 'confirm_belief', 'forget_memory',
   'create_skill', 'install_skill', 'approve_scope', 'approve_command',
+  // A bot scheduling its own runs, or making or retiring bots: persistence and escalation.
+  'bot_schedule', 'bot_spawn', 'bot_retire',
 ]);
 const OUTBOUND_TOOLS = new Set(['send_message', 'send_file', 'git_push', 'create_pr', 'create_issue', 'github_api']);
 
@@ -54,6 +56,9 @@ const OUTBOUND_TOOLS = new Set(['send_message', 'send_file', 'git_push', 'create
 const STRICT_TOOLS = new Set([
   'run_command', 'write_file', 'create_file', 'edit_file', 'delete_file', 'fetch_url', 'web_search',
   'delegate_task', 'dispatch_bot', 'git_commit', 'cd', 'generate_image', 'generate_video', 'generate_music', 'generate_speech',
+  // A bot passing work to the fleet, writing its standing notes, delivering files:
+  // everyday fleet work, gated once hidden instructions were found.
+  'bot_send', 'fleet_tasks', 'fleet_delegate', 'fleet_pipeline', 'bot_state', 'bot_deliver',
 ]);
 
 /** Outbound tools a scheduled run may use unattended: the owner approved the task, prompt and all, when it was made. */
@@ -113,23 +118,26 @@ async function allowed(name: string, input: unknown, deps: GuardDeps): Promise<{
   const e = exposure();
   if (!e.sources.length) return { ok: true, asked: false };
   const tier = guardTier(name);
-  // A strong model resists planted instructions (model-strength.ts): it is asked only about data leaving.
-  const strong = isStrongModel(e.model);
-  const gated = !strong && (tier === 'control' || tier === 'outbound' || (tier === 'strict' && e.suspicious));
-  // Data leaving in an address or a command: judged whether or not an injection was found.
-  const leak = exfilRisk(name, input, e.seen ?? new Set());
-  if (!gated && !leak) return { ok: true, asked: false };
-
   const p = deps.permissions;
   const channelType = p.getCurrentChannelType();
   const unattended = channelType === 'internal' || p.isFailClosed();
+  // A strong model resists planted instructions (model-strength.ts), so when the owner is
+  // there it is asked only about data leaving. Never when nobody watches: bots and
+  // scheduled runs keep the full gate, whatever the model.
+  const relaxed = isStrongModel(e.model) && !unattended;
+  const gated = !relaxed && (tier === 'control' || tier === 'outbound' || (tier === 'strict' && e.suspicious));
+  // Data leaving in an address or a command: judged whether or not an injection was found.
+  const leak = exfilRisk(name, input, e.seen ?? new Set());
+  if (!gated && !leak) return { ok: true, asked: false };
   if (unattended && SCHEDULED_RUN_OUTBOUND.has(name) && !e.suspicious && !leak) return { ok: true, asked: false };
   // A scheduled task's own plugin tools: the owner approved them, by name, when the task was made.
   if (p.hasTurnPluginGrant(name) && !e.suspicious && !leak) return { ok: true, asked: false };
   if (p.getCurrentSenderRole() === 'member') {
     return { ok: false, reason: `Not done: ${name} after reading outside content needs the owner, and this message is from someone else.` };
   }
-  if (unattended) {
+  // A bot can ask the owner (the app's Needs-you card, their phone); no answer in time is a no.
+  const botCanAsk = channelType === 'bot' && p.canAsk();
+  if (unattended && !botCanAsk) {
     logger.warn({ tool: name, sources: e.sources.map((s) => s.label), suspicious: e.suspicious, leak: leak?.what }, 'Blocked: privileged action in an unattended turn that read untrusted content');
     return { ok: false, reason: `Not done: ${name} was requested after reading outside content${e.suspicious ? ' that contains instructions to an AI' : ''}${leak ? `, and it would send data out (${leak.what})` : ''}, and no one is here to approve it. Ask the owner directly.` };
   }
