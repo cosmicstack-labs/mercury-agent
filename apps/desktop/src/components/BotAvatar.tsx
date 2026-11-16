@@ -63,10 +63,10 @@ const SHAPES = [
 function GeneratedFace({ id, name, size, dimmed, className }: { id: string; name: string; size: number; dimmed?: boolean; className?: string }) {
   const h = hash(id);
   const hue = h % 360;
-  const hue2 = (hue + 28 + ((h >> 9) % 40)) % 360;
-  const shape = SHAPES[(h >> 3) % SHAPES.length];
-  const eyeGap = 9 + ((h >> 12) % 5);
-  const mouth = (h >> 16) % 3; // smile, grin, small smile
+  const hue2 = (hue + 28 + ((h >>> 9) % 40)) % 360;
+  const shape = SHAPES[(h >>> 3) % SHAPES.length];
+  const eyeGap = 9 + ((h >>> 12) % 5);
+  const mouth = (h >>> 16) % 3; // smile, grin, small smile
   const tri = shape === SHAPES[2];
   const eyeY = tri ? 36 : 44;
   const mouthY = tri ? 52 : 60;
