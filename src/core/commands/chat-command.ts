@@ -1262,6 +1262,7 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     }
     const { runServerCommand } = await import('../../security/server-menu.js');
     const { localServerOps } = await import('../../security/server-ops.js');
+    const { acknowledgeSecret } = await import('../../utils/clipboard.js');
     const ops = localServerOps({ cloudConnected: () => !!ctx.config().cloud?.enabled, by: channelType === 'cli' ? 'cli' : 'desktop' });
     const args = trimmed.slice('/server'.length);
     const prompt = channel as typeof channel & { presentChoicePrompt?: (q: string, o: Array<{ value: string; label: string }>, t?: string) => Promise<string> };
@@ -1272,7 +1273,7 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
           choose: async (title, options) => (await select(title, options)) || null,
           say,
           // Shown in the menu, not the transcript.
-          secret: async (text) => { await select(text, [{ value: 'ok', label: "I've copied it" }]); },
+          secret: async (text, copy) => { await acknowledgeSecret(select, text, copy); },
         });
       });
       return true;
@@ -1280,8 +1281,8 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     await runServerCommand(args, ops, {
       choose: async (title, options) => (typeof prompt.presentChoicePrompt === 'function' ? (await prompt.presentChoicePrompt(title, options, channelId)) || null : null),
       say,
-      secret: async (text) => {
-        if (typeof prompt.presentChoicePrompt === 'function') await prompt.presentChoicePrompt(text, [{ value: 'ok', label: "I've copied it" }], channelId);
+      secret: async (text, copy) => {
+        if (typeof prompt.presentChoicePrompt === 'function') await acknowledgeSecret((t, o) => prompt.presentChoicePrompt!(t, o, channelId), text, copy);
         else await say(text);
       },
     });

@@ -37,14 +37,15 @@ export function registerServerCli(program: Command): void {
       const { ops, live } = await opsForThisComputer();
       if (!live) console.log(chalk.dim('  Mercury is not running: changing settings directly (nothing is waiting for approval).'));
       const { selectWithArrowKeys } = await import('../utils/arrow-select.js');
+      const { acknowledgeSecret } = await import('../utils/clipboard.js');
       const tty = !!(process.stdin.isTTY && process.stdout.isTTY);
       try {
         await runServerCommand(args.join(' '), ops, {
           choose: async (title, options) => (tty ? (await selectWithArrowKeys(title, options).catch(() => '')) || null : null),
           say: async (text) => { console.log(`\n${text.replace(/\*\*(.+?)\*\*/g, (_m, t: string) => chalk.bold(t))}\n`); },
-          secret: async (text) => {
+          secret: async (text, copy) => {
             console.log(`\n${text}\n`);
-            if (tty) await selectWithArrowKeys('Copy the token now: it is not shown again.', [{ value: 'ok', label: "I've copied it" }]).catch(() => '');
+            if (tty) await acknowledgeSecret((t, o) => selectWithArrowKeys(t, o).catch(() => ''), 'Copy the token now: it is not shown again.', copy);
           },
         });
       } catch (err) {
