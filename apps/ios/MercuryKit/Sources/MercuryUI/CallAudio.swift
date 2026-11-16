@@ -25,7 +25,7 @@ final class CallAudio {
   func activate() throws {
     #if os(iOS)
     let s = AVAudioSession.sharedInstance()
-    try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+    try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
     try s.setActive(true)
     #endif
   }

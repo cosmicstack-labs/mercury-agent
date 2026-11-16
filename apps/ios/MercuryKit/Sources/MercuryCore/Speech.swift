@@ -76,3 +76,75 @@ public enum Spoken {
     return out.filter { !$0.isEmpty }
   }
 }
+
+/// A live voice call's start: a short-lived token for Mercury's shared voice engine
+/// (POST /api/mobile/voice/session, src/web/api/mobile-voice.ts). API keys stay on the computer.
+public struct VoiceSession: Sendable, Equatable {
+  /// "openai" or "gemini".
+  public var engine: String
+  public var token: String
+  public var ephemeral: Bool
+  public var expiresAt: Date?
+  public var model: String?
+  public var voice: String?
+  public var url: String?
+  public var instructions: String
+  /// The tools for the voice (ask_mercury, end_conversation, answer_approval), as a JSON array.
+  public var toolsJSON: String
+
+  public init(engine: String, token: String, ephemeral: Bool = true, expiresAt: Date? = nil, model: String? = nil, voice: String? = nil,
+              url: String? = nil, instructions: String = "", toolsJSON: String = "[]") {
+    self.engine = engine; self.token = token; self.ephemeral = ephemeral; self.expiresAt = expiresAt
+    self.model = model; self.voice = voice; self.url = url; self.instructions = instructions; self.toolsJSON = toolsJSON
+  }
+}
+
+/// What the session route answered.
+public enum VoiceSessionResult: Sendable, Equatable {
+  case live(VoiceSession)
+  /// No live voice on this Mercury: the call goes turn by turn, and `reason` says why in plain words.
+  case fallback(reason: String)
+}
+
+extension MercuryClient {
+  /// The fallback's reason when this Mercury has no session route (it predates `voice.mobile`).
+  public static let voiceSessionMissing = "Your Mercury is too old for live calls, so this call goes turn by turn: talk, pause, and Mercury answers. Update Mercury on your computer for live calls."
+
+  /// POST /api/mobile/voice/session: a token for a live call, or why there can't be one.
+  public func voiceSession(engine: String? = nil) async throws -> VoiceSessionResult {
+    let (data, res) = try await send(request("POST", "/api/mobile/voice/session", body: engine.map { ["engine": $0] } ?? [:], timeout: 12))
+    let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    switch res.statusCode {
+    case 200:
+      guard let engine = json["engine"] as? String, let token = json["token"] as? String, !token.isEmpty else {
+        throw MercuryError.server(200, "Mercury didn't send a voice token.")
+      }
+      let tools = (json["tools"]).flatMap { try? JSONSerialization.data(withJSONObject: $0) }.flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+      return .live(VoiceSession(
+        engine: engine, token: token, ephemeral: json["ephemeral"] as? Bool ?? true, expiresAt: Self.date(json["expiresAt"]),
+        model: json["model"] as? String, voice: json["voice"] as? String, url: json["url"] as? String,
+        instructions: json["instructions"] as? String ?? "", toolsJSON: tools))
+    case 401: throw MercuryError.unauthorized
+    case 404: return .fallback(reason: Self.voiceSessionMissing)
+    case 409:
+      let why = (json["error"] as? String).map { "\($0) Until then, this call goes turn by turn." }
+      return .fallback(reason: why ?? "Live voice isn't available on your Mercury, so this call goes turn by turn.")
+    default: throw MercuryError.server(res.statusCode, json["error"] as? String)
+    }
+  }
+}
+
+extension Spoken {
+  /// A call answer's two parts (src/plugins/channel-bridge.ts spokenPart/chatPart): what's said,
+  /// everything before a final "For the chat:" line, and the details after it, kept in the chat.
+  public static func split(_ answer: String) -> (spoken: String, chat: String) {
+    let pattern = #"(^|\n)\s*\**\s*for the chat\s*:?\**\s*:?"#
+    guard let r = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+          let m = r.firstMatch(in: answer, range: NSRange(answer.startIndex..., in: answer)),
+          let range = Range(m.range, in: answer) else {
+      return (answer.trimmingCharacters(in: .whitespacesAndNewlines), "")
+    }
+    return (String(answer[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines),
+            String(answer[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+}

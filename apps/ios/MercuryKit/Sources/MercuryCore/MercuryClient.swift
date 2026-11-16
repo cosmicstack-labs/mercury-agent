@@ -24,8 +24,16 @@ public struct MercuryClient: Sendable {
 
   // MARK: Requests
 
+  /// `path` may end in an already-encoded query ("/api/chat/events?sessionId=…"). It's split off
+  /// first: `appending(path:)` would encode the "?" and ask for a path that doesn't exist.
   func request(_ method: String, _ path: String, body: [String: Any]? = nil, timeout: TimeInterval = 15) throws -> URLRequest {
-    var r = URLRequest(url: baseURL.appending(path: path), timeoutInterval: timeout)
+    let parts = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+    var url = baseURL.appending(path: String(parts[0]))
+    if parts.count == 2, var c = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+      c.percentEncodedQuery = String(parts[1])
+      url = c.url ?? url
+    }
+    var r = URLRequest(url: url, timeoutInterval: timeout)
     r.httpMethod = method
     r.setValue("application/json", forHTTPHeaderField: "Accept")
     if let token { r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }

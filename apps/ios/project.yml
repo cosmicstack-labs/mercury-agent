@@ -7,6 +7,9 @@ options:
 packages:
   MercuryKit:
     path: MercuryKit
+  # Mercury's shared Rust voice engine (scripts/build-voice-engine.sh builds its xcframework).
+  MercuryVoice:
+    path: MercuryVoice
 targets:
   Mercury:
     type: application
@@ -15,6 +18,8 @@ targets:
     dependencies:
       - package: MercuryKit
         product: MercuryUI
+      - package: MercuryVoice
+        product: MercuryVoice
     info:
       path: App/Info.plist
       properties:
@@ -23,6 +28,9 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: Mercury uses the camera to scan the pairing code shown in Mercury Desktop.
         NSMicrophoneUsageDescription: Mercury uses the microphone for voice calls and dictation.
+        # Calls are CallKit calls: audio keeps them going in the background, and CallKit
+        # only takes calls from an app with the voip mode (no PushKit: Mercury never rings).
+        UIBackgroundModes: [audio, voip]
         NSLocalNetworkUsageDescription: Mercury connects to the Mercury running on your computer.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
@@ -33,3 +41,5 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.10"
+        # The Mercury mark, full-bleed (App/Assets.xcassets; iOS rounds the corners).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

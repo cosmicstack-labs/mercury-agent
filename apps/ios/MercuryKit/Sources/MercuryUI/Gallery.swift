@@ -8,18 +8,10 @@ public enum Gallery {
     let opts = ["yes", "always", "no"].map { ConversationModel.Prompt.Option(value: $0, label: ConversationModel.optionLabel($0)) }
     return VStack(spacing: 16) {
       PromptCard(prompt: .init(id: "1", kind: "permission_request", text: "Run command: npm run deploy -- --prod", options: opts, targetId: nil)) { _ in }
-      PromptCard(prompt: .init(id: "2", kind: "permission_request", text: "Write to file: ~/sites/landing/index.html", options: opts, targetId: nil)) { _ in }
+      PromptCard(prompt: .init(id: "2", kind: "permission_request", text: "MCP tool call\nServer: github\nTool: create_issue\nArguments:\n{\n  \"title\": \"Landing page is slow on mobile\",\n  \"labels\": [\"perf\"]\n}", options: opts, targetId: nil)) { _ in }
       Spacer()
     }
     .padding(16).frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
-  }
-
-  static func call(_ phase: VoiceCallModel.Phase, caption: String?, step: String? = nil, level: Float = 0) -> some View {
-    let m = ConversationModel(client: MercuryClient(baseURL: URL(string: "http://localhost")!), thread: nil)
-    if let step { m.handle("step_start", #"{"tool":"\#(step)","step":1}"#) }
-    let c = VoiceCallModel(conversation: m)
-    c.phase = phase; c.caption = caption; c.level = level; c.startedAt = Date(timeIntervalSinceNow: -134)
-    return VoiceCallView(model: c)
   }
 
   static let reply = """
@@ -71,7 +63,7 @@ public enum Gallery {
       let m = ConversationModel(client: MercuryClient(baseURL: URL(string: "http://localhost")!), thread: nil)
       m.messages = [ChatMessage(role: "user", content: "What changed on the landing page?"), ChatMessage(role: "assistant", content: reply)]
       m.title = "Landing page"
-      return AnyView(NavigationStack { ConversationView(model: m) }.tint(Theme.accent))
+      return AnyView(NavigationStack { ConversationView(model: m) }.appearance())
     default:
       return nil
     }
@@ -93,9 +85,6 @@ public enum Gallery {
       ("01e-connect-token", connect(.token)),
       ("03b-conversation-markdown", AnyView(markdown)),
       ("04-approval", AnyView(approval)),
-      ("05a-call-listening", AnyView(call(.hearing, caption: nil, level: 0.6))),
-      ("05b-call-working", AnyView(call(.working, caption: "“What's the latest news from Srinagar?”", step: "web_search"))),
-      ("05c-call-speaking", AnyView(call(.speaking, caption: "Schools reopen on Monday, and the Dal Lake cleanup moved to its second phase."))),
     ]
   }
 }

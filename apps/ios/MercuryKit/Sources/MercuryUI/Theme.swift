@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Mercury's palette, the same tokens as Mercury Desktop (apps/desktop/src/styles/tokens.css):
 /// a near-white paper in light mode, Mercury's ground in dark mode, one accent.
-/// Amber (needs you) and red (halt) are semantic and fixed.
+/// Amber (needs you) and red (halt) are semantic and fixed. The accent is the person's tint
+/// (Settings → Appearance), Mercury's green unless changed: views that draw it follow a change.
 public enum Theme {
   public static let bg = Color(light: 0xF7F7F5, dark: 0x0F1113)
   public static let bgSoft = Color(light: 0xF0F0ED, dark: 0x141719)
@@ -12,8 +13,9 @@ public enum Theme {
   public static let ink2 = Color(light: 0x4B5157, dark: 0xAEB6BC)
   public static let ink3 = Color(light: 0x7A8187, dark: 0x7E878E)
   public static let ink4 = Color(light: 0xA3A9AE, dark: 0x545C63)
-  public static let accent = Color(light: 0x1A9E6E, dark: 0x34E1A1)
-  public static let onAccent = Color(light: 0xFFFFFF, dark: 0x04140B)
+  public static var accent: Color { Appearance.shared.accent }
+  /// Text and icons on the accent: white, or dark when the tint is too light for white.
+  public static var onAccent: Color { Appearance.shared.onAccent }
   public static let amber = Color(light: 0xB7791F, dark: 0xF5C451)
   public static let red = Color(light: 0xC53030, dark: 0xFF6B6B)
   public static let cyan = Color(light: 0x0E7C8C, dark: 0x7FD8E8)

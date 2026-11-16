@@ -72,6 +72,8 @@ public enum MercuryError: LocalizedError, Equatable {
   case deviceLimit
   case unauthorized
   case server(Int, String?)
+  /// The owner must allow this change first (approve the code, then it's repeated).
+  case needsOwner(OwnerQuestion)
 
   public var errorDescription: String? {
     switch self {
@@ -82,6 +84,7 @@ public enum MercuryError: LocalizedError, Equatable {
     case .deviceLimit: "This Mercury already has the most devices it allows. Remove one in Mercury Desktop, then try again."
     case .unauthorized: "This phone isn't signed in to that Mercury any more. Connect again."
     case .server(let code, let msg): msg ?? "Mercury answered with an error (\(code))."
+    case .needsOwner(let q): q.message
     }
   }
 }

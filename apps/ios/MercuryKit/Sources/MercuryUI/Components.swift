@@ -52,3 +52,16 @@ struct ErrorText: View {
       .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
+
+/// A quieter, full-width button on a soft surface (red text for a destructive choice).
+struct SecondaryButtonStyle: ButtonStyle {
+  var danger = false
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.system(size: 15, weight: .medium))
+      .frame(maxWidth: .infinity, minHeight: 46)
+      .foregroundStyle(danger ? Theme.red : Theme.ink)
+      .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 12))
+      .opacity(configuration.isPressed ? 0.8 : 1)
+  }
+}

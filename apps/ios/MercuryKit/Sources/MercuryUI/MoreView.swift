@@ -1,7 +1,7 @@
 import SwiftUI
 import MercuryCore
 
-/// Screen 7: the Mercury this phone is connected to, the others it knows, and about.
+/// Screen 7: the Mercury this phone is connected to, its settings, the others it knows, and about.
 struct MoreView: View {
   var store: ConnectionStore
   var connection: Connection
@@ -27,6 +27,18 @@ struct MoreView: View {
         LabeledContent("Address", value: connection.baseURL.absoluteString)
         Button("Disconnect this phone", role: .destructive) { confirmDisconnect = true }
       } header: { Text("Connected to") }
+
+      Section("Settings") {
+        let client = store.client(for: connection)
+        NavigationLink { ModelsSettings(client: client) } label: { Label("Models", systemImage: "cpu") }
+        NavigationLink { VoiceSettings(client: client) } label: { Label("Voice", systemImage: "waveform") }
+        NavigationLink { ChannelsSettings(client: client) } label: { Label("Channels", systemImage: "bubble.left.and.bubble.right") }
+        NavigationLink { AppearanceSettings() } label: { Label("Appearance", systemImage: "paintpalette") }
+        NavigationLink { NotificationsSettings() } label: { Label("Notifications", systemImage: "bell") }
+        NavigationLink { BudgetsSettings(client: client) } label: { Label("Budgets", systemImage: "gauge.with.dots.needle.33percent") }
+        NavigationLink { ActivitySettings(client: client) } label: { Label("Activity", systemImage: "chart.bar") }
+        NavigationLink { DevicesSettings(client: client) } label: { Label("Paired devices", systemImage: "iphone.and.arrow.forward") }
+      }
 
       Section("Your Mercurys") {
         ForEach(store.connections) { c in

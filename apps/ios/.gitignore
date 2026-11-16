@@ -2,3 +2,4 @@ Mercury.xcodeproj/
 MercuryKit/.build/
 MercuryKit/.swiftpm/
 build/
+MercuryKit/.build-*/
