@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 
 use tokio::sync::mpsc;
 
-use super::{Brain, Link, LinkCmd, LinkConfig, LinkEvent, stt, tts};
+use crate::{Brain, Link, LinkCmd, LinkConfig, LinkEvent, stt, tts};
 
 pub async fn open(cfg: LinkConfig) -> Result<Link, String> {
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<LinkCmd>();

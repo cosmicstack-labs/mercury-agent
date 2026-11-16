@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio_websockets::Message;
 use futures_util::{SinkExt, StreamExt};
 
-use super::{Brain, CALL_RATE, Link, LinkCmd, LinkConfig, LinkEvent, b64, env_key, pcm_from_bytes, resample, setting, unb64, ws};
+use crate::{Auth, Brain, CALL_RATE, Link, LinkCmd, LinkConfig, LinkEvent, b64, env_key, pcm_from_bytes, resample, setting, unb64, ws};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Dialect {
@@ -36,22 +36,22 @@ fn base_ws(http_base: &str) -> String {
     if let Some(r) = b.strip_prefix("https://") { format!("wss://{r}") } else if let Some(r) = b.strip_prefix("http://") { format!("ws://{r}") } else { b.to_string() }
 }
 
-async fn profile(s: &Value) -> Result<Profile, String> {
-    let engine = super::engine(s);
+async fn profile(s: &Value, auth: &Auth) -> Result<Profile, String> {
+    let engine = crate::engine(s);
     Ok(match engine.as_str() {
         "openai" => {
-            let key = env_key("MERCURY_PROVIDER_OPENAI_API_KEY").ok_or("no OpenAI provider key")?;
+            let key = auth.key("MERCURY_PROVIDER_OPENAI_API_KEY", "no OpenAI provider key")?;
             let base = env_key("MERCURY_PROVIDER_OPENAI_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".into());
             let model = setting(s, "voiceModel", "gpt-realtime-2.1");
             Profile {
-                url: format!("{}/realtime?model={model}", base_ws(&base)),
+                url: auth.url().map(str::to_string).unwrap_or_else(|| format!("{}/realtime?model={model}", base_ws(&base))),
                 headers: vec![("authorization", format!("Bearer {key}"))],
                 model, dialect: Dialect::Ga, in_rate: 24_000, out_rate: 24_000,
                 voice: setting(s, "voice", "marin"), transcribe: Some("gpt-4o-mini-transcribe".into()),
             }
         }
         "azure" => {
-            let key = env_key("AZURE_OPENAI_API_KEY").ok_or("no Azure OpenAI key")?;
+            let key = auth.key("AZURE_OPENAI_API_KEY", "no Azure OpenAI key")?;
             let endpoint = setting(s, "azureEndpoint", "");
             let host = endpoint.trim_start_matches("https://").trim_start_matches("wss://").trim_end_matches('/').to_string();
             if host.is_empty() { return Err("set the Azure endpoint (e.g. myresource.openai.azure.com)".into()); }
@@ -64,7 +64,7 @@ async fn profile(s: &Value) -> Result<Profile, String> {
             }
         }
         "grok" => {
-            let key = env_key("MERCURY_PROVIDER_GROK_API_KEY").ok_or("no Grok provider key")?;
+            let key = auth.key("MERCURY_PROVIDER_GROK_API_KEY", "no Grok provider key")?;
             let model = setting(s, "grokModel", "grok-voice-latest");
             Profile {
                 url: format!("wss://api.x.ai/v1/realtime?model={model}"),
@@ -75,7 +75,7 @@ async fn profile(s: &Value) -> Result<Profile, String> {
             }
         }
         "qwen" => {
-            let key = env_key("DASHSCOPE_API_KEY").ok_or("no Qwen (DashScope) key")?;
+            let key = auth.key("DASHSCOPE_API_KEY", "no Qwen (DashScope) key")?;
             let endpoint = setting(s, "qwenEndpoint", "dashscope-intl.aliyuncs.com");
             let host = endpoint.trim_start_matches("https://").trim_start_matches("wss://").trim_end_matches('/').to_string();
             let model = setting(s, "qwenModel", "qwen3.8-omni-flash-realtime");
@@ -87,7 +87,7 @@ async fn profile(s: &Value) -> Result<Profile, String> {
             }
         }
         "elevenlabs" => {
-            let key = env_key("ELEVENLABS_API_KEY").ok_or("no ElevenLabs key")?;
+            let key = auth.key("ELEVENLABS_API_KEY", "no ElevenLabs key")?;
             let model = setting(s, "elevenlabsModel", "eleven_realtime_v1_mini");
             let voice = setting(s, "elevenlabsVoice", "brian");
             let secret = eleven_client_secret(&key, &model, &voice).await?;
@@ -102,6 +102,7 @@ async fn profile(s: &Value) -> Result<Profile, String> {
 }
 
 /// ElevenLabs Realtime is reached with a short-lived client secret minted with the API key.
+#[cfg(feature = "elevenlabs")]
 async fn eleven_client_secret(key: &str, model: &str, voice: &str) -> Result<String, String> {
     let body = json!({
         "session": { "type": "realtime", "model": model, "audio": { "output": { "voice": voice } } },
@@ -119,6 +120,12 @@ async fn eleven_client_secret(key: &str, model: &str, voice: &str) -> Result<Str
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Builds without the HTTP client (the mobile engine) can't mint ElevenLabs secrets.
+#[cfg(not(feature = "elevenlabs"))]
+async fn eleven_client_secret(_key: &str, _model: &str, _voice: &str) -> Result<String, String> {
+    Err("ElevenLabs Realtime isn't available in this build".into())
 }
 
 fn session(p: &Profile, cfg: &LinkConfig) -> Value {
@@ -168,8 +175,8 @@ fn instruct(p: &Profile, text: &str) -> Vec<Value> {
     }
 }
 
-pub async fn open(cfg: LinkConfig) -> Result<Link, String> {
-    let p = profile(&cfg.settings).await?;
+pub async fn open(cfg: LinkConfig, auth: Auth) -> Result<Link, String> {
+    let p = profile(&cfg.settings, &auth).await?;
     let sock = ws::connect(&p.url, &p.headers).await.map_err(|e| format!("couldn't reach the voice model: {e}"))?;
     let (mut tx, mut rx) = sock.split();
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<LinkCmd>();
@@ -205,7 +212,7 @@ pub async fn open(cfg: LinkConfig) -> Result<Link, String> {
             let Ok(m) = m else { break };
             if m.is_close() {
                 let reason = m.as_close().map(|(_, r)| r.to_string()).unwrap_or_default();
-                let _ = ev_tx.send(LinkEvent::Closed(crate::voice::explain_close(&reason)));
+                let _ = ev_tx.send(LinkEvent::Closed(crate::explain_close(&reason)));
                 return;
             }
             let Some(t) = m.as_text() else { continue };
@@ -241,4 +248,28 @@ pub async fn open(cfg: LinkConfig) -> Result<Link, String> {
     });
 
     Ok(Link { brain: Brain::Voice, cmd: cmd_tx, events: ev_rx })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Credential;
+
+    #[tokio::test]
+    async fn a_minted_secret_replaces_the_env_key() {
+        let auth = Auth::Token(Credential { secret: "ek_test".into(), ephemeral: true, url: Some("wss://api.openai.com/v1/realtime?model=m".into()) });
+        let p = profile(&json!({ "voiceEngine": "openai", "voiceModel": "m", "voice": "cedar" }), &auth).await.unwrap();
+        assert_eq!(p.url, "wss://api.openai.com/v1/realtime?model=m");
+        assert_eq!(p.headers, vec![("authorization", "Bearer ek_test".to_string())]);
+        assert_eq!(p.voice, "cedar");
+        let no_url = Auth::Token(Credential { secret: "ek".into(), ephemeral: true, url: None });
+        let p = profile(&json!({ "voiceEngine": "openai" }), &no_url).await.unwrap();
+        assert!(p.url.ends_with("/realtime?model=gpt-realtime-2.1"), "{}", p.url);
+    }
+
+    #[test]
+    fn close_reasons_in_plain_words() {
+        assert!(crate::explain_close("insufficient_quota").contains("out of credit"));
+        assert_eq!(crate::explain_close(""), "the voice model closed the session");
+    }
 }

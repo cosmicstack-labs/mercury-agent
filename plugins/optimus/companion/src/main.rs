@@ -20,7 +20,8 @@ mod audio;
 mod core;
 mod devices;
 mod hotkey;
-mod links;
+// The voice links live in Mercury's shared voice engine; `crate::links` keeps working.
+use mercury_voice as links;
 #[cfg(target_os = "macos")]
 mod mac;
 mod motion;
@@ -299,6 +300,8 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("--probe") {
         return;
     }
+    // The voice engine logs in Optimus's own format.
+    links::set_logger(|m| crate::log(m));
     #[cfg(target_os = "linux")]
     restore_library_path();
     if args.get(1).map(String::as_str) == Some("agent") {

@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio_websockets::Message;
 use futures_util::{SinkExt, StreamExt};
 
-use super::{b64, pcm_bytes, setting, env_key, ws};
+use crate::{b64, pcm_bytes, setting, env_key, ws};
 
 pub enum SttEvent {
     SpeechStarted,

@@ -10,9 +10,22 @@ use tokio::sync::mpsc;
 use tokio_websockets::Message;
 use futures_util::{SinkExt, StreamExt};
 
-use super::{Brain, CALL_RATE, Link, LinkCmd, LinkConfig, LinkEvent, b64, env_key, pcm_from_bytes, resample, setting, unb64, ws};
+use crate::{Auth, Brain, CALL_RATE, Link, LinkCmd, LinkConfig, LinkEvent, b64, pcm_from_bytes, resample, setting, unb64, ws};
 
 const URL: &str = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+/// The Live endpoint for ephemeral auth tokens (minted by Mercury for a phone).
+const CONSTRAINED_URL: &str = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained";
+
+/// Where to connect: an API key on the usual endpoint, or an ephemeral token
+/// as `access_token` on the constrained one (or the URL the server gave).
+fn url_for(auth: &Auth, key: &str) -> String {
+    if let Some(u) = auth.url() {
+        let sep = if u.contains('?') { '&' } else { '?' };
+        let param = if auth.ephemeral() { "access_token" } else { "key" };
+        return format!("{u}{sep}{param}={key}");
+    }
+    if auth.ephemeral() { format!("{CONSTRAINED_URL}?access_token={key}") } else { format!("{URL}?key={key}") }
+}
 
 fn setup(cfg: &LinkConfig, handle: Option<&str>) -> Value {
     let s = &cfg.settings;
@@ -40,12 +53,13 @@ fn setup(cfg: &LinkConfig, handle: Option<&str>) -> Value {
     json!({ "setup": setup })
 }
 
-pub async fn open(cfg: LinkConfig) -> Result<Link, String> {
-    let key = env_key("GEMINI_API_KEY").ok_or("no Gemini API key")?;
+pub async fn open(cfg: LinkConfig, auth: Auth) -> Result<Link, String> {
+    let key = auth.key("GEMINI_API_KEY", "no Gemini API key")?;
+    let url = url_for(&auth, &key);
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<LinkCmd>();
     let (ev_tx, ev_rx) = mpsc::unbounded_channel::<LinkEvent>();
     // Fail fast on a bad key or model: the first connection is made here.
-    let mut sock = connect(&key, &cfg, None).await?;
+    let mut sock = connect(&url, &cfg, None).await?;
 
     tokio::spawn(async move {
         let mut handle: Option<String> = None;
@@ -124,7 +138,7 @@ pub async fn open(cfg: LinkConfig) -> Result<Link, String> {
             // Connection ended without the call ending: resume where we left off.
             for attempt in 0..3u64 {
                 tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))).await;
-                match connect(&key, &cfg, handle.as_deref()).await {
+                match connect(&url, &cfg, handle.as_deref()).await {
                     Ok(s) => { sock = s; continue 'conn; }
                     Err(e) => crate::log(format!("gemini resume failed: {e}")),
                 }
@@ -137,8 +151,8 @@ pub async fn open(cfg: LinkConfig) -> Result<Link, String> {
     Ok(Link { brain: Brain::Voice, cmd: cmd_tx, events: ev_rx })
 }
 
-async fn connect(key: &str, cfg: &LinkConfig, handle: Option<&str>) -> Result<ws::Socket, String> {
-    let mut sock = ws::connect(&format!("{URL}?key={key}"), &[]).await.map_err(|e| format!("couldn't reach Gemini: {e}"))?;
+async fn connect(url: &str, cfg: &LinkConfig, handle: Option<&str>) -> Result<ws::Socket, String> {
+    let mut sock = ws::connect(url, &[]).await.map_err(|e| format!("couldn't reach Gemini: {e}"))?;
     sock.send(Message::text(setup(cfg, handle).to_string())).await.map_err(|e| e.to_string())?;
     // Wait for setupComplete before streaming audio.
     let wait = async {
@@ -160,4 +174,22 @@ async fn connect(key: &str, cfg: &LinkConfig, handle: Option<&str>) -> Result<ws
     };
     tokio::time::timeout(Duration::from_secs(15), wait).await.map_err(|_| "Gemini setup timed out".to_string())??;
     Ok(sock)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Credential;
+
+    fn token(secret: &str, ephemeral: bool, url: Option<&str>) -> Auth {
+        Auth::Token(Credential { secret: secret.into(), ephemeral, url: url.map(str::to_string) })
+    }
+
+    #[test]
+    fn api_keys_and_ephemeral_tokens_connect_differently() {
+        assert_eq!(url_for(&token("k", false, None), "k"), format!("{URL}?key=k"));
+        assert_eq!(url_for(&token("auth_tokens/t", true, None), "auth_tokens/t"), format!("{CONSTRAINED_URL}?access_token=auth_tokens/t"));
+        assert_eq!(url_for(&token("t", true, Some("wss://x/y?alt=1")), "t"), "wss://x/y?alt=1&access_token=t");
+        assert_eq!(url_for(&Auth::Env, "k"), format!("{URL}?key=k"));
+    }
 }

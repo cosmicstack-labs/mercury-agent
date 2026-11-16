@@ -1,6 +1,7 @@
-//! Voice links (shared with the WhatsApp plugin): one per kind of voice
-//! provider, all speaking the same small language to the session bridge
-//! (voice.rs). The bridge owns everything about
+//! Mercury's voice engine: one link per kind of voice provider, all speaking
+//! the same small language to a session bridge (Optimus's voice.rs on the
+//! desktop, the mobile app through mercury-voice-mobile). The bridge owns
+//! everything about
 //! the call itself (Mercury questions, approvals, progress updates, photos,
 //! summaries); a link only moves audio and events.
 //!
@@ -10,7 +11,14 @@
 //! - pipeline: speech-to-text → the user's own Mercury model → text-to-speech
 //!   (Deepgram / AssemblyAI / ElevenLabs Scribe / Sarvam, then Cartesia /
 //!   ElevenLabs / MiniMax / Sarvam / Deepgram voices)
+//! - dictation: live speech-to-text only (the phone's message box): an OpenAI
+//!   Realtime transcription session, Deepgram or ElevenLabs Scribe streaming
+//!
+//! Credentials: by default every link reads the keys Mercury passes to
+//! plugins in the environment (`open`). A phone opens a link with a
+//! short-lived token minted by Mercury instead (`open_with`, `Auth::Token`).
 
+pub mod dictation;
 pub mod gemini;
 pub mod pipeline;
 pub mod realtime;
@@ -85,6 +93,75 @@ pub struct LinkConfig {
     pub settings: Value,
 }
 
+/// Where a link's credentials come from.
+#[derive(Clone, Debug, Default)]
+pub enum Auth {
+    /// The keys Mercury passes to plugins in the environment
+    /// (MERCURY_PROVIDER_OPENAI_API_KEY, GEMINI_API_KEY, …).
+    #[default]
+    Env,
+    /// An explicit credential for the engine the settings pick.
+    Token(Credential),
+}
+
+/// An API key, or a short-lived token Mercury minted for one session
+/// (an OpenAI Realtime client secret, a Gemini Live ephemeral auth token).
+#[derive(Clone)]
+pub struct Credential {
+    pub secret: String,
+    /// A short-lived token rather than an API key. OpenAI takes both the same
+    /// way (Bearer); Gemini takes an ephemeral token as `access_token` on the
+    /// constrained Live endpoint.
+    pub ephemeral: bool,
+    /// The WebSocket URL to connect to, when the server says (e.g. the OpenAI
+    /// Realtime URL with its model). None: the engine's usual URL.
+    pub url: Option<String>,
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credential").field("secret", &"…").field("ephemeral", &self.ephemeral).field("url", &self.url).finish()
+    }
+}
+
+impl Auth {
+    /// The secret to use: the explicit one, else the named environment key.
+    pub(crate) fn key(&self, env_name: &str, missing: &str) -> Result<String, String> {
+        match self {
+            Auth::Token(c) => Ok(c.secret.clone()),
+            Auth::Env => env_key(env_name).ok_or_else(|| missing.to_string()),
+        }
+    }
+
+    pub(crate) fn url(&self) -> Option<&str> {
+        match self {
+            Auth::Token(c) => c.url.as_deref().filter(|u| !u.trim().is_empty()),
+            Auth::Env => None,
+        }
+    }
+
+    pub(crate) fn ephemeral(&self) -> bool {
+        matches!(self, Auth::Token(c) if c.ephemeral)
+    }
+}
+
+// ── logging ───────────────────────────────────────────────────────────────
+
+static LOGGER: std::sync::OnceLock<fn(&str)> = std::sync::OnceLock::new();
+
+/// Send the engine's log lines to the host's own log (Optimus: its stderr
+/// format). Without one they go to stderr as "mercury-voice: …".
+pub fn set_logger(f: fn(&str)) {
+    let _ = LOGGER.set(f);
+}
+
+pub(crate) fn log(msg: impl AsRef<str>) {
+    match LOGGER.get() {
+        Some(f) => f(msg.as_ref()),
+        None => eprintln!("mercury-voice: {}", msg.as_ref()),
+    }
+}
+
 pub fn setting<'a>(settings: &'a Value, key: &str, default: &'a str) -> String {
     settings.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()).unwrap_or(default).trim().to_string()
 }
@@ -118,11 +195,35 @@ pub fn not_ready(settings: &Value) -> Option<String> {
     }
 }
 
+/// Open a link with the keys from the environment (Optimus, WhatsApp).
 pub async fn open(cfg: LinkConfig) -> Result<Link, String> {
+    open_with(cfg, Auth::Env).await
+}
+
+/// Open a link with explicit credentials (or `Auth::Env`).
+pub async fn open_with(cfg: LinkConfig, auth: Auth) -> Result<Link, String> {
     match engine(&cfg.settings).as_str() {
-        "gemini" => gemini::open(cfg).await,
+        "gemini" => gemini::open(cfg, auth).await,
         "mercury" => pipeline::open(cfg).await,
-        _ => realtime::open(cfg).await,
+        _ => realtime::open(cfg, auth).await,
+    }
+}
+
+/// Turn the voice provider's close reason into something the owner can act on.
+pub fn explain_close(reason: &str) -> String {
+    let r = reason.to_ascii_lowercase();
+    if r.contains("insufficient_quota") || r.contains("credit_balance") || r.contains("billing") {
+        "your OpenAI account is out of credit. Add credit at platform.openai.com → Settings → Billing, then try again".into()
+    } else if r.contains("invalid_api_key") || r.contains("unauthorized") || r.contains("401") {
+        "OpenAI rejected the API key. Check the OpenAI provider in Mercury's dashboard (Providers)".into()
+    } else if r.contains("model_not_found") || r.contains("does not exist") || r.contains("access") {
+        format!("this OpenAI account can't use the realtime voice model ({reason}). Try another voiceModel setting")
+    } else if r.contains("rate_limit") {
+        "OpenAI is rate-limiting this account right now. Try again in a minute".into()
+    } else if reason.is_empty() {
+        "the voice model closed the session".into()
+    } else {
+        format!("the voice model closed the session ({reason})")
     }
 }
 

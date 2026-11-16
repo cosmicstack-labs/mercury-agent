@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio_websockets::Message;
 use futures_util::{SinkExt, StreamExt};
 
-use super::{env_key, pcm_from_bytes, script_language, setting, strip_wav, unb64, ws};
+use crate::{env_key, pcm_from_bytes, script_language, setting, strip_wav, unb64, ws};
 
 pub fn key_name(provider: &str) -> Option<&'static str> {
     match provider {

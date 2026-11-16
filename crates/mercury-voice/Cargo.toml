@@ -1,0 +1,27 @@
+[package]
+name = "mercury-voice"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "Mercury's voice engine: realtime voice links (OpenAI Realtime family, Gemini Live, STT→Mercury→TTS) shared by Optimus and the mobile apps"
+license = "MIT"
+publish = false
+
+[features]
+default = ["elevenlabs"]
+# ElevenLabs Realtime mints its session secret over HTTPS (ureq). The mobile
+# engine leaves it out: phones get their tokens from Mercury.
+elevenlabs = ["dep:ureq"]
+
+[dependencies]
+base64 = "0.22"
+serde_json = "1"
+# rustls + ring: no OpenSSL, so it builds for macOS, Linux, Windows, iOS and Android.
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio-websockets = { version = "0.13.3", features = ["client", "rustls-webpki-roots", "rand", "ring"] }
+http = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+ureq = { version = "3", optional = true }
+# TLS for the WebSockets with ring as the process crypto provider (Optimus got
+# this through ureq before; the mobile build has no ureq, so it's explicit).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
