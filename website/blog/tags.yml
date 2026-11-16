@@ -1,3 +1,7 @@
+weekly:
+  label: Mercury Weekly
+  permalink: /weekly
+  description: A weekly roundup of what changed in Mercury and around it.
 news:
   label: News
   permalink: /news
