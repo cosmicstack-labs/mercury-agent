@@ -16,7 +16,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync 
 import { join, extname, basename, relative, resolve } from 'node:path';
 import { getMercuryHome, loadConfig, getActiveProviders, type ProviderConfig } from '../../utils/config.js';
 import { basicAuthHeaders } from '../../providers/basic-auth.js';
-import type { SessionRepository } from '../../sessions/index.js';
+import type { SessionMessage, SessionRepository } from '../../sessions/index.js';
 import { SessionTitleError } from '../../sessions/repository.js';
 import { loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
 import { discoverReasoningCaps } from '../../providers/reasoning-discovery.js';
@@ -64,6 +64,41 @@ function usageOf(meta: Record<string, unknown> | undefined): { usage?: { provide
   };
 }
 
+/**
+ * A chat list row's second line: the last user or assistant message, as one
+ * short plain line (whitespace collapsed, markdown markers lightly stripped).
+ * A message that was only files reads as their names. Walks back from the end,
+ * so it only touches the last few messages.
+ */
+export function threadPreview(messages: SessionMessage[], max = 140): { preview: string; lastRole: 'user' | 'assistant' } | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if ((m.role !== 'user' && m.role !== 'assistant') || (m.kind && m.kind !== 'message')) continue;
+    let text = plainLine(m.content ?? '');
+    const files = Array.isArray(m.metadata?.attachments) ? (m.metadata.attachments as Array<{ name?: unknown }>).map((a) => a?.name).filter((n): n is string => typeof n === 'string' && n.length > 0) : [];
+    if (m.role === 'user' && files.length && (!text || /^\(Attached: /.test(text))) text = files.join(', ');
+    if (!text) continue;
+    if ([...text].length > max) text = `${[...text].slice(0, max - 1).join('').trimEnd()}…`;
+    return { preview: text, lastRole: m.role };
+  }
+  return undefined;
+}
+
+function plainLine(s: string): string {
+  return s
+    .replace(/```[^\n]*\n?/g, ' ') // code fences (their contents stay)
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // images → alt text
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // links → their text
+    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)/gm, '') // headings, quotes, list markers
+    .replace(/^\s*\|?[\s:|-]+\|[\s:|-]*$/gm, ' ') // table rules
+    .replace(/(\*\*|__|~~|`)/g, '')
+    .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=[\s).,!?:;]|$)/g, '$1$2')
+    .replace(/\s*\|\s*/g, ' · ')
+    .replace(/\s+/g, ' ')
+    .replace(/^(· )+|( ·)+$/g, '')
+    .trim();
+}
+
 function toThread(session: ReturnType<SessionRepository['get']>, includeMessages = true) {
   return {
     id: session.id,
@@ -75,6 +110,8 @@ function toThread(session: ReturnType<SessionRepository['get']>, includeMessages
     ...(session.savedAt ? { savedAt: new Date(session.savedAt).toISOString() } : {}),
     createdAt: new Date(session.createdAt).toISOString(),
     updatedAt: new Date(session.updatedAt).toISOString(),
+    // The list leaves messages out: a row gets one line of the last one instead (Mercury iOS).
+    ...(includeMessages ? {} : threadPreview(session.messages)),
     messages: includeMessages ? session.messages.map((message) => ({
       id: message.id,
       threadId: session.id,
