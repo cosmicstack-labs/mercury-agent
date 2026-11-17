@@ -153,7 +153,7 @@ fun Composer(
     MediaIntent.IMAGE -> "Describe the image"
     MediaIntent.VIDEO -> "Describe the video"
     MediaIntent.MUSIC -> "Describe the music"
-    else -> if (dictation.active) "Listening…" else if (composer.code) "Describe what to build" else "Ask anything"
+    else -> if (dictation.active) dictation.listeningLabel else if (composer.code) "Describe what to build" else "Ask anything"
   }
   val hasChips = attachments.isNotEmpty() || composer.media != null || composer.ownEffort != null
 

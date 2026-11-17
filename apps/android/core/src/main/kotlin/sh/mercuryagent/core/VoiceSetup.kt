@@ -143,7 +143,7 @@ object VoiceSetup {
   /** One line per voice, plain. */
   fun blurb(id: String): String = when (id) {
     "openai" -> "Natural, quick replies. Calls and dictation."
-    "gemini" -> "Google's live voice. Calls."
+    "gemini" -> "Google's live voice. Calls and dictation."
     "deepgram" -> "Fast speech to text. Dictation."
     "elevenlabs" -> "Accurate speech to text. Dictation."
     else -> "Voice"

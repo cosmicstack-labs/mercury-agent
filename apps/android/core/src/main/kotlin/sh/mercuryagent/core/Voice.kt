@@ -26,18 +26,31 @@ data class VoiceCapabilities(
   val callSetup: String? = null,
   val dictation: Boolean = false,
   val dictationEngine: String? = null,
-  /** The dictation engine as people say it ("Deepgram"). */
+  /** The dictation engine as people say it ("Gemini", "Deepgram"). */
   val dictationEngineName: String? = null,
   /** What to add for dictation, in plain words, when it isn't available. */
   val dictationSetup: String? = null,
+  /** "device": this Mercury has no speech service, so the phone dictates with its own speech recognition. */
+  val dictationFallback: String? = null,
 ) {
-  /** What to tell the owner when the mic is greyed out. */
+  /** What to tell the owner about dictation without a speech service. */
   val setupLine: String get() = dictationSetup ?: DEFAULT_DICTATION_SETUP
+
+  /** "Gemini", for "Listening · Gemini"; null when Mercury has no speech service. */
+  val dictationName: String? get() = if (dictation) dictationEngineName ?: dictationEngine?.let(::engineName) else null
 
   companion object {
     /** The setup line when the Mercury didn't send one. */
     const val DEFAULT_DICTATION_SETUP =
-      "Live dictation needs a speech provider. Add an OpenAI key in Settings → Models, or a Deepgram or ElevenLabs key in Settings → Voice."
+      "Dictation uses this phone's own speech recognition. For better dictation, add a Gemini, OpenAI, Deepgram or ElevenLabs key in Settings → Voice."
+
+    fun engineName(id: String): String = when (id) {
+      "openai" -> "OpenAI"
+      "gemini" -> "Gemini"
+      "deepgram" -> "Deepgram"
+      "elevenlabs" -> "ElevenLabs"
+      else -> id
+    }
 
     /** A Mercury from before the route: no dictation. */
     val tooOld = VoiceCapabilities(
@@ -52,6 +65,7 @@ data class VoiceCapabilities(
           call = j.bool("call") ?: false, callEngine = j.str("callEngine"), callEngineName = j.str("callEngineName"), callSetup = j.str("callSetup"),
           dictation = j.bool("dictation") ?: false, dictationEngine = j.str("dictationEngine"),
           dictationEngineName = j.str("dictationEngineName"), dictationSetup = j.str("dictationSetup"),
+          dictationFallback = j.str("dictationFallback"),
         )
         404 -> tooOld
         401 -> throw MercuryException.Unauthorized()
@@ -108,9 +122,50 @@ sealed interface VoiceSessionResult {
   }
 }
 
+/**
+ * Who listens when the owner taps the mic (iOS: DictationRoute): the speech service Mercury uses
+ * (the owner's voice choice, the same one Desktop's voice typing uses), or, when Mercury has none
+ * or is too old to say, this phone's own speech recognition. The mic is never greyed out for want
+ * of a key.
+ */
+sealed interface DictationRoute {
+  /** Mercury mints a token for its speech service ("Gemini", "OpenAI", …; null when not yet known). */
+  data class Server(val name: String?) : DictationRoute
+  /** The phone's speech recognition (on the device when it can). */
+  data object Device : DictationRoute
+  /** Nothing can listen: why, in plain words. */
+  data class Unavailable(val reason: String) : DictationRoute
+
+  /** The box's placeholder while listening: "Listening · Gemini", "Listening · On this phone". */
+  val listeningLabel: String
+    get() = when (this) {
+      is Server -> if (name != null) "Listening · $name" else "Listening…"
+      Device -> "Listening · $DEVICE_NAME"
+      is Unavailable -> "Listening…"
+    }
+
+  companion object {
+    const val DEVICE_NAME = "On this phone"
+    const val DURING_CALL = "Dictation is off during a voice call."
+    const val NO_SPEECH = "This phone can't recognise speech right now, and Mercury has no speech service. Add a Gemini, OpenAI, Deepgram or ElevenLabs key in Settings → Voice."
+
+    /** [caps]: null when not known yet (Mercury is asked first). [deviceAvailable]: the phone has a recogniser. */
+    fun decide(caps: VoiceCapabilities?, deviceAvailable: Boolean, callRunning: Boolean = false): DictationRoute = when {
+      callRunning -> Unavailable(DURING_CALL)
+      caps == null -> Server(null)
+      caps.dictation -> Server(caps.dictationName)
+      deviceAvailable -> Device
+      else -> Unavailable(NO_SPEECH)
+    }
+
+    /** Mercury couldn't start its speech service (none set up, an older Mercury, or offline). */
+    fun afterServerRefused(why: String, deviceAvailable: Boolean): DictationRoute = if (deviceAvailable) Device else Unavailable(why)
+  }
+}
+
 /** A short-lived token for live dictation (POST /api/mobile/voice/dictation). */
 data class DictationSession(
-  /** "openai", "deepgram" or "elevenlabs". */
+  /** "openai", "gemini", "deepgram" or "elevenlabs". */
   val engine: String,
   val token: String,
   val ephemeral: Boolean = true,
@@ -125,7 +180,7 @@ data class DictationSession(
 
 sealed interface DictationStart {
   data class Live(val session: DictationSession) : DictationStart
-  /** No dictation on this Mercury: what to add, in plain words. */
+  /** No speech service on this Mercury (the phone uses its own): what to add, in plain words. */
   data class Unavailable(val setup: String) : DictationStart
 
   companion object {

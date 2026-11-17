@@ -22,6 +22,30 @@ class VoiceTest {
     assertEquals(VoiceCapabilities.tooOld, VoiceCapabilities.decode(404, ""))
   }
 
+  @Test fun dictationUsesMercurysServiceElseThePhone() {
+    // Gemini-only Mercury (the owner's voice): Mercury's Gemini listens.
+    val gemini = VoiceCapabilities.decode(200, """{"call":true,"callEngine":"gemini","dictation":true,"dictationEngine":"gemini","dictationEngineName":"Gemini"}""")
+    assertEquals(DictationRoute.Server("Gemini"), DictationRoute.decide(gemini, deviceAvailable = true))
+    assertEquals("Listening · Gemini", DictationRoute.decide(gemini, deviceAvailable = false).listeningLabel)
+    // An older Mercury without the engine's display name.
+    assertEquals(DictationRoute.Server("Deepgram"), DictationRoute.decide(VoiceCapabilities(dictation = true, dictationEngine = "deepgram"), true))
+    // No speech key at all: the phone's own recogniser, never a greyed-out mic.
+    val none = VoiceCapabilities.decode(200, """{"call":false,"dictation":false,"dictationFallback":"device","dictationSetup":"Dictation uses this phone's own speech recognition."}""")
+    assertEquals("device", none.dictationFallback)
+    assertEquals(DictationRoute.Device, DictationRoute.decide(none, deviceAvailable = true))
+    assertEquals("Listening · On this phone", DictationRoute.Device.listeningLabel)
+    // A Mercury from before dictation (404): the phone too.
+    assertEquals(DictationRoute.Device, DictationRoute.decide(VoiceCapabilities.decode(404, ""), true))
+    // Not known yet: ask Mercury (and fall back to the phone if it refuses).
+    assertEquals(DictationRoute.Server(null), DictationRoute.decide(null, false))
+    assertEquals(DictationRoute.Device, DictationRoute.afterServerRefused("no key", deviceAvailable = true))
+    assertEquals(DictationRoute.Unavailable("no key"), DictationRoute.afterServerRefused("no key", deviceAvailable = false))
+    // Nothing can listen: say why. A call has the mic: off.
+    assertTrue(DictationRoute.decide(none, deviceAvailable = false) is DictationRoute.Unavailable)
+    assertEquals(DictationRoute.Unavailable(DictationRoute.DURING_CALL), DictationRoute.decide(gemini, true, callRunning = true))
+    assertFalse(VoiceCapabilities.DEFAULT_DICTATION_SETUP.contains("can't"))
+  }
+
   @Test fun aLiveSession() {
     val r = VoiceSessionResult.decode(200, """
       {"engine":"gemini","token":"auth_tokens/x","ephemeral":true,"expiresAt":"2026-11-16T10:00:00.000Z","model":"models/gemini-live",

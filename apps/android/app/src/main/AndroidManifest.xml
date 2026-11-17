@@ -18,6 +18,13 @@
   <uses-feature android:name="android.hardware.microphone" android:required="false" />
   <uses-feature android:name="android.hardware.sensor.proximity" android:required="false" />
   <uses-feature android:name="android.hardware.telephony" android:required="false" />
+  <!-- Dictation without a Mercury speech service: the phone's own speech recogniser
+       (SpeechRecognizer.isRecognitionAvailable needs to see the recognition service). -->
+  <queries>
+    <intent>
+      <action android:name="android.speech.RecognitionService" />
+    </intent>
+  </queries>
 
   <application
     android:name=".MercuryApplication"

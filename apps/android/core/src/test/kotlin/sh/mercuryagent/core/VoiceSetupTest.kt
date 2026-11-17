@@ -81,7 +81,7 @@ class VoiceSetupTest {
 
   @Test fun theMicListsWhatDictatesWithMoreOptions() {
     val p = VoiceSetup.plan(Trigger.Dictation, list())
-    // Gemini can't dictate: not offered for the mic.
+    // An older Mercury lists Gemini for calls only: not offered for the mic there.
     assertEquals(listOf("openai"), p.choices.map { it.id })
     assertEquals(listOf("deepgram", "elevenlabs"), p.more.map { it.id })
     // A Gemini key doesn't make the mic ready.
