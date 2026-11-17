@@ -10,6 +10,7 @@ import { logger } from '../../utils/logger.js';
 import { pulseProgress, TOOL_PULSE_INTERVAL_MS } from '../../core/progress-pulse.js';
 import { planArgvExecution, minimalEnv, type ArgvPlan } from './argv-lane.js';
 import { killProcessTree, processTreeAlive, processTreeSpawnOptions, trackProcessTree, untrackProcessTree } from './process-tree.js';
+import { withMercuryGwsOnPath } from '../../google/gws-binary.js';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_BUFFER = 1024 * 1024;
@@ -38,9 +39,10 @@ interface ExecOptions {
  * the platform shell.
  */
 export function executeCommand(command: string, cwd: string, timeoutMs: number, options: ExecOptions = {}): Promise<ExecResult> {
+  const env = shellEnv();
   return superviseChild(() => spawn(command, [], {
     cwd,
-    env: shellEnv(),
+    env: withMercuryGwsOnPath(env) ?? env,
     shell: true,
     stdio: ['pipe', 'pipe', 'pipe'],
     // Its own process group, so a stop ends everything it started.

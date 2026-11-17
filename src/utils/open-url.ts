@@ -21,7 +21,12 @@ export function getUrlOpeners(
     ];
   }
   if (platform === 'darwin') return [{ command: 'open', args: [url] }];
-  if (platform === 'win32') return [{ command: 'cmd.exe', args: ['/d', '/s', '/c', 'start', '', url] }];
+  if (platform === 'win32') {
+    return [
+      { command: 'rundll32', args: ['url.dll,FileProtocolHandler', url] },
+      { command: 'cmd.exe', args: ['/d', '/s', '/c', 'start', '', url] },
+    ];
+  }
   return [{ command: 'xdg-open', args: [url] }];
 }
 
@@ -31,6 +36,7 @@ export async function openUrl(
     execFileAsync(command, args, { windowsHide: true, timeout: 10_000 }),
   openers: UrlOpener[] = getUrlOpeners(url),
 ): Promise<boolean> {
+  if (!isWebUrl(url)) return false;
   for (const opener of openers) {
     try {
       await run(opener.command, opener.args);
@@ -40,4 +46,13 @@ export async function openUrl(
     }
   }
   return false;
+}
+
+function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
 }

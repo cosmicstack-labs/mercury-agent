@@ -57,6 +57,62 @@ describe('secret redaction', () => {
   });
 });
 
+describe('Google secret redaction', () => {
+  const access = join('ya29.', 'a0AfH6SMBxK3example', 'TokenValue_0123456789');
+  const refresh = join('1//', '0gExampleRefresh', 'TokenValue-abcdefghij');
+  const clientSecret = join('GOCSPX-', 'AbCdEfGhIjKlMnOp', 'QrStUvWxYz12');
+  const pem = [join('-----BEGIN ', 'PRIVATE KEY-----'), join('MIIEvQIBADANBgkq', 'hkiG9w0BAQEFAASC'), join('-----END ', 'PRIVATE KEY-----'), ''].join('\n');
+
+  it('masks bare access tokens, refresh tokens and OAuth client secrets', () => {
+    const out = redactSecrets(`access ${access}\nrefresh ${refresh}\nsecret ${clientSecret}`);
+    expect(out).not.toContain('a0AfH6SMBxK3example');
+    expect(out).not.toContain('0gExampleRefresh');
+    expect(out).not.toContain('AbCdEfGhIjKlMnOp');
+    expect(out).toContain('ya29****6789');
+    expect(out).toContain('1//0****ghij');
+    expect(out).toContain('GOCS****Yz12');
+  });
+
+  it('masks gws auth export output and keeps the key names', () => {
+    const exported = JSON.stringify({
+      client_id: '123-abc.apps.googleusercontent.com',
+      client_secret: clientSecret,
+      refresh_token: refresh,
+      type: 'authorized_user',
+    }, null, 2);
+    const out = redactSecrets(exported);
+    expect(out).toContain('"client_id": "123-abc.apps.googleusercontent.com"');
+    expect(out).toContain('"client_secret": "GOCS****Yz12"');
+    expect(out).toContain('"refresh_token": "1//0****ghij"');
+    expect(out).toContain('"type": "authorized_user"');
+  });
+
+  it('masks JSON secrets whatever their format', () => {
+    const out = redactSecrets(JSON.stringify({
+      client_secret: join('legacySecret', 'Value1234'),
+      token: join('opaque-token-', 'value-5678'),
+      password: join('hunter2', 'hunter2'),
+      api_key: join('abcdefgh', '12345678'),
+    }));
+    expect(out).toBe('{"client_secret":"lega****1234","token":"opaq****5678","password":"****","api_key":"abcd****5678"}');
+  });
+
+  it('masks a service-account private key, in JSON and as a file', () => {
+    const account = JSON.stringify({ type: 'service_account', private_key: pem, client_email: 'bot@p.iam.gserviceaccount.com' });
+    const out = redactSecrets(account);
+    expect(out).not.toContain('MIIEvQIBADANBgkq');
+    expect(out).toContain('"client_email":"bot@p.iam.gserviceaccount.com"');
+    expect(redactSecrets(pem)).not.toContain('MIIEvQIBADANBgkq');
+  });
+
+  it('leaves URLs and ordinary JSON alone', () => {
+    const text = 'see https://example.com//path?v=1 and file:///tmp/a';
+    expect(redactSecrets(text)).toBe(text);
+    const json = '{"name": "Ana", "nextPageToken": "CAESBggDEAEYAQ", "q": "is:unread", "password": "short"}';
+    expect(redactSecrets(json)).toBe(json);
+  });
+});
+
 describe('user-facing AI errors', () => {
   it('names a spent token budget instead of falling back to the generic line', () => {
     // The exact shape the daemon builds when isOverBudget() refuses a turn.

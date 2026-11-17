@@ -32,6 +32,7 @@ export interface PermissionContext {
   /** Canonical repository session, supplied by the agent, never tool arguments. */
   readonly sessionId?: string;
   readonly senderRole: 'admin' | 'member' | undefined;
+  readonly unattended: boolean;
   /** Allow-all: approved-scope actions and non-blocked commands run without prompts. */
   readonly autoApprove: boolean;
   /**
@@ -58,6 +59,7 @@ export function makeContext(fields: Partial<PermissionContext> = {}): Permission
     channelId: fields.channelId ?? 'cli',
     ...(fields.sessionId ? { sessionId: fields.sessionId } : {}),
     senderRole: fields.senderRole,
+    unattended: fields.unattended ?? false,
     rememberApprovals: fields.rememberApprovals ?? true,
     autoApprove: fields.autoApprove ?? false,
     autoApproveOrigin: fields.autoApprove ? (fields.autoApproveOrigin ?? 'session') : null,
@@ -125,6 +127,7 @@ export function deriveChildContext(parent: PermissionContext, req: ChildContextR
     channelType: req.channelType ?? parent.channelType,
     channelId: req.channelId ?? parent.channelId,
     senderRole: parent.senderRole,
+    unattended: parent.unattended,
     rememberApprovals: parent.rememberApprovals,
     autoApprove: inheritAllow,
     autoApproveOrigin: inheritAllow ? 'session' : null,
@@ -170,7 +173,7 @@ export interface ContextCell {
 }
 
 /** Context fields that belong to one turn, never to the shared session. */
-export const TURN_OWNED_FIELDS = ['channelType', 'channelId', 'sessionId', 'senderRole', 'rememberApprovals', 'elevated'] as const;
+export const TURN_OWNED_FIELDS = ['channelType', 'channelId', 'sessionId', 'senderRole', 'unattended', 'rememberApprovals', 'elevated'] as const;
 export type TurnOwnedField = typeof TURN_OWNED_FIELDS[number];
 
 export interface TurnOverlay {

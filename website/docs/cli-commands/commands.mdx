@@ -16,7 +16,7 @@ title: Full Command Reference
 | `mercury doctor` | Reconfigure settings — press Enter to keep current values |
 | `mercury doctor --platform` | Show cross-platform terminal/daemon compatibility diagnostics |
 | `mercury doctor --mcp` | Connect to every enabled MCP server and report its status |
-| `mercury doctor --security` | Check remote access and security: password, devices, file permissions, the tunnel |
+| `mercury doctor --security` | Check remote access and security: password, devices, file permissions, the tunnel, and gws's stored Google sign-in |
 | `mercury setup` | Re-run the setup wizard (same as doctor) |
 | `mercury help` | Show the full manual (tools, commands, config paths) |
 | `mercury service install` | Install as system service (auto-start on boot) |
@@ -93,3 +93,16 @@ The `mercury mcp` commands manage the [MCP servers](../integrations/mcp) whose t
 | `mercury mcp remove <id>` | Remove a server |
 
 `add` options: `--env KEY=VALUE`, `--header 'Name: value'`, `--cwd <dir>`, `--allow <tools>`, `--auto-approve <tools>`, `--allow-private`, `--disabled`, `-y`. Use `${env:NAME}` (in single quotes) for secrets kept in `~/.mercury/.env`.
+
+## Google Workspace
+
+The `mercury google` commands connect [Gmail, Drive and Docs](../integrations/google-workspace) through Google's gws tool.
+
+| Command | Description |
+|---------|-------------|
+| `mercury google connect` | Install gws if needed, sign in to Google (read-only) and install the skill |
+| `mercury google connect --write` | Sign in again with write access, for drafts and document edits |
+| `mercury google status` | Show the account, gws and the security checks |
+| `mercury google disconnect` | Sign gws out on this computer |
+
+`connect` options: `--services <list>` (default `gmail,drive,docs`), `--client <path>` for the Google app's client JSON, `--no-browser`, `--install` to use Mercury's own gws even if one is on your PATH, `-y` to install without asking.

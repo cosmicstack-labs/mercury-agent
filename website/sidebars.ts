@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
         'integrations/optimus',
         'integrations/spotify',
         'integrations/mcp',
+        'integrations/google-workspace',
         'integrations/coding-workspace',
         'integrations/sub-agents',
       ],
