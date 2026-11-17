@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Mercury is often reached over the home network (the LAN relay, http://<mac>.local:6175) like
+  iOS's NSAllowsLocalNetworking. Android can't name IP ranges here, so cleartext is permitted at
+  this level and the app itself refuses http:// to anything that isn't local or private
+  (core: LocalNetwork + MercuryClient.localOnlyCleartext). Only the system's CAs are trusted.
+-->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="true">
+    <trust-anchors>
+      <certificates src="system" />
+    </trust-anchors>
+  </base-config>
+</network-security-config>
