@@ -149,6 +149,7 @@ fun SettingsScreen(
   var health by remember { mutableStateOf<Health?>(null) }
   var healthError by remember { mutableStateOf<String?>(null) }
   var confirm by remember { mutableStateOf(false) }
+  var editing by remember { mutableStateOf<Connection?>(null) }
   val scope = rememberCoroutineScope()
   val context = LocalContext.current
 
@@ -168,8 +169,9 @@ fun SettingsScreen(
             else -> Text("Online · Mercury ${health?.version.orEmpty()}")
           }
         },
-        leadingContent = { Icon(Icons.Outlined.Computer, null) },
+        leadingContent = { sh.mercuryagent.ui.components.MercuryLogo(connection.logoId, 44.dp) },
         trailingContent = { StatusDot(if (health != null && healthError == null) Mercury.colors.green else Mercury.colors.ink4, size = 10.dp) },
+        modifier = Modifier.clickable(onClickLabel = "Rename it or pick its logo") { editing = connection },
       )
     }
     item { ListItem(headlineContent = { Text("Address") }, supportingContent = { Text(connection.baseUrl) }) }
@@ -196,6 +198,7 @@ fun SettingsScreen(
       ListItem(
         headlineContent = { Text(c.name) },
         supportingContent = { Text(c.baseUrl) },
+        leadingContent = { sh.mercuryagent.ui.components.MercuryLogo(c.logoId, 36.dp) },
         trailingContent = { if (c.id == connection.id) Icon(Icons.Outlined.Check, "Connected") },
         modifier = Modifier.clickable(onClickLabel = "Switch to ${c.name}") { store.activate(c.id) },
       )
@@ -219,6 +222,9 @@ fun SettingsScreen(
     }
   }
 
+  editing?.let { c ->
+    sh.mercuryagent.ui.connect.EditMercurySheet(c, onDismiss = { editing = null }) { n, l -> store.update(c.id, n, l); editing = null }
+  }
   if (confirm) AlertDialog(
     onDismissRequest = { confirm = false },
     title = { Text("Disconnect from ${connection.name}?") },

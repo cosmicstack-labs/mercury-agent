@@ -173,6 +173,7 @@ private fun Home(container: AppContainer, connection: Connection) {
               onClose = { closeThen { } },
               onSwitchMercury = { id -> closeThen { container.connections.activate(id) } },
               onAddMercury = { closeThen { nav.navigate(AddMercuryRoute) } },
+              onEditMercury = { id, name, logo -> container.connections.update(id, name, logo) },
             )
           }
         },

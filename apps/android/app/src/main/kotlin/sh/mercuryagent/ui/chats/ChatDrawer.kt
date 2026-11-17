@@ -35,7 +35,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.outlined.Add
+
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.BookmarkRemove
 import androidx.compose.material.icons.outlined.Check
@@ -94,15 +94,17 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import sh.mercuryagent.core.ChatThread
 import sh.mercuryagent.core.Connection
-import sh.mercuryagent.ui.components.MercuryMark
+import sh.mercuryagent.ui.components.MercuryLogo
+import sh.mercuryagent.ui.connect.MercurySwitcherSheet
 import sh.mercuryagent.ui.components.StatusDot
 import sh.mercuryagent.ui.theme.Mercury
 
 /**
- * The left drawer, laid out like Grok's: at the top the connected Mercury (tap: switch or add
- * another) and a » button that closes the drawer; Call Mercury, Bots, Artifacts, Brain (the mind map) and Saved; "Conversations" (or
- * "Results", or "Saved") over one flat list of chats, newest first, each row the title alone; and
- * pinned at the bottom over a fade, Settings, Search (filters live on titles and messages) and a
+ * The left drawer, laid out like Grok's: at the top the connected Mercury, its logo and friendly name
+ * (tap: the switcher, to switch, rename, pick a logo or add another) and a » button that closes the
+ * drawer; Call Mercury, Bots, Artifacts, Brain (the mind map) and Saved; "Conversations" (or "Results",
+ * or "Saved") over the chats, newest first, each row the title alone, with small day labels between
+ * them ("Today", "3 days ago", "October"). All of it is one scrolling list; pinned at the bottom over a fade, Settings, Search (filters live on titles and messages) and a
  * white New chat button. Better than Grok, quietly: a dot before a title only when the chat works
  * (green, pulsing), needs you (amber) or failed (red); unread titles semibold with a dot at the end;
  * matches emphasised; swipe left to delete (Undo in the drawer); long-press for Rename, Save, Delete.
@@ -127,52 +129,68 @@ fun ChatDrawer(
   onClose: () -> Unit,
   onSwitchMercury: (String) -> Unit,
   onAddMercury: () -> Unit,
+  /** Edit in the switcher: a new friendly name and logo for a Mercury. */
+  onEditMercury: (id: String, name: String, logo: String) -> Unit,
 ) {
   val ui by vm.ui.collectAsStateWithLifecycle()
   val history by vm.history.collectAsStateWithLifecycle()
   var renaming by remember { mutableStateOf<ChatThread?>(null) }
+  var switching by remember { mutableStateOf(false) }
   val list = rememberLazyListState()
   val focus = LocalFocusManager.current
   val bg = MaterialTheme.colorScheme.background
 
   Box(Modifier.fillMaxSize().background(bg).statusBarsPadding().navigationBarsPadding()) {
-    Column(Modifier.fillMaxSize()) {
-      Header(connection, connections, online, onClose, onSwitchMercury, onAddMercury)
-      NavRow(Icons.Outlined.Phone, "Call Mercury", onClick = onCall)
-      NavRow(Icons.Outlined.SmartToy, "Bots", onClick = onBots)
-      NavRow(Icons.Outlined.FolderOpen, "Artifacts", onClick = onArtifacts)
-      NavRow(Icons.Outlined.Psychology, "Brain", onClick = onBrain)
-      NavRow(
-        if (ui.savedOnly) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder, "Saved", selected = ui.savedOnly,
-        onClick = { vm.setSavedOnly(!ui.savedOnly) },
-      )
-      Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, top = 18.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(
-          history.label, style = MaterialTheme.typography.labelLarge, color = Mercury.colors.ink3,
-          modifier = Modifier.weight(1f).semantics { heading() },
-        )
-        if (ui.anyUnread && history.query.isEmpty()) Icon(
-          Icons.Outlined.DoneAll, "Mark all as read", tint = Mercury.colors.ink3,
-          modifier = Modifier.clip(CircleShape).clickable(onClick = vm::markAllRead).padding(8.dp).size(18.dp),
-        )
-      }
-
-      PullToRefreshBox(ui.refreshing, onRefresh = vm::refresh, modifier = Modifier.weight(1f)) {
-        // A list that couldn't load says so, with Retry: never a silent empty drawer.
-        val failed = ui.error != null
-        when {
-          !ui.loaded && ui.threads.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Mercury.colors.ink3)
+    // One list from the top of the drawer to the last chat (Grok's drawer scrolls as a whole): the
+    // Mercury, the nav rows and the labels are items too; only the bottom bar stays put. Chats are
+    // lazy rows with stable keys, so 590 of them scroll smoothly.
+    PullToRefreshBox(ui.refreshing, onRefresh = vm::refresh, modifier = Modifier.fillMaxSize()) {
+      val failed = ui.error != null
+      LazyColumn(state = list, contentPadding = PaddingValues(bottom = 96.dp), modifier = Modifier.fillMaxSize()) {
+        item(key = "header", contentType = "header") { Header(connection, online, onClose) { switching = true } }
+        item(key = "nav", contentType = "nav") {
+          Column {
+            NavRow(Icons.Outlined.Phone, "Call Mercury", onClick = onCall)
+            NavRow(Icons.Outlined.SmartToy, "Bots", onClick = onBots)
+            NavRow(Icons.Outlined.FolderOpen, "Artifacts", onClick = onArtifacts)
+            NavRow(Icons.Outlined.Psychology, "Brain", onClick = onBrain)
+            NavRow(
+              if (ui.savedOnly) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder, "Saved", selected = ui.savedOnly,
+              onClick = { vm.setSavedOnly(!ui.savedOnly) },
+            )
           }
-          failed && ui.threads.isEmpty() -> LoadError(ui.error.orEmpty(), vm::refresh)
-          else -> LazyColumn(state = list, contentPadding = PaddingValues(bottom = 96.dp), modifier = Modifier.fillMaxSize()) {
+        }
+        item(key = "label", contentType = "label") {
+          Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, top = 18.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+              history.label, style = MaterialTheme.typography.labelLarge, color = Mercury.colors.ink3,
+              modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            if (ui.anyUnread && history.query.isEmpty()) Icon(
+              Icons.Outlined.DoneAll, "Mark all as read", tint = Mercury.colors.ink3,
+              modifier = Modifier.clip(CircleShape).clickable(onClick = vm::markAllRead).padding(8.dp).size(18.dp),
+            )
+          }
+        }
+        // A list that couldn't load says so, with Retry: never a silent empty drawer.
+        when {
+          !ui.loaded && ui.threads.isEmpty() -> item(key = "loading", contentType = "loading") {
+            Box(Modifier.fillMaxWidth().height(120.dp), Alignment.Center) {
+              CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Mercury.colors.ink3)
+            }
+          }
+          failed && ui.threads.isEmpty() -> item(key = "load-error", contentType = "error") { LoadError(ui.error.orEmpty(), vm::refresh) }
+          else -> {
             if (failed) item(key = "error", contentType = "error") { InlineError(ui.error.orEmpty(), vm::refresh) }
-            items(history.threads, key = { it.id }, contentType = { "row" }) { t ->
-              HistoryRow(
-                t, RowLook.of(ui.status[t.id], ui.isUnread(t)), history.query, selected = t.id == currentChat,
-                onOpen = { focus.clearFocus(); onOpen(t) }, onSave = { vm.toggleSaved(t) }, onRename = { renaming = t },
-                onDelete = { vm.delete(t) }, modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
-              )
+            for (section in history.sections) {
+              section.title?.let { title -> item(key = "day:$title", contentType = "day") { DayLabel(title) } }
+              items(section.threads, key = { it.id }, contentType = { "row" }) { t ->
+                HistoryRow(
+                  t, RowLook.of(ui.status[t.id], ui.isUnread(t)), history.query, selected = t.id == currentChat,
+                  onOpen = { focus.clearFocus(); onOpen(t) }, onSave = { vm.toggleSaved(t) }, onRename = { renaming = t },
+                  onDelete = { vm.delete(t) }, modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
+                )
+              }
             }
             if (ui.loaded && history.isEmpty) item(key = "none", contentType = "empty") {
               Text(
@@ -203,53 +221,49 @@ fun ChatDrawer(
     }
   }
 
+  if (switching) MercurySwitcherSheet(
+    connections, connection.id, onSwitch = onSwitchMercury, onEdit = onEditMercury, onAdd = onAddMercury, onDismiss = { switching = false },
+  )
   renaming?.let { t ->
     RenameDialog(t.displayTitle.takeIf { it != "New chat" }.orEmpty(), onDismiss = { renaming = null }) { vm.rename(t, it); renaming = null }
   }
 }
 
-/** The connected Mercury (tap: switch or add another) and the button that closes the drawer. */
+/** The connected Mercury, its logo and friendly name (tap: the switcher), and » to close the drawer. */
 @Composable
-private fun Header(
-  connection: Connection, connections: List<Connection>, online: Boolean?,
-  onClose: () -> Unit, onSwitch: (String) -> Unit, onAdd: () -> Unit,
-) {
-  var menu by remember { mutableStateOf(false) }
+private fun Header(connection: Connection, online: Boolean?, onClose: () -> Unit, onSwitcher: () -> Unit) {
   Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-    Box(Modifier.weight(1f)) {
-      Row(
-        Modifier.clip(RoundedCornerShape(16.dp)).clickable(onClickLabel = "Switch Mercury") { menu = true }.padding(6.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
-      ) {
-        Box(
-          Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh), Alignment.Center,
-        ) { MercuryMark(Modifier.size(26.dp)) }
-        Column {
-          Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-              connection.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
-              maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
-            )
-            Icon(Icons.Outlined.KeyboardArrowDown, null, Modifier.size(18.dp), tint = Mercury.colors.ink3)
-          }
+    Row(
+      Modifier.weight(1f).clip(RoundedCornerShape(16.dp)).clickable(onClickLabel = "Switch Mercury, rename it, or add another", onClick = onSwitcher).padding(6.dp),
+      verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      MercuryLogo(connection.logoId, 44.dp)
+      Column(Modifier.weight(1f, fill = false)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
           Text(
-            when (online) { true -> "Online"; false -> "Offline"; null -> "Connecting…" },
-            style = MaterialTheme.typography.bodySmall, color = Mercury.colors.ink3,
+            connection.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
           )
+          Icon(Icons.Outlined.KeyboardArrowDown, null, Modifier.size(18.dp), tint = Mercury.colors.ink3)
         }
-      }
-      DropdownMenu(menu, { menu = false }) {
-        for (c in connections) DropdownMenuItem(
-          text = { Text(c.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-          trailingIcon = { if (c.id == connection.id) Icon(Icons.Outlined.Check, "Connected") },
-          onClick = { menu = false; if (c.id != connection.id) onSwitch(c.id) },
+        Text(
+          when (online) { true -> "Online"; false -> "Offline"; null -> "Connecting…" },
+          style = MaterialTheme.typography.bodySmall, color = Mercury.colors.ink3,
         )
-        HorizontalDivider()
-        DropdownMenuItem(text = { Text("Add another Mercury") }, leadingIcon = { Icon(Icons.Outlined.Add, null) }, onClick = { menu = false; onAdd() })
       }
     }
+    Spacer(Modifier.width(8.dp))
     RoundButton(Icons.Outlined.KeyboardDoubleArrowRight, "Close chats", onClick = onClose)
   }
+}
+
+/** A small muted label over a day's chats: "Today", "3 days ago", "October". */
+@Composable
+private fun DayLabel(title: String) {
+  Text(
+    title, style = MaterialTheme.typography.labelMedium, color = Mercury.colors.ink3,
+    modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 14.dp, bottom = 4.dp).semantics { heading() },
+  )
 }
 
 /** A 48dp round button: dark grey with a hairline, or [filled] ink (white on dark) for the main action. */
@@ -393,7 +407,7 @@ private fun emphasise(text: String, query: String, ink: Color): AnnotatedString 
 
 @Composable
 private fun LoadError(message: String, onRetry: () -> Unit) {
-  Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+  Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Text("Couldn't load your chats", style = MaterialTheme.typography.titleSmall)
     Text(message, style = MaterialTheme.typography.bodyMedium, color = Mercury.colors.ink3)
     OutlinedButton(onClick = onRetry) { Text("Retry") }

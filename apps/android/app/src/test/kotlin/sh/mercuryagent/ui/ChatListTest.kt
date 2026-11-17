@@ -13,6 +13,7 @@ import sh.mercuryagent.core.ActivityEvent
 import sh.mercuryagent.core.ChatThread
 import sh.mercuryagent.core.TurnsInfo
 import sh.mercuryagent.ui.chats.ChatFilter
+import sh.mercuryagent.ui.chats.ChatHistory
 import sh.mercuryagent.ui.chats.ChatSections
 import sh.mercuryagent.ui.chats.ChatStatus
 import sh.mercuryagent.ui.chats.ChatsViewModel
@@ -31,17 +32,66 @@ class ChatListTest {
   @Test fun dayTitlesCountCalendarDays() {
     assertEquals("Today", ChatSections.title(at("2026-11-16T00:10"), now, zone))
     assertEquals("Yesterday", ChatSections.title(at("2026-11-15T23:00"), now, zone))
-    assertEquals("Previous 7 days", ChatSections.title(at("2026-11-14T12:00"), now, zone))
-    assertEquals("Previous 7 days", ChatSections.title(at("2026-11-10T12:00"), now, zone))
+    assertEquals("2 days ago", ChatSections.title(at("2026-11-14T12:00"), now, zone))
+    assertEquals("3 days ago", ChatSections.title(at("2026-11-13T12:00"), now, zone))
+    assertEquals("6 days ago", ChatSections.title(at("2026-11-10T12:00"), now, zone))
     assertEquals("Previous 30 days", ChatSections.title(at("2026-11-09T12:00"), now, zone))
-    assertEquals("Older", ChatSections.title(at("2026-10-17T12:00"), now, zone))
+    assertEquals("Previous 30 days", ChatSections.title(at("2026-10-18T12:00"), now, zone))
     assertEquals("Today", ChatSections.title(at("2026-11-17T12:00"), now, zone)) // Mercury's clock ahead
   }
 
+  @Test fun olderChatsAreLabelledByMonthWithTheYearWhenItIsAnother() {
+    assertEquals("October", ChatSections.title(at("2026-10-17T12:00"), now, zone))
+    assertEquals("September", ChatSections.title(at("2026-09-17T12:00"), now, zone))
+    assertEquals("January", ChatSections.title(at("2026-01-02T00:00"), now, zone))
+    assertEquals("September 2025", ChatSections.title(at("2025-09-20T00:00"), now, zone))
+    assertEquals("December 2025", ChatSections.title(at("2025-12-31T23:00"), now, zone))
+  }
+
+  @Test fun midnightIsTheBoundary() {
+    assertEquals("Today", ChatSections.title(at("2026-11-16T00:00"), now, zone))
+    assertEquals("Yesterday", ChatSections.title(at("2026-11-15T23:59:59"), now, zone))
+    assertEquals("2 days ago", ChatSections.title(at("2026-11-14T23:59:59"), now, zone))
+    // One second before midnight, "now" is still the 15th: a chat from 10 pm on the 15th is today.
+    assertEquals("Today", ChatSections.title(at("2026-11-15T22:00"), at("2026-11-15T23:59:59"), zone))
+  }
+
+  @Test fun theSameMomentIsLabelledInThePhonesTimeZone() {
+    // 20:00 UTC on 15 Nov is 1:30 am on the 16th in Srinagar but noon on the 15th in Los Angeles.
+    val chat = at("2026-11-15T20:00")
+    val later = at("2026-11-16T00:30")
+    assertEquals("Today", ChatSections.title(chat, later, ZoneId.of("Asia/Kolkata")))
+    assertEquals("Yesterday", ChatSections.title(chat, later, ZoneOffset.UTC))
+    assertEquals("Today", ChatSections.title(chat, later, ZoneId.of("America/Los_Angeles")))
+    // Months too: 30 Sep 20:30 UTC is 1 Oct in Srinagar, still 30 Sep in Los Angeles.
+    val oct = at("2026-09-30T20:30")
+    assertEquals("October", ChatSections.title(oct, now, ZoneId.of("Asia/Kolkata")))
+    assertEquals("September", ChatSections.title(oct, now, ZoneId.of("America/Los_Angeles")))
+  }
+
   @Test fun sectionsInOrderOfFirstAppearance() {
-    val s = ChatSections.byDay(listOf(t("a", "2026-11-16T00:30"), t("b", "2026-11-15T10:00"), t("c", "2026-11-16T00:20"), t("d", "2026-01-01T00:00")), now, zone)
-    assertEquals(listOf("Today", "Yesterday", "Older"), s.map { it.title })
+    val s = ChatSections.byDay(
+      listOf(t("a", "2026-11-16T00:30"), t("b", "2026-11-15T10:00"), t("c", "2026-11-16T00:20"), t("d", "2026-10-01T00:00"), t("e", "2026-10-09T00:00"), t("f", "2025-10-01T00:00")),
+      now, zone,
+    )
+    assertEquals(listOf("Today", "Yesterday", "October", "October 2025"), s.map { it.title })
     assertEquals(listOf("a", "c"), s[0].threads.map { it.id })
+    assertEquals(listOf("d", "e"), s[2].threads.map { it.id })
+  }
+
+  @Test fun searchResultsKeepTheirDayLabelsAndSavedHasNone() {
+    val list = listOf(
+      t("a", "2026-11-16T00:30", preview = "carousel"),
+      t("b", "2026-11-13T10:00", preview = "carousel ride"),
+      t("c", "2026-11-13T09:00"),
+      t("s", "2026-10-01T09:00", saved = "2026-11-15T00:00"),
+    )
+    val found = ChatHistory.build(list, "carousel", false, now, zone)
+    assertEquals(listOf("Today", "3 days ago"), found.sections.map { it.title })
+    assertEquals(found.threads.map { it.id }, found.sections.flatMap { it.threads }.map { it.id })
+    assertEquals(listOf("Today", "3 days ago", "October"), ChatHistory.build(list, "", false, now, zone).sections.map { it.title })
+    assertEquals(listOf<String?>(null), ChatHistory.build(list, "", true, now, zone).sections.map { it.title })
+    assertTrue(ChatHistory.build(list, "zzz", true, now, zone).sections.isEmpty())
   }
 
   @Test fun filterSearchAndSaved() {
