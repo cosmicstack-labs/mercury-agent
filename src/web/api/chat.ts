@@ -1,6 +1,7 @@
 import { trackStream } from '../../security/live-streams.js';
-import { isThisComputer, principalKey, principalOf } from '../middleware.js';
+import { isThisComputer, originOf, principalKey, principalLabel, principalOf } from '../middleware.js';
 import { requireOwner } from '../owner-gate.js';
+import { audit } from '../../security/audit.js';
 import { protectedReason } from '../../security/protected-paths.js';
 import { Hono } from 'hono';
 import { commandCatalog } from '../../core/commands/catalog.js';
@@ -464,11 +465,8 @@ chat.put('/api/chat/settings', async (c) => {
   const body = await c.req.json<Partial<ChatWebSettings>>();
   const current = webChannel.getSettings();
   const stored = loadSettings();
-  // Widening what Mercury may do, from another device, is the owner's call.
-  if (body.bypassPermissions === true && !current.bypassPermissions) {
-    const wait = requireOwner(c, { id: 'permissions.allow-all', title: 'Turn on Allow All (Mercury acts without asking)' });
-    if (wait) return wait;
-  }
+  // Allow All from a paired device needs no approval step: that device can already answer every
+  // "Allow once" itself, so a gate here only added friction. It is audited below.
   if (typeof body.workspace === 'string' && body.workspace !== stored.workspace) {
     const wait = requireOwner(c, { id: `workspace.root:${body.workspace}`, title: 'Change the workspace folder', detail: body.workspace });
     if (wait) return wait;
@@ -481,7 +479,13 @@ chat.put('/api/chat/settings', async (c) => {
   webChannel.setBypassPermissions(next.bypassPermissions);
   webChannel.setRestrictUser(next.restrictUser);
   saveSettings(next);
-  if (typeof body.bypassPermissions === 'boolean') savePermissionMode(body.bypassPermissions ? 'allow-all' : 'ask-me');
+  if (typeof body.bypassPermissions === 'boolean') {
+    savePermissionMode(body.bypassPermissions ? 'allow-all' : 'ask-me');
+    if (body.bypassPermissions !== current.bypassPermissions) {
+      const origin = originOf(c);
+      audit('permissions.mode', { who: principalLabel(principalOf(c)), ip: origin.clientIpKnown ? origin.clientIp : undefined, detail: body.bypassPermissions ? 'Allow All' : 'Ask Me' });
+    }
+  }
   return c.json({ success: true, ...next, permissionMode: loadPermissionMode() });
 });
 
