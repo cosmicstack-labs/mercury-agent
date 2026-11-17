@@ -545,6 +545,18 @@ export class PluginManager {
     }
   }
 
+  /**
+   * A shared key changed outside a plugin's own settings (Settings → Voice
+   * providers). Plugins get keys at start, so restart the running ones that
+   * receive it. Returns their ids.
+   */
+  async secretChanged(name: string): Promise<string[]> {
+    const ids = [...this.running.entries()].filter(([, r]) => r.manifest.permissions.secrets.includes(name)).map(([id]) => id);
+    for (const id of ids) await this.stopRuntime(id);
+    if (ids.length) await this.reconcile();
+    return ids;
+  }
+
   /** Slash commands the running plugins add, for the "/" picker. */
   commandHelp(): Array<{ name: string; description: string; plugin: string }> {
     return [...this.running.values()].flatMap((r) => r.manifest.contributes.commands.map((c) => ({ name: c.name, description: c.description, plugin: r.manifest.name })));

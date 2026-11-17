@@ -55,7 +55,7 @@ describe('GET /api/mobile/voice/capabilities', () => {
     withOpenAI();
     const f = vi.fn();
     setMobileVoiceFetch(f as never);
-    expect(await capabilities()).toEqual({ call: true, callEngine: 'openai', dictation: true, dictationEngine: 'openai' });
+    expect(await capabilities()).toEqual({ call: true, callEngine: 'openai', callEngineName: 'OpenAI Realtime', dictation: true, dictationEngine: 'openai', dictationEngineName: 'OpenAI' });
     expect(f).not.toHaveBeenCalled();
   });
 
