@@ -43,7 +43,7 @@ export interface PluginService {
   update(id?: string): Promise<Array<{ id: string; from: string; to: string }>>;
   rollback(id: string): Promise<{ from: string; to: string }>;
   uninstall(id: string, purge?: boolean): Promise<void>;
-  setSetting(id: string, key: string, value: unknown): Promise<void>;
+  setSetting(id: string, key: string, value: unknown, opts?: { restartInBackground?: boolean }): Promise<void>;
   /** Plugin API 1.1 channels. */
   pair(id: string, opts: { method: 'qr' | 'code'; phone?: string }): Promise<ChannelStatus>;
   channelStatus(id: string): Promise<ChannelStatus | null>;
@@ -65,7 +65,7 @@ export function localService(mgr: PluginManager, mode: 'local' | 'offline' = 'lo
     update: (id) => mgr.update(id),
     rollback: (id) => mgr.rollback(id),
     uninstall: (id, purge) => mgr.uninstall(id, { purge }),
-    setSetting: (id, key, value) => mgr.setSetting(id, key, value),
+    setSetting: (id, key, value, opts) => mgr.setSetting(id, key, value, opts),
     pair: (id, opts) => mgr.pair(id, opts),
     channelStatus: async (id) => mgr.channelStatus(id),
     unlink: (id) => mgr.unlinkChannel(id),

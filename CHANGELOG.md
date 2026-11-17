@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.5.4 — set up voice from your phone, fewer approval prompts
+
+### Voice, from any device
+- **Voice keys can be set from your phone, without Optimus.** `GET /api/voice/providers` lists the voice services (OpenAI, Gemini, ElevenLabs, Deepgram and the others Optimus supports) with whether each key is set and where it comes from; it never returns a key, only its last four characters. `PUT /api/voice/providers/:id` checks a key with the provider before saving it. Keys go to the same key store, under the same names, that Optimus uses, so there is one copy, whichever app set it. A key set in `~/.mercury/.env` stays in charge and can't be changed from a device.
+- **Mercury Desktop has the same list** as a "Phone calls and dictation" card in Settings → Voice.
+
+### Approvals
+- **Only plugin installs ask from another device.** Installing, turning on or off, updating and removing a plugin still need your approval. Changing a plugin's settings (Optimus's voice, for example) and setting voice keys no longer do: a paired device is already trusted like you. Every change is still in the audit log.
+
+### Fixes
+- **A plugin setting changed from a phone no longer snaps back.** Saving one restarted the plugin before answering, and on a server that could take longer than a phone waits, so the phone showed the old choice even though the new one was saved. Mercury now answers first and restarts the plugin in the background.
+
+
 ## 1.5.3 — phone apps, Google Workspace, bots that can't be steered
 
 ### Mercury on your phone

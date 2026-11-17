@@ -8,6 +8,7 @@ import { Switch } from "~/components/ui/Switch";
 import { Badge, Spinner } from "~/components/ui/bits";
 import { cx } from "~/lib/cx";
 import { DevicesCard } from "./Devices";
+import { VoiceProvidersCard } from "./VoiceProviders";
 import { errorText } from "./Models";
 
 /**
@@ -65,6 +66,8 @@ export function VoiceSettings({ onOpenModels }: { onOpenModels: () => void }) {
   if (plugin === undefined) return <Spinner size={16} />;
   if (!plugin || !plugin.installedVersion) {
     return (
+      <section className="flex flex-col gap-5">
+      <VoiceProvidersCard onOpenModels={onOpenModels} />
       <div className="flex items-start gap-3 rounded-xl border border-line bg-surface p-5">
         <Mic size={18} className="mt-0.5 text-ink3" />
         <div className="flex flex-1 flex-col gap-2">
@@ -73,6 +76,7 @@ export function VoiceSettings({ onOpenModels }: { onOpenModels: () => void }) {
           <div><Button size="sm" variant="primary" onClick={() => setView("plugins")}>Open Plugins</Button></div>
         </div>
       </div>
+      </section>
     );
   }
 
@@ -87,6 +91,8 @@ export function VoiceSettings({ onOpenModels }: { onOpenModels: () => void }) {
   return (
     <section className="flex flex-col gap-5">
       <DevicesCard />
+
+      <VoiceProvidersCard onOpenModels={onOpenModels} />
 
       <Card title="How you talk to Mercury">
         {HOW.filter(applies).map((k) => <FieldRow key={k} f={byKey.get(k)!} onSave={set} lists={lists} values={values} />)}

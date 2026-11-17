@@ -97,6 +97,43 @@ export const voiceApi = {
   set: (key: string, value: unknown) => http.post<{ ok: boolean }>("/api/plugins/optimus/settings", { key, value }),
 };
 
+/** A voice provider's key as the runtime shows it (GET /api/voice/providers): never the key itself. Shared with Optimus. */
+export interface VoiceProviderInfo {
+  id: string;
+  name: string;
+  env: string | null;
+  uses: Array<"calls" | "dictation" | "optimus">;
+  set: boolean;
+  source: "env" | "store" | "provider" | null;
+  hint?: string;
+  canEdit: boolean;
+  note?: string;
+}
+export interface VoiceCapabilities {
+  call: boolean; callEngine?: string; callEngineName?: string; callSetup?: string;
+  dictation: boolean; dictationEngine?: string; dictationEngineName?: string; dictationSetup?: string;
+}
+export interface VoiceProvidersResponse { providers: VoiceProviderInfo[]; capabilities: VoiceCapabilities }
+export interface VoiceKeySaved { ok: boolean; verified: boolean; message?: string; provider: VoiceProviderInfo; capabilities: VoiceCapabilities }
+
+export const voiceProvidersApi = {
+  /** null on a runtime without the route (feature `voice.providers`). */
+  list: () => http.get<VoiceProvidersResponse>("/api/voice/providers").catch((e: unknown) => {
+    if ((e as { status?: number })?.status === 404) return null;
+    throw e;
+  }),
+  /** Checks the key with the provider, then saves it in the shared key store; null removes it. */
+  set: (id: string, apiKey: string | null) => http.put<VoiceKeySaved>(`/api/voice/providers/${encodeURIComponent(id)}`, { apiKey }),
+};
+
+/** "Not set", "Set · ••••1234", "Set on the computer", "From your OpenAI model". */
+export function voiceKeyStatus(p: VoiceProviderInfo): string {
+  if (!p.set) return "Not set";
+  if (p.source === "env") return "Set on the computer";
+  if (p.source === "provider") return "From your OpenAI model";
+  return p.hint ? `Set · ••••${p.hint}` : "Set";
+}
+
 /** Does a plugin field apply, given the current values? (Mirrors the runtime's `whenMatches`.) */
 export function fieldApplies(f: VoiceField, values: Record<string, unknown>): boolean {
   if (!f.when) return true;

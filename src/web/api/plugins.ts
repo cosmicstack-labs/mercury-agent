@@ -103,13 +103,13 @@ for (const action of ['enable', 'disable', 'update', 'rollback'] as const) {
   });
 }
 
+// Settings (a voice choice, a key, a preference) change without an approval step: a paired device
+// is trusted like the owner. Installing, turning on or off, updating and removing still ask.
 plugins.post('/api/plugins/:id/settings', async (c) => {
-  const denied = localOnly(c);
-  if (denied) return denied;
   const body = (await c.req.json().catch(() => ({}))) as { key?: unknown; value?: unknown };
   if (typeof body.key !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,40}$/.test(body.key)) return c.json({ error: 'key is required' }, 400);
   try {
-    await svc().setSetting(c.req.param('id'), body.key, body.value);
+    await svc().setSetting(c.req.param('id'), body.key, body.value, { restartInBackground: true });
     return c.json({ ok: true });
   } catch (err) {
     return fail(c, err);

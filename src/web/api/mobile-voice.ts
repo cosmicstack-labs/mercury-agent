@@ -21,7 +21,7 @@ import { voiceBriefing } from '../../plugins/channel-bridge.js';
  *     → { engine, token, ephemeral: true, expiresAt, model, url?, language? }
  *     → 409 { error, fallback: true, setup } when no speech service can dictate live
  *   GET  /api/mobile/voice/capabilities
- *     → { call, callEngine?, callSetup?, dictation, dictationEngine?, dictationSetup? } (no provider calls)
+ *     → { call, callEngine?, callEngineName?, callSetup?, dictation, dictationEngine?, dictationEngineName?, dictationSetup? } (no provider calls)
  *
  * Live dictation (the phone's message box) is speech to text only, on the
  * same engine (crates/mercury-voice dictation.rs): an OpenAI Realtime
@@ -321,18 +321,36 @@ async function mintDictation(engine: DictationEngine, keys: Keys, language: stri
 
 const mobileVoice = new Hono();
 
-mobileVoice.get('/api/mobile/voice/capabilities', (c) => {
+/** What the phone shows on the call button and the dictation mic (and Settings → Voice): read live, so a newly saved key counts at once. */
+export const ENGINE_NAMES: Record<MobileVoiceEngine | DictationEngine, string> = {
+  openai: 'OpenAI', gemini: 'Gemini Live', deepgram: 'Deepgram', elevenlabs: 'ElevenLabs Scribe',
+};
+
+export interface VoiceCapabilities {
+  call: boolean;
+  callEngine?: MobileVoiceEngine;
+  callEngineName?: string;
+  callSetup?: string;
+  dictation: boolean;
+  dictationEngine?: DictationEngine;
+  dictationEngineName?: string;
+  dictationSetup?: string;
+}
+
+export function voiceCapabilities(): VoiceCapabilities {
   const keys = availableKeys();
   const settings = voiceSettings();
   const call = pickEngine(keys, settings);
   const dictation = pickDictationEngine(keys, settings);
-  return c.json({
+  return {
     call: !!call,
-    ...(call ? { callEngine: call } : { callSetup: NO_REALTIME_VOICE }),
+    ...(call ? { callEngine: call, callEngineName: call === 'openai' ? 'OpenAI Realtime' : ENGINE_NAMES[call] } : { callSetup: NO_REALTIME_VOICE }),
     dictation: !!dictation,
-    ...(dictation ? { dictationEngine: dictation } : { dictationSetup: dictationSetup(keys) }),
-  }, 200, { 'Cache-Control': 'no-store' });
-});
+    ...(dictation ? { dictationEngine: dictation, dictationEngineName: ENGINE_NAMES[dictation] } : { dictationSetup: dictationSetup(keys) }),
+  };
+}
+
+mobileVoice.get('/api/mobile/voice/capabilities', (c) => c.json(voiceCapabilities(), 200, { 'Cache-Control': 'no-store' }));
 
 mobileVoice.post('/api/mobile/voice/dictation', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { engine?: unknown };
