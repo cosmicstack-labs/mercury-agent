@@ -1,0 +1,40 @@
+[package]
+name = "mercury-voice-mobile"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "Mercury's voice engine for the mobile apps: a UniFFI call object (Swift, Kotlin) over mercury-voice"
+license = "MIT"
+publish = false
+
+[lib]
+# staticlib only: with "lib" next to it cargo skips LTO and the archive triples in size.
+crate-type = ["staticlib"]
+name = "mercury_voice_mobile"
+
+[[bin]]
+# Pinned bindings generator: `cargo run --features cli --bin uniffi-bindgen -- generate …`
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["uniffi/cli", "uniffi/cargo-metadata"]
+
+[dependencies]
+# Realtime voice links (OpenAI Realtime, Gemini Live) and live dictation: tokens come from Mercury.
+mercury-voice = { path = "../mercury-voice", default-features = false }
+serde_json = "1"
+tokio = { version = "1.47", features = ["rt-multi-thread", "sync", "time"] }
+uniffi = { version = "=0.32.2", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+# Unwinding stays on: UniFFI turns a panic into an error instead of killing the app.
+strip = true
+debug = false

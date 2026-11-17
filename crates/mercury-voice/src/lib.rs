@@ -1,0 +1,343 @@
+//! Mercury's voice engine: one link per kind of voice provider, all speaking
+//! the same small language to a session bridge (Optimus's voice.rs on the
+//! desktop, the mobile app through mercury-voice-mobile). The bridge owns
+//! everything about
+//! the call itself (Mercury questions, approvals, progress updates, photos,
+//! summaries); a link only moves audio and events.
+//!
+//! - realtime: speech-to-speech models on OpenAI's Realtime protocol
+//!   (OpenAI, Azure OpenAI, xAI Grok, ElevenLabs Realtime, Qwen-Omni)
+//! - gemini: Google Gemini Live
+//! - pipeline: speech-to-text → the user's own Mercury model → text-to-speech
+//!   (Deepgram / AssemblyAI / ElevenLabs Scribe / Sarvam, then Cartesia /
+//!   ElevenLabs / MiniMax / Sarvam / Deepgram voices)
+//! - dictation: live speech-to-text only (the phone's message box): an OpenAI
+//!   Realtime transcription session, Deepgram or ElevenLabs Scribe streaming
+//!
+//! Credentials: by default every link reads the keys Mercury passes to
+//! plugins in the environment (`open`). A phone opens a link with a
+//! short-lived token minted by Mercury instead (`open_with`, `Auth::Token`).
+
+pub mod dictation;
+pub mod gemini;
+pub mod pipeline;
+pub mod realtime;
+pub mod stt;
+pub mod tts;
+pub mod ws;
+
+use serde_json::Value;
+use tokio::sync::mpsc;
+
+/// Phone-call audio rate: 16 kHz mono PCM16.
+pub const CALL_RATE: u32 = 16_000;
+
+#[derive(Debug)]
+pub enum LinkEvent {
+    /// Audio for the caller, 16 kHz mono PCM16.
+    Audio(Vec<i16>),
+    /// The caller started talking: stop playing and cancel speech (barge-in).
+    SpeechStarted,
+    /// A finished utterance from the caller.
+    UserText(String),
+    /// What the voice said (for the transcript).
+    AssistantText(String),
+    /// The voice model wants a tool (ask_mercury, answer_approval, end_call).
+    ToolCall { id: String, name: String, args: Value },
+    ResponseStarted,
+    ResponseDone,
+    /// The provider closed the session; the reason is already in plain words.
+    Closed(String),
+}
+
+#[derive(Debug)]
+pub enum LinkCmd {
+    /// Caller audio, 16 kHz mono PCM16, 60 ms frames.
+    Audio(Vec<i16>),
+    /// An instruction for a model that reasons (status update, approval question).
+    Instruct(String),
+    /// Speak exactly this (pipeline voices; realtime models are asked to say it).
+    Say(String),
+    /// The result of a ToolCall.
+    ToolResult { id: String, output: String },
+    /// Stop speaking now (barge-in).
+    Cancel,
+}
+
+/// Does this link's own model reason and call tools, or does Mercury think for every turn?
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Brain {
+    /// A speech-to-speech model: it chats and calls ask_mercury when it needs to.
+    Voice,
+    /// Every caller utterance is a Mercury turn; the link only listens and speaks.
+    Mercury,
+}
+
+pub struct Link {
+    pub brain: Brain,
+    pub cmd: mpsc::UnboundedSender<LinkCmd>,
+    pub events: mpsc::UnboundedReceiver<LinkEvent>,
+}
+
+impl Link {
+    pub fn send(&self, c: LinkCmd) {
+        let _ = self.cmd.send(c);
+    }
+}
+
+/// Everything a link needs to start: provider choice and keys come from the
+/// plugin settings and environment (keys are passed by Mercury, never typed here).
+pub struct LinkConfig {
+    pub instructions: String,
+    pub tools: Value,
+    pub settings: Value,
+}
+
+/// Where a link's credentials come from.
+#[derive(Clone, Debug, Default)]
+pub enum Auth {
+    /// The keys Mercury passes to plugins in the environment
+    /// (MERCURY_PROVIDER_OPENAI_API_KEY, GEMINI_API_KEY, …).
+    #[default]
+    Env,
+    /// An explicit credential for the engine the settings pick.
+    Token(Credential),
+}
+
+/// An API key, or a short-lived token Mercury minted for one session
+/// (an OpenAI Realtime client secret, a Gemini Live ephemeral auth token).
+#[derive(Clone)]
+pub struct Credential {
+    pub secret: String,
+    /// A short-lived token rather than an API key. OpenAI takes both the same
+    /// way (Bearer); Gemini takes an ephemeral token as `access_token` on the
+    /// constrained Live endpoint.
+    pub ephemeral: bool,
+    /// The WebSocket URL to connect to, when the server says (e.g. the OpenAI
+    /// Realtime URL with its model). None: the engine's usual URL.
+    pub url: Option<String>,
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credential").field("secret", &"…").field("ephemeral", &self.ephemeral).field("url", &self.url).finish()
+    }
+}
+
+impl Auth {
+    /// The secret to use: the explicit one, else the named environment key.
+    pub(crate) fn key(&self, env_name: &str, missing: &str) -> Result<String, String> {
+        match self {
+            Auth::Token(c) => Ok(c.secret.clone()),
+            Auth::Env => env_key(env_name).ok_or_else(|| missing.to_string()),
+        }
+    }
+
+    pub(crate) fn url(&self) -> Option<&str> {
+        match self {
+            Auth::Token(c) => c.url.as_deref().filter(|u| !u.trim().is_empty()),
+            Auth::Env => None,
+        }
+    }
+
+    pub(crate) fn ephemeral(&self) -> bool {
+        matches!(self, Auth::Token(c) if c.ephemeral)
+    }
+}
+
+// ── logging ───────────────────────────────────────────────────────────────
+
+static LOGGER: std::sync::OnceLock<fn(&str)> = std::sync::OnceLock::new();
+
+/// Send the engine's log lines to the host's own log (Optimus: its stderr
+/// format). Without one they go to stderr as "mercury-voice: …".
+pub fn set_logger(f: fn(&str)) {
+    let _ = LOGGER.set(f);
+}
+
+pub(crate) fn log(msg: impl AsRef<str>) {
+    match LOGGER.get() {
+        Some(f) => f(msg.as_ref()),
+        None => eprintln!("mercury-voice: {}", msg.as_ref()),
+    }
+}
+
+pub fn setting<'a>(settings: &'a Value, key: &str, default: &'a str) -> String {
+    settings.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()).unwrap_or(default).trim().to_string()
+}
+
+/// A call from the phone app (mercury-voice-mobile sets `phoneCall: true`):
+/// the links tune how they hear the caller for a phone held close, with
+/// people and noise around (near-field noise reduction, less trigger-happy
+/// voice detection, interruptions judged by the phone). Unset everywhere
+/// else, so desktop calls (Optimus) keep their behaviour exactly.
+pub fn phone_call(settings: &Value) -> bool {
+    settings.get("phoneCall").and_then(Value::as_bool).unwrap_or(false)
+}
+
+pub fn env_key(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|k| !k.trim().is_empty())
+}
+
+/// Which voice engine the owner picked, and whether its keys are present.
+pub fn engine(settings: &Value) -> String {
+    setting(settings, "voiceEngine", "openai")
+}
+
+/// Human-readable reason calls can't start with the current settings, if any.
+pub fn not_ready(settings: &Value) -> Option<String> {
+    let plugin = std::env::var("MERCURY_PLUGIN_ID").unwrap_or_else(|_| "optimus".into());
+    let need = |name: &str, what: &str| if env_key(name).is_none() { Some(format!("voice with {what} needs its API key: add it in /plugins {plugin} → 🎙 Voice")) } else { None };
+    match engine(settings).as_str() {
+        "openai" => if env_key("MERCURY_PROVIDER_OPENAI_API_KEY").is_none() { Some(format!("voice needs an OpenAI key (recommended): add it once in the dashboard (Providers) or with `mercury doctor`, or pick another voice in /plugins {plugin} → 🎙 Voice")) } else { None },
+        "grok" => if env_key("MERCURY_PROVIDER_GROK_API_KEY").is_none() { Some("voice with Grok needs a Grok provider: add your xAI key in the dashboard (Providers)".into()) } else { None },
+        "azure" => need("AZURE_OPENAI_API_KEY", "Azure OpenAI").or_else(|| if setting(settings, "azureEndpoint", "").is_empty() { Some(format!("set the Azure endpoint in /plugins {plugin}")) } else { None }),
+        "elevenlabs" => need("ELEVENLABS_API_KEY", "ElevenLabs"),
+        "qwen" => need("DASHSCOPE_API_KEY", "Qwen (Alibaba Model Studio)"),
+        "gemini" => need("GEMINI_API_KEY", "Gemini"),
+        "mercury" => {
+            let stt = setting(settings, "sttProvider", "deepgram");
+            let tts = setting(settings, "ttsProvider", "cartesia");
+            stt::key_name(&stt).and_then(|k| need(k, &stt::label(&stt))).or_else(|| tts::key_name(&tts).and_then(|k| need(k, &tts::label(&tts))))
+        }
+        other => Some(format!("unknown voice engine \"{other}\"")),
+    }
+}
+
+/// Open a link with the keys from the environment (Optimus, WhatsApp).
+pub async fn open(cfg: LinkConfig) -> Result<Link, String> {
+    open_with(cfg, Auth::Env).await
+}
+
+/// Open a link with explicit credentials (or `Auth::Env`).
+pub async fn open_with(cfg: LinkConfig, auth: Auth) -> Result<Link, String> {
+    match engine(&cfg.settings).as_str() {
+        "gemini" => gemini::open(cfg, auth).await,
+        "mercury" => pipeline::open(cfg).await,
+        _ => realtime::open(cfg, auth).await,
+    }
+}
+
+/// Turn the voice provider's close reason into something the owner can act on.
+pub fn explain_close(reason: &str) -> String {
+    let r = reason.to_ascii_lowercase();
+    if r.contains("insufficient_quota") || r.contains("credit_balance") || r.contains("billing") {
+        "your OpenAI account is out of credit. Add credit at platform.openai.com → Settings → Billing, then try again".into()
+    } else if r.contains("invalid_api_key") || r.contains("unauthorized") || r.contains("401") {
+        "OpenAI rejected the API key. Check the OpenAI provider in Mercury's dashboard (Providers)".into()
+    } else if r.contains("model_not_found") || r.contains("does not exist") || r.contains("access") {
+        format!("this OpenAI account can't use the realtime voice model ({reason}). Try another voiceModel setting")
+    } else if r.contains("rate_limit") {
+        "OpenAI is rate-limiting this account right now. Try again in a minute".into()
+    } else if reason.is_empty() {
+        "the voice model closed the session".into()
+    } else {
+        format!("the voice model closed the session ({reason})")
+    }
+}
+
+// ── shared helpers ────────────────────────────────────────────────────────
+
+/// Linear resampling of mono i16 PCM.
+pub fn resample(input: &[i16], from: u32, to: u32) -> Vec<i16> {
+    if input.is_empty() || from == to {
+        return input.to_vec();
+    }
+    let out_len = ((input.len() as u64 * to as u64) / from as u64).max(1) as usize;
+    let step = from as f64 / to as f64;
+    (0..out_len)
+        .map(|i| {
+            let pos = i as f64 * step;
+            let idx = pos as usize;
+            let frac = pos - idx as f64;
+            let a = input[idx.min(input.len() - 1)] as f64;
+            let b = input[(idx + 1).min(input.len() - 1)] as f64;
+            (a + (b - a) * frac).round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
+        })
+        .collect()
+}
+
+pub fn pcm_bytes(samples: &[i16]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(samples.len() * 2);
+    for s in samples {
+        bytes.extend_from_slice(&s.to_le_bytes());
+    }
+    bytes
+}
+
+pub fn pcm_from_bytes(bytes: &[u8]) -> Vec<i16> {
+    bytes.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()
+}
+
+pub fn b64(samples: &[i16]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(pcm_bytes(samples))
+}
+
+pub fn unb64(data: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.decode(data).unwrap_or_default()
+}
+
+/// Drop a RIFF/WAV header if a provider sends one in front of raw PCM.
+pub fn strip_wav(bytes: &[u8]) -> &[u8] {
+    if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        let mut i = 12;
+        while i + 8 <= bytes.len() {
+            let len = u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]) as usize;
+            if &bytes[i..i + 4] == b"data" {
+                return &bytes[(i + 8).min(bytes.len())..];
+            }
+            i += 8 + len;
+        }
+    }
+    bytes
+}
+
+/// The language of a reply, by script: Devanagari → Hindi, Arabic script → Urdu, else English.
+pub fn script_language(text: &str) -> &'static str {
+    let (mut deva, mut arabic, mut latin) = (0, 0, 0);
+    for c in text.chars() {
+        match c as u32 {
+            0x0900..=0x097F => deva += 1,
+            0x0600..=0x06FF | 0x0750..=0x077F | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF => arabic += 1,
+            0x41..=0x5A | 0x61..=0x7A => latin += 1,
+            _ => {}
+        }
+    }
+    if deva > latin && deva >= arabic { "hi" } else if arabic > latin { "ur" } else { "en" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resample_lengths() {
+        assert_eq!(resample(&[0i16; 960], 16_000, 24_000).len(), 1440);
+        assert_eq!(resample(&[0i16; 1440], 24_000, 16_000).len(), 960);
+    }
+
+    #[test]
+    fn pcm_round_trip() {
+        let s = vec![0i16, 1, -1, i16::MAX, i16::MIN];
+        assert_eq!(pcm_from_bytes(&unb64(&b64(&s))), s);
+    }
+
+    #[test]
+    fn wav_header_is_stripped() {
+        let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
+        wav.extend_from_slice(&[0u8; 16]);
+        wav.extend_from_slice(b"data\x04\0\0\0");
+        wav.extend_from_slice(&[1, 0, 2, 0]);
+        assert_eq!(strip_wav(&wav), &[1, 0, 2, 0]);
+        assert_eq!(strip_wav(&[5, 6]), &[5, 6]);
+    }
+
+    #[test]
+    fn languages_by_script() {
+        assert_eq!(script_language("Hello there"), "en");
+        assert_eq!(script_language("नमस्ते, आप कैसे हैं"), "hi");
+        assert_eq!(script_language("آپ کیسے ہیں"), "ur");
+    }
+}

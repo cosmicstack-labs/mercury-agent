@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher's app shortcuts (long-press the icon). Call Mercury starts a voice call in the
+     chat on screen: MainActivity takes the action and AppContainer.requestCall hands it on. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+  <shortcut
+    android:shortcutId="call"
+    android:enabled="true"
+    android:icon="@drawable/ic_shortcut_call"
+    android:shortcutShortLabel="@string/shortcut_call"
+    android:shortcutLongLabel="@string/shortcut_call">
+    <intent
+      android:action="sh.mercuryagent.action.CALL"
+      android:targetPackage="sh.mercuryagent.android"
+      android:targetClass="sh.mercuryagent.MainActivity" />
+  </shortcut>
+</shortcuts>

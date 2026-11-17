@@ -1289,9 +1289,8 @@ dependencies = [
  "cpal",
  "dispatch2",
  "enigo",
- "futures-util",
- "http",
  "image",
+ "mercury-voice",
  "objc2",
  "objc2-app-kit",
  "objc2-av-foundation",
@@ -1299,12 +1298,24 @@ dependencies = [
  "objc2-quartz-core",
  "serde_json",
  "tokio",
- "tokio-websockets",
- "ureq",
  "wayland-sys",
  "windows-sys 0.61.2",
  "x11rb",
  "xcap",
+]
+
+[[package]]
+name = "mercury-voice"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures-util",
+ "http",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-websockets",
+ "ureq",
 ]
 
 [[package]]

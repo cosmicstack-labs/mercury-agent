@@ -13,12 +13,10 @@ enigo = "0.6"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"
 serde_json = "1"
-# Voice: the same links as the WhatsApp plugin (rustls + ring).
+# Voice: Mercury's shared voice engine (crates/mercury-voice, rustls + ring),
+# the same code the mobile apps run.
+mercury-voice = { path = "../../../crates/mercury-voice" }
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
-tokio-websockets = { version = "0.13.3", features = ["client", "rustls-webpki-roots", "rand", "ring"] }
-http = "1"
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-ureq = "3"
 # Microphone and speaker.
 cpal = "0.16"
 

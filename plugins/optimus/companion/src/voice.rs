@@ -722,24 +722,6 @@ fn deliver(link: &Link, brain: Brain, ready: &mut VecDeque<(String, String)>, re
     }
 }
 
-/// Turn the voice provider's close reason into something the owner can act on.
-pub fn explain_close(reason: &str) -> String {
-    let r = reason.to_ascii_lowercase();
-    if r.contains("insufficient_quota") || r.contains("credit_balance") || r.contains("billing") {
-        "your OpenAI account is out of credit. Add credit at platform.openai.com → Settings → Billing, then try again".into()
-    } else if r.contains("invalid_api_key") || r.contains("unauthorized") || r.contains("401") {
-        "OpenAI rejected the API key. Check the OpenAI provider in Mercury's dashboard (Providers)".into()
-    } else if r.contains("model_not_found") || r.contains("does not exist") || r.contains("access") {
-        format!("this OpenAI account can't use the realtime voice model ({reason}). Try another voiceModel setting")
-    } else if r.contains("rate_limit") {
-        "OpenAI is rate-limiting this account right now. Try again in a minute".into()
-    } else if reason.is_empty() {
-        "the voice model closed the session".into()
-    } else {
-        format!("the voice model closed the session ({reason})")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

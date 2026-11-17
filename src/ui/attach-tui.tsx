@@ -122,7 +122,8 @@ function AttachPromptView({ prompt, activeIdx }: { prompt: AttachPrompt; activeI
     <Box paddingX={1} flexShrink={0}>
       <Box borderStyle="round" borderColor="yellow" flexDirection="column" paddingX={1} flexShrink={0}>
         <Text color="yellow" bold>{prompt.kind === 'continue' ? 'Continue? ' : prompt.kind === 'choice' ? 'Choose ' : 'Permission: '}</Text>
-        <Text wrap="truncate-end">{prompt.text}</Text>
+        {/* Wrapped, never cut: a prompt can carry a token to copy. */}
+        <Text wrap="wrap">{prompt.text}</Text>
         {prompt.options.map((option, idx) => (
           <Box key={option.value} paddingLeft={1}>
             <Text color={idx === activeIdx ? 'cyan' : 'gray'}>{idx === activeIdx ? '› ' : '  '}{option.label}</Text>

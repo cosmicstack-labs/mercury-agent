@@ -36,7 +36,7 @@ export interface ServerUi {
   choose(title: string, options: Array<{ value: string; label: string }>): Promise<string | null>;
   say(text: string): Promise<void>;
   /** Something that must not stay in a transcript (a new token): shown until acknowledged. */
-  secret(text: string): Promise<void>;
+  secret(text: string, copy?: string): Promise<void>;
 }
 
 const ago = (iso: string | null | undefined, now = Date.now()): string => {
@@ -141,7 +141,7 @@ export async function runServerCommand(args: string, ops: ServerOps, ui: ServerU
     }
     case 'token': {
       const created = await ops.createDevice(arg || 'Manual token');
-      await ui.secret(`Token for “${created.device.name}” (shown only now):\n\n${created.token}\n\nPaste it into the device (Mercury Desktop → Add a remote → Token).`);
+      await ui.secret(`Token for “${created.device.name}” (shown only now):\n\n${created.token}\n\nPaste it into the device (Mercury Desktop → Add a remote → Token).`, created.token);
       return true;
     }
     case 'allow-ip': {

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Device tokens are bound to this phone's Keystore key: never backed up (pair again on a new phone). -->
+<full-backup-content>
+  <exclude domain="sharedpref" path="mercury.secrets.xml" />
+  <exclude domain="sharedpref" path="mercury.xml" />
+</full-backup-content>

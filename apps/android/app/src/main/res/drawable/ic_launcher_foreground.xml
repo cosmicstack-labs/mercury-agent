@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Mercury mark (apps/desktop/src-tauri/icons/mark.svg) inside the adaptive icon's 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:aapt="http://schemas.android.com/aapt"
+  android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+  <group android:scaleX="0.12" android:scaleY="0.12" android:translateX="-7.32" android:translateY="-7.62">
+    <path android:pathData="M 393,414 C 378,372 376,334 396,325 C 413,318 434,338 452,363 M 629,414 C 644,372 646,334 626,325 C 609,318 588,338 570,363 M 374.5,495 a 136.5,136.5 0 1,0 273,0 a 136.5,136.5 0 1,0 -273,0 M 511,631.5 V 699.5 M 480.5,677 H 542.5" android:strokeWidth="25" android:strokeLineCap="round" android:strokeLineJoin="round" ><aapt:attr name="android:strokeColor"><gradient android:type="linear" android:startX="0" android:startY="312" android:endX="0" android:endY="715"><item android:offset="0" android:color="#FF7DF5C8"/><item android:offset="1" android:color="#FF22C98B"/></gradient></aapt:attr></path>
+    <path android:pathData="M 492,540 Q 511.5,561 531,540" android:strokeWidth="20" android:strokeLineCap="round" ><aapt:attr name="android:strokeColor"><gradient android:type="linear" android:startX="0" android:startY="312" android:endX="0" android:endY="715"><item android:offset="0" android:color="#FF7DF5C8"/><item android:offset="1" android:color="#FF22C98B"/></gradient></aapt:attr></path>
+    <path android:pathData="M 430,497 a 21,21 0 1,0 42,0 a 21,21 0 1,0 -42,0 M 550,497 a 21,21 0 1,0 42,0 a 21,21 0 1,0 -42,0" ><aapt:attr name="android:fillColor"><gradient android:type="linear" android:startX="0" android:startY="312" android:endX="0" android:endY="715"><item android:offset="0" android:color="#FF7DF5C8"/><item android:offset="1" android:color="#FF22C98B"/></gradient></aapt:attr></path>
+  </group>
+</vector>

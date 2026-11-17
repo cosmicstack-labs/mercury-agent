@@ -67,6 +67,8 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'media.speech',      // GET /api/media/models speech { options, current, choice, voice, replies }, PUT /api/media/speech (ADR-042 phase 2)
   'chat.trace',        // live step ids/durations, progress/phase events, message.trace on replies (ADR-041); GET /api/chat/threads/:id/live (a running reply so far)
   'chat.research',     // SSE 'research' / 'research_plan' / 'research_plan_resolved' / 'notice'; GET /api/chat/threads/:id/research, POST …/research/finish, …/research/off, POST /api/chat/research/plan/:id; message.research; step_done { failed, reason }
+  'voice.mobile',      // POST /api/mobile/voice/session → { engine, token, expiresAt, model, voice, url?, instructions, tools } | 409 { error, fallback } — short-lived tokens for the shared Rust voice engine
+  'voice.dictation',   // POST /api/mobile/voice/dictation → { engine, token, expiresAt, model, url?, language? } | 409 { error, fallback, setup }; GET /api/mobile/voice/capabilities → { call, dictation, dictationSetup? } — live dictation for the phone's message box
 ]);
 
 export interface ApiContractInfo {

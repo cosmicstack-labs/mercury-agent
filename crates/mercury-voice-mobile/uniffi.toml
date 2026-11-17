@@ -1,0 +1,8 @@
+[bindings.swift]
+# Swift: `import MercuryVoice` (generated Swift) over the MercuryVoiceFFI xcframework.
+module_name = "MercuryVoice"
+ffi_module_name = "MercuryVoiceFFI"
+ffi_module_filename = "MercuryVoiceFFI"
+
+[bindings.kotlin]
+package_name = "app.mercury.voice"

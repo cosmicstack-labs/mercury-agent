@@ -1,0 +1,16 @@
+# Gradle and Android Studio
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+# Voice engine JNI libs are built (scripts/build-voice-engine.sh), not committed.
+voice/src/main/jniLibs/
