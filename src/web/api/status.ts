@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { readFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isLoopbackRequest, authenticateRequest } from '../middleware.js';
@@ -70,13 +71,14 @@ export function versionString(): string {
  *    through POST /api/auth/token, whose reply carries the same contract.
  *
  * `apiVersion` / `features` are the contract (api-contract.ts); `version`
- * is the package version, for display only.
+ * is the package version, for display only. `host` is the computer's name,
+ * which the phone apps offer as a connection's friendly name.
  */
 status.get('/api/health', (c) => {
   if (!isLoopbackRequest(c) && !authenticateRequest(c)) return c.json({ error: 'Not found' }, 404);
   const lag = getLoopLag();
   const plugins = peekPluginManager()?.health();
-  return c.json({ ok: true, pid: process.pid, version: versionString(), ...apiContract(), state: currentStatus.state, booting: currentStatus.state === 'booting', setupRequired: currentStatus.state === 'setup', loopLag: { p99Ms: Math.round(lag.p99Ms), maxMs: Math.round(lag.maxMs) }, ...(plugins ? { plugins: { safeMode: plugins.safeMode, running: plugins.running, tools: plugins.tools } } : {}) });
+  return c.json({ ok: true, pid: process.pid, version: versionString(), host: hostname(), ...apiContract(), state: currentStatus.state, booting: currentStatus.state === 'booting', setupRequired: currentStatus.state === 'setup', loopLag: { p99Ms: Math.round(lag.p99Ms), maxMs: Math.round(lag.maxMs) }, ...(plugins ? { plugins: { safeMode: plugins.safeMode, running: plugins.running, tools: plugins.tools } } : {}) });
 });
 
 status.get('/api/status', (c) => {
