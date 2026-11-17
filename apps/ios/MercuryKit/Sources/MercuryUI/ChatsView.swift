@@ -3,7 +3,7 @@ import MercuryCore
 
 /// The side panel, laid out like Grok's (and Android's ChatDrawer): at the top the connected
 /// Mercury (tap: switch or add another) and a » button that closes the panel; Call Mercury, Bots,
-/// Artifacts and Saved; "Conversations" (or "Results", or "Saved") over one flat list of chats, newest first,
+/// Artifacts, Brain (the mind map) and Saved; "Conversations" (or "Results", or "Saved") over one flat list of chats, newest first,
 /// each row the title alone; pinned at the bottom over a fade, Settings, Search (filters live on
 /// titles and messages) and a white New chat button. Better than Grok, quietly: a dot before a
 /// title only when the chat works (green, pulsing), needs you (amber) or failed (red); unread
@@ -22,6 +22,8 @@ struct ChatDrawer: View {
   var onCall: () -> Void = {}
   var onBots: () -> Void = {}
   var onArtifacts: () -> Void = {}
+  /// Brain: the second brain's mind map.
+  var onBrain: () -> Void = {}
   var onSettings: () -> Void = {}
   var onClose: () -> Void = {}
   var onSwitch: (String) -> Void = { _ in }
@@ -40,6 +42,7 @@ struct ChatDrawer: View {
         DrawerNavRow(icon: "phone", label: "Call Mercury", action: onCall)
         DrawerNavRow(icon: "sparkles", label: "Bots", action: onBots)
         DrawerNavRow(icon: "folder", label: "Artifacts", action: onArtifacts)
+        DrawerNavRow(icon: "brain", label: "Brain", action: onBrain)
         DrawerNavRow(icon: model.savedOnly ? "bookmark.fill" : "bookmark", label: "Saved", selected: model.savedOnly) {
           withAnimation(.snappy) { model.savedOnly.toggle() }
         }

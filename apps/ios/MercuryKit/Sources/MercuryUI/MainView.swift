@@ -3,7 +3,7 @@ import MercuryCore
 
 /// The app once connected, chat-first like the ChatGPT and Grok apps (and Mercury for Android):
 /// one conversation fills the screen; the menu button or a swipe from the leading edge opens the
-/// side panel (search, New chat, Bots, Artifacts, the history, and the connected Mercury, which
+/// side panel (search, New chat, Bots, Artifacts, Brain, the history, and the connected Mercury, which
 /// a gear for Settings). Bots, Artifacts and Settings push over the chat; back returns to it.
 struct MainView: View {
   var store: ConnectionStore
@@ -12,6 +12,8 @@ struct MainView: View {
   @State var path = NavigationPath()
   @State var artifacts: ArtifactsModel
   @State var bots: BotsModel
+  /// Brain → Mind map: kept while connected, so the layout stays put between visits (desktop keeps it mounted).
+  @State var brain: MindMapModel
   @State var conversation: ConversationModel
   /// A new identity for each chat opened, so its screen starts fresh.
   @State var conversationKey = UUID()
@@ -21,7 +23,7 @@ struct MainView: View {
   @State var adding = false
   @State var quickActions = HomeScreenActions.shared
 
-  enum Route: Hashable { case bots, artifacts, settings }
+  enum Route: Hashable { case bots, artifacts, brain, settings }
 
   init(store: ConnectionStore, connection: Connection) {
     self.store = store; self.connection = connection
@@ -30,6 +32,7 @@ struct MainView: View {
     _chats = State(initialValue: chats)
     _artifacts = State(initialValue: ArtifactsModel(client: client))
     _bots = State(initialValue: BotsModel(client: client))
+    _brain = State(initialValue: MindMapModel(client: client))
     _conversation = State(initialValue: Self.makeConversation(client: client, thread: nil, chats: chats))
   }
 
@@ -85,6 +88,7 @@ struct MainView: View {
           switch r {
           case .bots: BotsView(model: bots)
           case .artifacts: ArtifactsView(model: artifacts)
+          case .brain: MindMapScreen(model: brain) { if !path.isEmpty { path.removeLast() } }
           case .settings: MoreView(store: store, connection: connection)
           }
         }
@@ -93,7 +97,7 @@ struct MainView: View {
       ChatDrawer(
         model: chats, connection: connection, connections: store.connections, online: online, current: conversation.threadId,
         onOpen: { open($0) }, onNewChat: { open(nil) }, onCall: { call() },
-        onBots: { go(.bots) }, onArtifacts: { go(.artifacts) }, onSettings: { go(.settings) },
+        onBots: { go(.bots) }, onArtifacts: { go(.artifacts) }, onBrain: { go(.brain) }, onSettings: { go(.settings) },
         onClose: { withAnimation(.snappy(duration: 0.28)) { drawer = false } },
         onSwitch: { id in store.activate(id) },
         onAddMercury: { adding = true }
