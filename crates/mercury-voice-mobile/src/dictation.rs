@@ -1,8 +1,8 @@
 //! Live dictation for the phone's message box: the owner talks and the words
 //! stream in as they speak. Mercury mints the token
 //! (`POST /api/mobile/voice/dictation`); the engine is
-//! `mercury_voice::dictation` (OpenAI Realtime transcription, Deepgram or
-//! ElevenLabs Scribe). Nothing is said back.
+//! `mercury_voice::dictation` (OpenAI Realtime transcription, Gemini Live
+//! transcription, Deepgram or ElevenLabs Scribe). Nothing is said back.
 //!
 //! Audio pushed while it connects is kept (up to 15 s) and sent once the
 //! stream is open, so the first words aren't lost to the connection.
@@ -23,7 +23,7 @@ const HELD_FRAMES: usize = 250;
 /// How to start dictation: Mercury's `POST /api/mobile/voice/dictation` answer.
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct DictationConfig {
-    /// "openai", "deepgram" or "elevenlabs".
+    /// "openai", "gemini", "deepgram" or "elevenlabs".
     pub engine: String,
     /// The short-lived token (or, for testing, an API key).
     pub token: String,
@@ -77,8 +77,8 @@ fn parts(c: &DictationConfig) -> Result<(engine::DictationConfig, Credential), V
     if c.token.trim().is_empty() {
         return Err(VoiceError::Config { reason: "no dictation token: ask Mercury for one first".into() });
     }
-    if !matches!(c.engine.as_str(), "openai" | "deepgram" | "elevenlabs") {
-        return Err(VoiceError::Config { reason: format!("\"{}\" can't do live dictation (use openai, deepgram or elevenlabs)", c.engine) });
+    if !matches!(c.engine.as_str(), "openai" | "gemini" | "deepgram" | "elevenlabs") {
+        return Err(VoiceError::Config { reason: format!("\"{}\" can't do live dictation (use openai, gemini, deepgram or elevenlabs)", c.engine) });
     }
     Ok((
         engine::DictationConfig { engine: c.engine.clone(), model: c.model.clone(), language: c.language.clone() },
@@ -215,8 +215,8 @@ mod tests {
         let mut c = cfg("openai");
         c.token = "  ".into();
         assert!(parts(&c).is_err());
-        assert!(parts(&cfg("gemini")).is_err());
-        for e in ["openai", "deepgram", "elevenlabs"] {
+        assert!(parts(&cfg("grok")).is_err());
+        for e in ["openai", "gemini", "deepgram", "elevenlabs"] {
             let (d, cred) = parts(&cfg(e)).unwrap();
             assert_eq!(d.engine, e);
             assert!(cred.ephemeral);

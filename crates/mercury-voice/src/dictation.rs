@@ -8,13 +8,20 @@
 //!   itself after a pause; other transcribe models use server VAD.
 //! - deepgram: `/v1/listen` streaming with interim results (Nova-3).
 //! - elevenlabs: Scribe realtime with VAD commits.
+//! - gemini: a Gemini Live session that only listens. Automatic activity
+//!   detection is off and the link opens one activity (`activityStart`) that
+//!   it never ends, so the model never takes a turn and never answers, while
+//!   `inputAudioTranscription` streams the words as they're spoken
+//!   (`gemini-2.5-flash-native-audio-latest`; gemini-3.8-live only sends the
+//!   transcript once a turn ends). Gemini transcribes a little behind the
+//!   audio and waits for what follows a word, so `Finish` sends a moment of
+//!   quiet (never `activityEnd` or `audioStreamEnd`: either makes the model
+//!   reply) and waits for the transcript to settle. Checked against the live
+//!   API (see the mercury-voice-mobile smoke test).
 //!
 //! Events: `Partial(text)` is the whole not-yet-final text so far (it replaces
 //! the previous partial); `Final(text)` is a finished piece, in order (it
 //! replaces the partial it came from). `Closed` ends the stream.
-//!
-//! Gemini Live isn't a dictation engine: it only transcribes input as a side
-//! effect of a conversation in which the model also answers.
 
 use std::time::Duration;
 
@@ -29,6 +36,10 @@ pub const OPENAI_MODEL: &str = "gpt-live-transcribe";
 pub const DEEPGRAM_MODEL: &str = "nova-3";
 pub const ELEVENLABS_MODEL: &str = "scribe_v2_realtime";
 pub const OPENAI_URL: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
+pub const GEMINI_MODEL: &str = "gemini-2.5-flash-native-audio-latest";
+pub const GEMINI_URL: &str = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+/// The Live endpoint for ephemeral auth tokens (what Mercury mints for a phone).
+pub const GEMINI_CONSTRAINED_URL: &str = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained";
 
 /// OpenAI's live model has no server VAD: a segment is committed after this
 /// much quiet following speech (the final text then arrives in ~0.5 s).
@@ -37,6 +48,13 @@ const COMMIT_AFTER_QUIET_MS: u32 = 900;
 const SPEECH_PEAK: u16 = 1200;
 /// How long `Finish` waits for the last final text.
 const FINISH_WAIT: Duration = Duration::from_secs(4);
+/// Gemini: quiet sent on `Finish` so the last words are transcribed (it waits for what follows a word).
+const GEMINI_FLUSH_MS: u32 = 2000;
+/// Gemini: after `Finish`, the transcript is complete once nothing new has come for this long
+/// (it runs 1–3 s behind the audio, and sends the last words in bursts up to ~1.5 s apart).
+const GEMINI_SETTLE: Duration = Duration::from_millis(2500);
+/// Gemini: the longest `Finish` waits.
+const GEMINI_FINISH_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictationEvent {
@@ -56,7 +74,7 @@ pub enum DictationCmd {
 
 #[derive(Clone, Debug, Default)]
 pub struct DictationConfig {
-    /// "openai", "deepgram" or "elevenlabs".
+    /// "openai", "gemini", "deepgram" or "elevenlabs".
     pub engine: String,
     pub model: Option<String>,
     /// A language code ("en", "hi"), or None to detect it.
@@ -71,6 +89,7 @@ pub struct Dictation {
 pub fn label(engine: &str) -> &'static str {
     match engine {
         "openai" => "OpenAI",
+        "gemini" => "Gemini",
         "deepgram" => "Deepgram",
         "elevenlabs" => "ElevenLabs",
         _ => "the speech service",
@@ -80,6 +99,7 @@ pub fn label(engine: &str) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     OpenAi,
+    Gemini,
     Deepgram,
     ElevenLabs,
 }
@@ -92,7 +112,7 @@ struct Plan {
     headers: Vec<(&'static str, String)>,
     model: String,
     language: Option<String>,
-    /// OpenAI with an API key: the session is configured on the socket.
+    /// OpenAI with an API key, and Gemini always: the session is configured on the socket.
     configure: bool,
 }
 
@@ -121,6 +141,21 @@ fn plan(cfg: &DictationConfig, cred: &Credential) -> Result<Plan, String> {
             language,
             configure: !cred.ephemeral,
         },
+        "gemini" => {
+            // An ephemeral token is `access_token` on the constrained endpoint; an API key is `key`.
+            let param = if cred.ephemeral { "access_token" } else { "key" };
+            let base = url.unwrap_or_else(|| (if cred.ephemeral { GEMINI_CONSTRAINED_URL } else { GEMINI_URL }).into());
+            let sep = if base.contains('?') { '&' } else { '?' };
+            Plan {
+                kind: Kind::Gemini,
+                url: format!("{base}{sep}{param}={}", gemini_secret(&secret)),
+                headers: vec![],
+                model: opt(&cfg.model).unwrap_or_else(|| GEMINI_MODEL.into()),
+                // Gemini Live detects the language itself; there is no hint for the transcript.
+                language,
+                configure: true,
+            }
+        }
         "deepgram" => {
             let model = opt(&cfg.model).unwrap_or_else(|| DEEPGRAM_MODEL.into());
             let lang = language.clone().unwrap_or_else(|| "multi".into());
@@ -151,8 +186,44 @@ fn plan(cfg: &DictationConfig, cred: &Credential) -> Result<Plan, String> {
             };
             Plan { kind: Kind::ElevenLabs, url: u, headers, model, language, configure: false }
         }
-        other => return Err(format!("\"{other}\" can't do live dictation (use openai, deepgram or elevenlabs)")),
+        other => return Err(format!("\"{other}\" can't do live dictation (use openai, gemini, deepgram or elevenlabs)")),
     })
+}
+
+/// A Gemini token ("auth_tokens/…") or key in a URL: only the characters they're made of.
+fn gemini_secret(v: &str) -> String {
+    v.chars().filter(|c| c.is_ascii_alphanumeric() || "-_./".contains(*c)).collect()
+}
+
+/// The Gemini Live session for dictation (also what Mercury locks the minted token to):
+/// transcribe what's heard; with activity detection off the model never takes a turn.
+pub fn gemini_setup(model: &str) -> Value {
+    json!({
+        "model": format!("models/{model}"),
+        "generationConfig": { "responseModalities": ["AUDIO"] },
+        "inputAudioTranscription": {},
+        "realtimeInputConfig": { "automaticActivityDetection": { "disabled": true } },
+    })
+}
+
+/// Gemini's transcript arrives in small pieces (" Re", "mi", "nd"): finished sentences go out
+/// as final text once the next one starts; the rest is the partial.
+fn gemini_text(st: &mut State, piece: &str) -> Vec<DictationEvent> {
+    st.interim.push_str(piece);
+    let cut = st.interim.char_indices().zip(st.interim.chars().skip(1))
+        .filter(|((_, c), next)| ".!?。！？".contains(*c) && next.is_whitespace())
+        .map(|((i, c), _)| i + c.len_utf8())
+        .last();
+    let mut out = Vec::new();
+    if let Some(cut) = cut {
+        let done = st.interim[..cut].trim().to_string();
+        st.interim = st.interim[cut..].to_string();
+        if !done.is_empty() { out.push(DictationEvent::Final(done)); }
+        out.push(DictationEvent::Partial(st.interim.trim().to_string()));
+    } else {
+        out.push(DictationEvent::Partial(st.interim.trim().to_string()));
+    }
+    out
 }
 
 /// The OpenAI transcription session (also what Mercury mints a client secret for).
@@ -236,6 +307,8 @@ struct State {
     awaiting_commit: bool,
     /// The stream is finishing and the engine has nothing left to send.
     drained: bool,
+    /// Gemini: transcript text came with the last message.
+    got_text: bool,
     /// A fatal error from the engine, in plain words.
     fatal: Option<String>,
 }
@@ -268,6 +341,23 @@ fn on_message(kind: Kind, v: &Value, st: &mut State) -> Vec<DictationEvent> {
             }
             _ => vec![],
         },
+        Kind::Gemini => {
+            let mut out = Vec::new();
+            if let Some(t) = v.pointer("/serverContent/inputTranscription/text").and_then(Value::as_str) {
+                if !t.is_empty() {
+                    st.got_text = true;
+                    out = gemini_text(st, t);
+                }
+            }
+            // The session can't continue (Gemini Live's connection time limit): end with what was heard.
+            if v.get("goAway").is_some() {
+                crate::log("dictation: Gemini sent goAway");
+            }
+            if ["/serverContent/modelTurn", "/serverContent/generationComplete", "/serverContent/turnComplete"].iter().any(|p| v.pointer(p).is_some()) {
+                crate::log("dictation: Gemini answered (it shouldn't); ignored");
+            }
+            out
+        }
         Kind::Deepgram => match s("type") {
             "Results" => {
                 let t = v.pointer("/channel/alternatives/0/transcript").and_then(Value::as_str).unwrap_or("").trim().to_string();
@@ -328,6 +418,7 @@ fn should_commit(st: &mut State, frame: &[i16]) -> bool {
 fn audio_message(kind: Kind, frame: &[i16]) -> Message {
     match kind {
         Kind::OpenAi => Message::text(json!({ "type": "input_audio_buffer.append", "audio": b64(&resample(frame, CALL_RATE, 24_000)) }).to_string()),
+        Kind::Gemini => Message::text(json!({ "realtimeInput": { "audio": { "data": b64(frame), "mimeType": "audio/pcm;rate=16000" } } }).to_string()),
         Kind::Deepgram => Message::binary(pcm_bytes(frame)),
         Kind::ElevenLabs => Message::text(json!({ "message_type": "input_audio_chunk", "audio_base_64": b64(frame), "commit": false, "sample_rate": CALL_RATE }).to_string()),
     }
@@ -336,6 +427,11 @@ fn audio_message(kind: Kind, frame: &[i16]) -> Message {
 fn finish_messages(kind: Kind, st: &State) -> Vec<Message> {
     match kind {
         Kind::OpenAi => if st.heard || st.items.pending() { vec![Message::text(json!({ "type": "input_audio_buffer.commit" }).to_string())] } else { vec![] },
+        // Quiet, at once: never activityEnd or audioStreamEnd, which make the model reply.
+        Kind::Gemini => {
+            let frame = vec![0i16; (CALL_RATE / 10) as usize];
+            (0..GEMINI_FLUSH_MS / 100).map(|_| audio_message(kind, &frame)).collect()
+        }
         Kind::Deepgram => vec![
             Message::text(json!({ "type": "Finalize" }).to_string()),
             Message::text(json!({ "type": "CloseStream" }).to_string()),
@@ -348,6 +444,8 @@ fn finish_messages(kind: Kind, st: &State) -> Vec<Message> {
 fn finished(kind: Kind, st: &State) -> bool {
     match kind {
         Kind::OpenAi => !st.items.pending() && !st.awaiting_commit,
+        // Settled by time (run): no message says the transcript is done.
+        Kind::Gemini => st.drained,
         Kind::Deepgram => st.drained,
         Kind::ElevenLabs => st.drained,
     }
@@ -357,8 +455,10 @@ fn finished(kind: Kind, st: &State) -> bool {
 pub async fn open(cfg: &DictationConfig, cred: &Credential) -> Result<Dictation, String> {
     let p = plan(cfg, cred)?;
     let name = label(&cfg.engine);
-    let mut sock = ws::connect(&p.url, &p.headers).await.map_err(|e| format!("couldn't reach {name}: {e}"))?;
-    if p.configure {
+    let mut sock = ws::connect(&p.url, &p.headers).await.map_err(|e| format!("couldn't reach {name}: {}", redact(&e)))?;
+    if p.kind == Kind::Gemini {
+        gemini_start(&mut sock, &p.model).await?;
+    } else if p.configure {
         let update = json!({ "type": "session.update", "session": openai_session(&p.model, p.language.as_deref()) });
         sock.send(Message::text(update.to_string())).await.map_err(|e| e.to_string())?;
     }
@@ -368,11 +468,42 @@ pub async fn open(cfg: &DictationConfig, cred: &Credential) -> Result<Dictation,
     Ok(Dictation { cmd: cmd_tx, events: ev_rx })
 }
 
+/// Errors can quote the URL, which carries a Gemini token: never pass one on.
+fn redact(e: &str) -> String {
+    match e.find("access_token=").or_else(|| e.find("key=")) {
+        Some(i) => format!("{}…", &e[..i]),
+        None => e.to_string(),
+    }
+}
+
+/// Gemini: the setup, then `setupComplete`, then the one activity that's never ended.
+async fn gemini_start(sock: &mut ws::Socket, model: &str) -> Result<(), String> {
+    sock.send(Message::text(json!({ "setup": gemini_setup(model) }).to_string())).await.map_err(|e| e.to_string())?;
+    let wait = async {
+        while let Some(m) = sock.next().await {
+            let m = m.map_err(|e| e.to_string())?;
+            if m.is_close() {
+                let reason = m.as_close().map(|(_, r)| r.to_string()).unwrap_or_default();
+                return Err(if reason.is_empty() { "Gemini closed the connection".to_string() } else { format!("Gemini refused dictation: {reason}") });
+            }
+            let text = if let Some(t) = m.as_text() { t.to_string() } else { String::from_utf8_lossy(&m.as_payload().to_vec()).to_string() };
+            if text.contains("setupComplete") { return Ok(()); }
+        }
+        Err("Gemini closed during setup".to_string())
+    };
+    tokio::time::timeout(Duration::from_secs(15), wait).await.map_err(|_| "Gemini didn't start in time".to_string())??;
+    sock.send(Message::text(json!({ "realtimeInput": { "activityStart": {} } }).to_string())).await.map_err(|e| e.to_string())
+}
+
 async fn run(kind: Kind, name: &'static str, sock: ws::Socket, mut cmd: mpsc::UnboundedReceiver<DictationCmd>, ev: mpsc::UnboundedSender<DictationEvent>) {
     let (mut tx, mut rx) = sock.split();
     let mut st = State::default();
     let emit = |list: Vec<DictationEvent>| for e in list { let _ = ev.send(e); };
     let mut finishing: Option<tokio::time::Instant> = None;
+    // Gemini: when text last came (or `Finish`, if later); it's settled after GEMINI_SETTLE.
+    let mut last_text = tokio::time::Instant::now();
+    let mut settle = tokio::time::interval(Duration::from_millis(200));
+    settle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut keepalive = tokio::time::interval(Duration::from_secs(5));
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let end = loop {
@@ -391,7 +522,8 @@ async fn run(kind: Kind, name: &'static str, sock: ws::Socket, mut cmd: mpsc::Un
                     st.awaiting_commit = kind == Kind::OpenAi && !msgs.is_empty();
                     for m in msgs { let _ = tx.send(m).await; }
                     if kind == Kind::OpenAi && finished(kind, &st) { break "stopped".into(); }
-                    finishing = Some(tokio::time::Instant::now() + FINISH_WAIT);
+                    last_text = tokio::time::Instant::now();
+                    finishing = Some(tokio::time::Instant::now() + if kind == Kind::Gemini { GEMINI_FINISH_WAIT } else { FINISH_WAIT });
                 }
             },
             m = rx.next() => {
@@ -402,11 +534,20 @@ async fn run(kind: Kind, name: &'static str, sock: ws::Socket, mut cmd: mpsc::Un
                     let reason = m.as_close().map(|(_, r)| r.to_string()).unwrap_or_default();
                     break if finishing.is_some() { "stopped".into() } else if reason.is_empty() { format!("{name} closed the connection") } else { format!("{name}: {reason}") };
                 }
-                let Some(text) = m.as_text() else { continue };
-                let Ok(v) = serde_json::from_str::<Value>(text) else { continue };
+                // Gemini sends its JSON in binary frames.
+                let text = match m.as_text() {
+                    Some(t) => t.to_string(),
+                    None if kind == Kind::Gemini && m.is_binary() => String::from_utf8_lossy(&m.as_payload().to_vec()).to_string(),
+                    None => continue,
+                };
+                let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
                 emit(on_message(kind, &v, &mut st));
+                if std::mem::take(&mut st.got_text) { last_text = tokio::time::Instant::now(); }
                 if let Some(f) = st.fatal.take() { break f; }
                 if finishing.is_some() && finished(kind, &st) { break "stopped".into(); }
+            }
+            _ = settle.tick(), if kind == Kind::Gemini && finishing.is_some() => {
+                if last_text.elapsed() >= GEMINI_SETTLE { break "stopped".into(); }
             }
             _ = keepalive.tick(), if kind == Kind::Deepgram && finishing.is_none() => {
                 let _ = tx.send(Message::text(json!({ "type": "KeepAlive" }).to_string())).await;
@@ -416,7 +557,8 @@ async fn run(kind: Kind, name: &'static str, sock: ws::Socket, mut cmd: mpsc::Un
     };
     // Words that never got a final still count.
     emit(st.items.flush());
-    if !st.interim.is_empty() { emit(vec![DictationEvent::Final(std::mem::take(&mut st.interim))]); }
+    let rest = std::mem::take(&mut st.interim).trim().to_string();
+    if !rest.is_empty() { emit(vec![DictationEvent::Final(rest)]); }
     let _ = tx.close().await;
     let _ = ev.send(DictationEvent::Closed(end));
 }
@@ -452,7 +594,15 @@ mod tests {
         assert!(p.headers.is_empty());
         assert_eq!(plan(&cfg("elevenlabs"), &cred("xi", false)).unwrap().headers, vec![("xi-api-key", "xi".to_string())]);
 
-        assert!(plan(&cfg("gemini"), &cred("t", true)).is_err());
+        let p = plan(&cfg("gemini"), &cred("auth_tokens/abc", true)).unwrap();
+        assert_eq!(p.url, format!("{GEMINI_CONSTRAINED_URL}?access_token=auth_tokens/abc"));
+        assert_eq!((p.kind, p.model.as_str(), p.configure), (Kind::Gemini, GEMINI_MODEL, true));
+        assert!(p.headers.is_empty());
+        assert_eq!(plan(&cfg("gemini"), &cred("AIzaKey", false)).unwrap().url, format!("{GEMINI_URL}?key=AIzaKey"));
+        let p = plan(&cfg("gemini"), &Credential { secret: "t&x=1".into(), ephemeral: true, url: Some("wss://x/y?alt=1".into()) }).unwrap();
+        assert_eq!(p.url, "wss://x/y?alt=1&access_token=tx1");
+
+        assert!(plan(&cfg("grok"), &cred("t", true)).is_err());
         assert!(plan(&cfg("openai"), &cred(" ", true)).is_err());
         // Odd characters never reach a URL.
         let p = plan(&DictationConfig { language: Some("en&x=1".into()), ..cfg("deepgram") }, &cred("k", true)).unwrap();
@@ -512,6 +662,53 @@ mod tests {
         let commits: Vec<bool> = (0..20).map(|_| should_commit(&mut st, &quiet)).collect();
         assert_eq!(commits.iter().filter(|c| **c).count(), 1, "one commit per pause");
         assert!(commits[14] && !commits[13], "after 900 ms: {commits:?}");
+    }
+
+    #[test]
+    fn gemini_setup_only_listens() {
+        let s = gemini_setup(GEMINI_MODEL);
+        assert_eq!(s["model"], "models/gemini-2.5-flash-native-audio-latest");
+        assert_eq!(s["inputAudioTranscription"], json!({}));
+        assert_eq!(s.pointer("/realtimeInputConfig/automaticActivityDetection/disabled"), Some(&json!(true)));
+        // Nothing that would make it talk or call tools.
+        for k in ["tools", "systemInstruction", "outputAudioTranscription"] { assert!(s.get(k).is_none(), "{k}"); }
+        // Audio is 16 kHz PCM as it comes; Finish only sends quiet (never activityEnd/audioStreamEnd).
+        let m = audio_message(Kind::Gemini, &[1, 2]);
+        let v: Value = serde_json::from_str(m.as_text().unwrap()).unwrap();
+        assert_eq!(v.pointer("/realtimeInput/audio/mimeType"), Some(&json!("audio/pcm;rate=16000")));
+        let fin = finish_messages(Kind::Gemini, &State::default());
+        assert_eq!(fin.len(), 20);
+        for m in &fin {
+            let t = m.as_text().unwrap();
+            assert!(t.contains("\"audio\"") && !t.contains("activityEnd") && !t.contains("audioStreamEnd"), "{t}");
+        }
+    }
+
+    #[test]
+    fn gemini_pieces_become_partials_then_sentences() {
+        let mut st = State::default();
+        let t = |st: &mut State, piece: &str| on_message(Kind::Gemini, &json!({ "serverContent": { "inputTranscription": { "text": piece } } }), st);
+        assert_eq!(t(&mut st, " Re"), vec![DictationEvent::Partial("Re".into())]);
+        assert!(st.got_text);
+        assert_eq!(t(&mut st, "mind me at 7"), vec![DictationEvent::Partial("Remind me at 7".into())]);
+        assert_eq!(t(&mut st, ":3"), vec![DictationEvent::Partial("Remind me at 7:3".into())]);
+        assert_eq!(t(&mut st, "0."), vec![DictationEvent::Partial("Remind me at 7:30.".into())]);
+        // The next sentence starts: the first is final.
+        assert_eq!(t(&mut st, " And"), vec![DictationEvent::Final("Remind me at 7:30.".into()), DictationEvent::Partial("And".into())]);
+        assert_eq!(t(&mut st, " pay 3.5"), vec![DictationEvent::Partial("And pay 3.5".into())]);
+        // Other messages carry no text.
+        st.got_text = false;
+        assert_eq!(on_message(Kind::Gemini, &json!({ "setupComplete": {} }), &mut st), vec![]);
+        assert_eq!(on_message(Kind::Gemini, &json!({ "serverContent": { "modelTurn": { "parts": [] } } }), &mut st), vec![]);
+        assert!(!st.got_text && st.fatal.is_none());
+        assert!(!finished(Kind::Gemini, &st));
+    }
+
+    #[test]
+    fn errors_never_carry_a_token() {
+        assert_eq!(redact("HTTP 403 for wss://x/y?access_token=auth_tokens/abc"), "HTTP 403 for wss://x/y?…");
+        assert_eq!(redact("bad ?key=AIza"), "bad ?…");
+        assert_eq!(redact("timed out"), "timed out");
     }
 
     #[test]

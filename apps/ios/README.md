@@ -69,13 +69,17 @@ route, save the JSON, then
 Live dictation (the composer's mic) runs on the same engine: `Dictation` streams
 the microphone to a speech-to-text service and the words appear in the message
 box as they're said (partial text, replaced by final text as it settles). The
-app asks `GET /api/mobile/voice/capabilities` whether this Mercury can dictate
-(the mic is greyed out, with what to add, when it can't) and
-`POST /api/mobile/voice/dictation` for a short-lived token: an OpenAI Realtime
-transcription session (`gpt-live-transcribe`), a Deepgram temporary token
-(Nova-3) or an ElevenLabs single-use Scribe token, whichever the owner has a key
-for (their "Who listens" choice in Settings → Voice first). Gemini can't dictate:
-Gemini Live only transcribes inside a conversation where it also answers. Live check:
+app asks `GET /api/mobile/voice/capabilities` which service this Mercury
+dictates with and `POST /api/mobile/voice/dictation` for a short-lived token:
+an OpenAI Realtime transcription session (`gpt-live-transcribe`), a Gemini Live
+session that only listens (`gemini-2.5-flash-native-audio-latest`, an ephemeral
+token locked to transcription; the model never answers), a Deepgram temporary
+token (Nova-3) or an ElevenLabs single-use Scribe token. It's the same service
+Desktop's voice typing uses: the owner's voice choice in Settings → Voice
+(Optimus's "Who listens") when it has a key, else OpenAI, Gemini, Deepgram,
+ElevenLabs. With no speech key at all (or a Mercury too old to say), the phone
+dictates with its own speech recognition (iOS `SFSpeechRecognizer`, on the
+device when it can); the mic is never greyed out for want of a key. Live check:
 
     SMOKE_DICTATION=dictation.json SMOKE_PCM=speech.s16le cargo test --release smoke_live_dictation -- --ignored --nocapture
 
