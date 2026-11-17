@@ -86,4 +86,13 @@ class VoiceScreenStateTest {
     assertEquals("Offline.", e.providersError)
     assertSame(installed, e.optimus)
   }
+
+  @Test fun voiceOffersOptimusOnlyWhenItIsntInstalled() {
+    assertTrue(offersOptimusInstall(catalogOnly, canManage = true))
+    assertTrue(offersOptimusInstall(null, canManage = true))
+    assertFalse(offersOptimusInstall(catalogOnly, canManage = false))
+    // Installed (even with settings that didn't load): no Install card.
+    assertFalse(offersOptimusInstall(broken, canManage = true))
+    assertFalse(offersOptimusInstall(installed, canManage = true))
+  }
 }

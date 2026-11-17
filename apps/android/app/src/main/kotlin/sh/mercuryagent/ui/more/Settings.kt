@@ -17,6 +17,7 @@ import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Devices
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Memory
@@ -53,6 +54,7 @@ import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.composable
+import androidx.navigation.toRoute
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import sh.mercuryagent.AppContainer
@@ -74,6 +76,8 @@ object SettingsNav {
   @Serializable object Budgets
   @Serializable object Activity
   @Serializable object Devices
+  @Serializable object Plugins
+  @Serializable data class Plugin(val id: String)
 }
 
 fun NavGraphBuilder.settingsGraph(nav: NavHostController, container: AppContainer, connection: Connection, client: MercuryClient, onAddMercury: () -> Unit) {
@@ -86,7 +90,11 @@ fun NavGraphBuilder.settingsGraph(nav: NavHostController, container: AppContaine
     if (nav.previousBackStackEntry?.destination?.hasRoute(route::class) == true) nav.popBackStack() else nav.navigate(route)
   }
   composable<SettingsNav.Models> { ModelsSettings(client, back, onVoice = { openOrBack(SettingsNav.Voice) }) }
-  composable<SettingsNav.Voice> { VoiceSettings(client, container.calls, back, onOpenModels = { openOrBack(SettingsNav.Models) }) }
+  composable<SettingsNav.Voice> {
+    VoiceSettings(client, container.calls, back, onOpenModels = { openOrBack(SettingsNav.Models) }, onOpenPlugin = { nav.navigate(SettingsNav.Plugin(it)) })
+  }
+  composable<SettingsNav.Plugins> { PluginsSettings(client, connection.name, back, onOpen = { nav.navigate(SettingsNav.Plugin(it)) }) }
+  composable<SettingsNav.Plugin> { entry -> PluginDetailSettings(client, connection.name, entry.toRoute<SettingsNav.Plugin>().id, back) }
   composable<SettingsNav.Channels> { ChannelsSettings(client, back) }
   composable<SettingsNav.Budgets> { BudgetsSettings(client, back) }
   composable<SettingsNav.Activity> { ActivitySettings(client, back) }
@@ -175,6 +183,7 @@ fun SettingsScreen(
     item { SettingsHeader("Settings") }
     item { NavRow(Icons.Outlined.Memory, "Models") { onOpen(SettingsNav.Models) } }
     item { NavRow(Icons.Outlined.GraphicEq, "Voice") { onOpen(SettingsNav.Voice) } }
+    item { NavRow(Icons.Outlined.Extension, "Plugins") { onOpen(SettingsNav.Plugins) } }
     item { NavRow(Icons.Outlined.Forum, "Channels") { onOpen(SettingsNav.Channels) } }
     item { NavRow(Icons.Outlined.Palette, "Appearance") { onOpen(SettingsNav.Appearance) } }
     item { NavRow(Icons.Outlined.Notifications, "Notifications") { onOpen(SettingsNav.Notifications) } }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -29,6 +30,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -63,6 +65,7 @@ import sh.mercuryagent.core.VoiceProvidersResponse
 import sh.mercuryagent.core.PluginDetail
 import sh.mercuryagent.core.PluginField
 import sh.mercuryagent.core.PluginGroup
+import sh.mercuryagent.core.Plugins
 import sh.mercuryagent.core.plugin
 import sh.mercuryagent.core.setPluginSetting
 import sh.mercuryagent.core.settingBool
@@ -75,6 +78,15 @@ import sh.mercuryagent.ui.theme.Mercury
 
 /** Optimus is really there: installed, with a manifest that loaded (the catalog alone gives a bare entry). */
 fun optimusInstalled(p: PluginDetail?): Boolean = p != null && p.installedVersion != null && p.settings.isNotEmpty()
+
+/**
+ * "Install Optimus" (opens its plugin page) instead of the line saying where to install it, when this
+ * Mercury takes plugin changes from the phone and Optimus isn't installed (a catalog entry isn't).
+ */
+fun offersOptimusInstall(plugin: PluginDetail?, canManage: Boolean): Boolean = canManage && !Plugins.isInstalled(plugin)
+
+const val INSTALL_OPTIMUS_TITLE = "Install Optimus"
+const val INSTALL_OPTIMUS_LINE = "For talking to Mercury on your computer and letting it use your screen"
 
 /** What Settings → Voice shows. Never nothing: loading, a reason with Retry, or content. */
 sealed interface VoiceScreenState {
@@ -121,7 +133,7 @@ fun voiceScreenState(
  * calls and dictation use; then the Optimus plugin's own settings when it's installed.
  */
 @Composable
-fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit, onOpenModels: () -> Unit) {
+fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit, onOpenModels: () -> Unit, onOpenPlugin: (String) -> Unit = {}) {
   val gate = rememberOwnerGate(client)
   val snackbar = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
@@ -130,6 +142,8 @@ fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit,
   var providers by remember(client) { mutableStateOf<VoiceProvidersResponse?>(null) }
   var providersError by remember(client) { mutableStateOf<String?>(null) }
   var feature by remember(client) { mutableStateOf(false) }
+  /** This Mercury takes plugin installs from the phone. */
+  var canManagePlugins by remember(client) { mutableStateOf(false) }
   var loaded by remember(client) { mutableStateOf(false) }
   var editing by remember(client) { mutableStateOf<String?>(null) }
   /** "Set up voice" is open. */
@@ -138,7 +152,9 @@ fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit,
   val values = remember(client) { mutableStateMapOf<String, JsonElement>() }
 
   suspend fun load() {
-    feature = VOICE_PROVIDERS_FEATURE in calls.features(client)
+    val features = calls.features(client)
+    feature = VOICE_PROVIDERS_FEATURE in features
+    canManagePlugins = Plugins.canManage(features)
     coroutineScope {
       val p = async {
         try {
@@ -214,7 +230,8 @@ fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit,
                 Button(onClick = { settingUp = true }, modifier = Modifier.fillMaxWidth()) { Text("Set up voice") }
               }
             }
-            voiceProviderRows(r) { p -> if (p.canEdit || p.id == "openai") editing = p.id }
+            val card = offersOptimusInstall(plugin, canManagePlugins)
+            voiceProviderRows(r, installOptimus = if (card) ({ installOptimusCard { onOpenPlugin("optimus") } }) else null) { p -> if (p.canEdit || p.id == "openai") editing = p.id }
           }
         }
         val p = state.optimus
@@ -233,6 +250,9 @@ fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit,
             }
           }
           pluginForm(p.settings, p.settingGroups, values) { f, v -> save(p.id, f, v) }
+        } else if (offersOptimusInstall(plugin, canManagePlugins)) {
+          // With providers, the card is under them already.
+          if (!state.showProviders) installOptimusCard { onOpenPlugin("optimus") }
         } else {
           item(key = "optimus:footer") {
             SettingsFooter(
@@ -267,6 +287,27 @@ fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit,
   }
 }
 
+/** "Install Optimus": opens its plugin page (what it can do, Install). */
+private fun LazyListScope.installOptimusCard(onClick: () -> Unit) {
+  item(key = "optimus:install") {
+    Surface(
+      onClick = onClick,
+      color = MaterialTheme.colorScheme.surfaceContainerHigh,
+      shape = RoundedCornerShape(20.dp),
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+      Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        PluginMark("Optimus", 40)
+        Column(Modifier.weight(1f)) {
+          Text(INSTALL_OPTIMUS_TITLE, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+          Text(INSTALL_OPTIMUS_LINE, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Chevron()
+      }
+    }
+  }
+}
+
 /** A failure that blocks the page: why, and a way to try again. */
 @Composable
 private fun RetryBlock(message: String, retry: () -> Unit) {
@@ -281,13 +322,14 @@ private fun RetryBlock(message: String, retry: () -> Unit) {
 }
 
 /** The providers (the phone's first, then Optimus-only ones) and what calls and dictation use. */
-private fun LazyListScope.voiceProviderRows(r: VoiceProvidersResponse, onOpen: (VoiceProvider) -> Unit) {
+private fun LazyListScope.voiceProviderRows(r: VoiceProvidersResponse, installOptimus: (LazyListScope.() -> Unit)? = null, onOpen: (VoiceProvider) -> Unit) {
   val (more, main) = r.providers.partition { it.optimusOnly }
   item(key = "providers:header") { SettingsHeader("Voice providers") }
   items(main, key = { "provider:${it.id}" }) { p -> VoiceProviderRow(p) { onOpen(p) } }
   item(key = "providers:footer") {
     SettingsFooter("Keys stay on your computer: the phone only gets short-lived tokens. Optimus uses the same keys.")
   }
+  installOptimus?.invoke(this)
   val c = r.capabilities
   item(key = "uses:header") { SettingsHeader("In use") }
   item(key = "uses:calls") {
