@@ -11,6 +11,9 @@ import { Badge } from "@/components/ui/badge";
 
 /* ── Per-provider local form state ── */
 interface ProviderForm {
+  /** OpenRouter's endpoint pin, kept as raw text: commas are the separator. */
+  endpointOrder: string;
+  quantizations: string;
   apiKey: string;
   baseUrl: string;
   model: string;
@@ -22,7 +25,15 @@ interface ProviderForm {
   testResult: ProviderTestResult | null;
 }
 
+const splitList = (value: string): string[] =>
+  value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
 const emptyForm = (p: ProviderInfo): ProviderForm => ({
+  endpointOrder: (p.routing?.order ?? []).join(", "),
+  quantizations: (p.routing?.quantizations ?? []).join(", "),
   apiKey: "",
   baseUrl: p.baseUrl,
   model: p.model,
@@ -125,6 +136,16 @@ export function ProvidersPage() {
         baseUrl: f.baseUrl,
         model: f.model,
         enabled: f.enabled,
+        // Only OpenRouter reads a pin, and sending one elsewhere is a 400 by
+        // design, so the field only leaves this screen on that provider.
+        ...(name === "openrouter"
+          ? {
+              routing: {
+                order: splitList(f.endpointOrder),
+                quantizations: splitList(f.quantizations),
+              },
+            }
+          : {}),
       });
       showFeedback(name, "success", "Saved — restart Mercury to apply (Settings → Restart Mercury, or `mercury restart`)");
       updateForm(name, { apiKey: "", saving: false });
@@ -333,6 +354,45 @@ export function ProvidersPage() {
                           className="bg-background/50"
                         />
                       </div>
+
+                      {/* Endpoint pin — OpenRouter fronts many hosts for the
+                          same weights, and this is which one answers. */}
+                      {provider.name === "openrouter" && (
+                        <div className="space-y-3 rounded-lg border border-border/40 bg-background/20 p-3">
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-medium text-muted-foreground">
+                              Endpoint order{" "}
+                              <span className="text-muted-foreground/60">(optional, comma-separated)</span>
+                            </label>
+                            <Input
+                              placeholder="inference-net"
+                              value={f.endpointOrder}
+                              onChange={(e) =>
+                                updateForm(provider.name, { endpointOrder: e.target.value })
+                              }
+                              className="bg-background/50 font-mono text-xs"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-medium text-muted-foreground">
+                              Quantization{" "}
+                              <span className="text-muted-foreground/60">(optional)</span>
+                            </label>
+                            <Input
+                              placeholder="fp8"
+                              value={f.quantizations}
+                              onChange={(e) =>
+                                updateForm(provider.name, { quantizations: e.target.value })
+                              }
+                              className="bg-background/50 font-mono text-xs"
+                            />
+                          </div>
+                          <p className="text-[11px] leading-relaxed text-muted-foreground/80">
+                            Pins one endpoint of the model. Left empty, the gateway picks — and a
+                            pinned endpoint that is down fails rather than being swapped.
+                          </p>
+                        </div>
+                      )}
 
                       {/* Feedback */}
                       <AnimatePresence>
