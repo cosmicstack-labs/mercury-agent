@@ -117,6 +117,8 @@ fun ConversationScreen(
   onNewChat: () -> Unit,
   /** The chat was deleted from its own menu. */
   onDeleted: () -> Unit,
+  /** Settings → Voice (from the model picker). */
+  onVoiceSettings: () -> Unit = {},
 ) {
   val ui by vm.ui.collectAsStateWithLifecycle()
   val welcome by vm.welcome.collectAsStateWithLifecycle()
@@ -136,7 +138,11 @@ fun ConversationScreen(
   // Live dictation into the box, and voice calls: both need the microphone first.
   val dictation = remember(vm) { sh.mercuryagent.call.DictationModel(context.applicationContext, vm.client, vm.draft, calls, scope) }
   val mic = sh.mercuryagent.ui.call.rememberMicPermission(snackbar)
-  LaunchedEffect(dictation) { dictation.load() }
+  // A voice key saved in Settings → Voice: the mic asks again at once.
+  val voiceChanges by calls.changes.collectAsStateWithLifecycle()
+  LaunchedEffect(dictation, voiceChanges) { dictation.load() }
+  var voiceKeys by remember(vm.client) { mutableStateOf(false) }
+  LaunchedEffect(vm.client) { voiceKeys = sh.mercuryagent.core.VOICE_PROVIDERS_FEATURE in calls.features(vm.client) }
   androidx.compose.runtime.DisposableEffect(dictation) { onDispose { dictation.cancel() } }
   val startCall: () -> Unit = { dismissKeyboard(); mic { dictation.cancel(); calls.start(vm) } }
   // Call Mercury from the drawer or the launcher's app shortcut: the same call as the button's.
@@ -235,7 +241,10 @@ fun ConversationScreen(
           ui.plan?.let { PlanCard(it, ui.busy, ui.threadId) }
           NeedsYouCard(ui.prompts, answer = { p, v -> vm.answer(p, v) })
         }
-        Composer(vm, ui.busy, ui.stopping, focus, dictation, onDictate = dictate, onCall = startCall)
+        Composer(
+          vm, ui.busy, ui.stopping, focus, dictation, onDictate = dictate, onCall = startCall,
+          voiceKeys = voiceKeys, onVoiceSettings = { dismissKeyboard(); onVoiceSettings() },
+        )
       }
     },
     snackbarHost = { SnackbarHost(snackbar) },

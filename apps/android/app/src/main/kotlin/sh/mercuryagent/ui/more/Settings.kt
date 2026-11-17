@@ -49,6 +49,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.composable
@@ -80,8 +81,12 @@ fun NavGraphBuilder.settingsGraph(nav: NavHostController, container: AppContaine
   composable<SettingsNav.Root> { SettingsScreen(container, connection, client, onBack = back, onOpen = { nav.navigate(it) }, onAddMercury = onAddMercury) }
   composable<SettingsNav.Appearance> { AppearanceSettings(container, back) }
   composable<SettingsNav.Notifications> { NotificationsSettings(container, back) }
-  composable<SettingsNav.Models> { ModelsSettings(client, back) }
-  composable<SettingsNav.Voice> { VoiceSettings(client, back) }
+  // Models and Voice link to each other: going back to the one underneath instead of stacking them.
+  fun openOrBack(route: Any) {
+    if (nav.previousBackStackEntry?.destination?.hasRoute(route::class) == true) nav.popBackStack() else nav.navigate(route)
+  }
+  composable<SettingsNav.Models> { ModelsSettings(client, back, onVoice = { openOrBack(SettingsNav.Voice) }) }
+  composable<SettingsNav.Voice> { VoiceSettings(client, container.calls, back, onOpenModels = { openOrBack(SettingsNav.Models) }) }
   composable<SettingsNav.Channels> { ChannelsSettings(client, back) }
   composable<SettingsNav.Budgets> { BudgetsSettings(client, back) }
   composable<SettingsNav.Activity> { ActivitySettings(client, back) }

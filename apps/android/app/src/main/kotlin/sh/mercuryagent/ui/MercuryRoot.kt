@@ -205,6 +205,7 @@ private fun Home(container: AppContainer, connection: Connection) {
               onMenu = { dismissKeyboard(); scope.launch { drawer.open() } },
               onNewChat = { nav.openChat(null) },
               onDeleted = { nav.openChat(null) },
+              onVoiceSettings = { nav.navigate(SettingsNav.Voice) },
             )
           }
           composable<BotsRoute> {

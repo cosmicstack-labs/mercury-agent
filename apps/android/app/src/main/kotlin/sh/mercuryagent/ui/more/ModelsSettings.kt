@@ -56,18 +56,20 @@ import sh.mercuryagent.core.ProviderCheck
 import sh.mercuryagent.core.ProviderInfo
 import sh.mercuryagent.core.ProviderSettings
 import sh.mercuryagent.core.RoleChoice
+import sh.mercuryagent.core.VoiceCapabilities
 import sh.mercuryagent.core.checkProvider
 import sh.mercuryagent.core.forgetProviderKey
 import sh.mercuryagent.core.providerSettings
 import sh.mercuryagent.core.saveProvider
 import sh.mercuryagent.core.setModelRoles
+import sh.mercuryagent.core.voiceCapabilities
 
 /**
  * Models: the model Mercury chats with, the ones learning and bot crews use, and every provider
  * with its key (iOS: ModelsSettings; apps/desktop/src/views/settings/Models.tsx).
  */
 @Composable
-fun ModelsSettings(client: MercuryClient, onBack: () -> Unit) {
+fun ModelsSettings(client: MercuryClient, onBack: () -> Unit, onVoice: () -> Unit = {}) {
   val gate = rememberOwnerGate(client)
   val snackbar = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
@@ -88,6 +90,9 @@ fun ModelsSettings(client: MercuryClient, onBack: () -> Unit) {
   }
 
   LaunchedEffect(client) { load() }
+  /** What calls and dictation use, under Voice. */
+  var voice by remember(client) { mutableStateOf<VoiceCapabilities?>(null) }
+  LaunchedEffect(client) { voice = runCatching { client.voiceCapabilities() }.getOrNull() }
 
   val s = settings
   val ready = s?.providers.orEmpty().filter { it.configured && it.enabled }
@@ -143,6 +148,22 @@ fun ModelsSettings(client: MercuryClient, onBack: () -> Unit) {
     }
     item { SettingsHeader("Providers") }
     items(s.providers, key = { it.id }) { p -> ProviderRow(p) { openProvider = p.id } }
+    item { SettingsHeader("Voice") }
+    item(key = "voice") {
+      val v = voice
+      ListItem(
+        headlineContent = { Text("Voice providers") },
+        supportingContent = {
+          Text(
+            if (v == null) "Keys for calls and dictation"
+            else "Calls: ${if (v.call) v.callEngineName ?: v.callEngine ?: "ready" else "not set up"} · Dictation: ${if (v.dictation) v.dictationEngineName ?: v.dictationEngine ?: "ready" else "not set up"}",
+            maxLines = 2, overflow = TextOverflow.Ellipsis,
+          )
+        },
+        trailingContent = { Chevron() },
+        modifier = Modifier.clickable(onClickLabel = "Open voice settings", onClick = onVoice),
+      )
+    }
   }
 }
 

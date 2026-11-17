@@ -2,9 +2,12 @@ package sh.mercuryagent.core
 
 import java.time.Duration
 import java.time.Instant
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 // Voice from the phone (src/web/api/mobile-voice.ts; iOS: MercuryCore/Speech.swift and Dictation.swift).
 // Mercury only mints short-lived tokens: API keys never leave the computer. The phone runs the
@@ -14,12 +17,17 @@ import kotlinx.serialization.json.buildJsonObject
  * What this Mercury's voice can do from the phone (GET /api/mobile/voice/capabilities): live calls,
  * and live dictation in the message box. The route only looks at which keys are set.
  */
+@Serializable
 data class VoiceCapabilities(
-  val call: Boolean,
+  val call: Boolean = false,
   val callEngine: String? = null,
+  /** The call engine as people say it ("OpenAI Realtime", "Gemini Live"). */
+  val callEngineName: String? = null,
   val callSetup: String? = null,
-  val dictation: Boolean,
+  val dictation: Boolean = false,
   val dictationEngine: String? = null,
+  /** The dictation engine as people say it ("Deepgram"). */
+  val dictationEngineName: String? = null,
   /** What to add for dictation, in plain words, when it isn't available. */
   val dictationSetup: String? = null,
 ) {
@@ -41,8 +49,9 @@ data class VoiceCapabilities(
       val j = parseObject(body)
       return when (code) {
         200 -> VoiceCapabilities(
-          call = j.bool("call") ?: false, callEngine = j.str("callEngine"), callSetup = j.str("callSetup"),
-          dictation = j.bool("dictation") ?: false, dictationEngine = j.str("dictationEngine"), dictationSetup = j.str("dictationSetup"),
+          call = j.bool("call") ?: false, callEngine = j.str("callEngine"), callEngineName = j.str("callEngineName"), callSetup = j.str("callSetup"),
+          dictation = j.bool("dictation") ?: false, dictationEngine = j.str("dictationEngine"),
+          dictationEngineName = j.str("dictationEngineName"), dictationSetup = j.str("dictationSetup"),
         )
         404 -> tooOld
         401 -> throw MercuryException.Unauthorized()
@@ -155,6 +164,86 @@ suspend fun MercuryClient.voiceSession(engine: String? = null): VoiceSessionResu
 suspend fun MercuryClient.dictationSession(engine: String? = null): DictationStart {
   val r = send(request("POST", "/api/mobile/voice/dictation", engineBody(engine)), 10)
   return DictationStart.decode(r.code, r.body)
+}
+
+// MARK: Voice providers (src/web/api/voice-providers.ts, feature `voice.providers`)
+
+/** The api-contract feature that says this Mercury has [voiceProviders] and [setVoiceKey]. */
+const val VOICE_PROVIDERS_FEATURE = "voice.providers"
+
+/**
+ * One voice provider's key (GET /api/voice/providers). Never carries the key: only whether it's
+ * set, where from, and its last four characters.
+ */
+@Serializable
+data class VoiceProvider(
+  val id: String,
+  val name: String = "",
+  /** Its name in ~/.mercury/.env (DEEPGRAM_API_KEY…). */
+  val env: String? = null,
+  /** "calls", "dictation", "optimus". */
+  val uses: List<String> = emptyList(),
+  val set: Boolean = false,
+  /** "env" (set on the computer), "store" (set from a screen), "provider" (the model provider's key), or null. */
+  val source: String? = null,
+  /** The key's last four characters. */
+  val hint: String? = null,
+  val canEdit: Boolean = false,
+  val note: String? = null,
+) {
+  /** Only the Optimus plugin uses it (computer voice), not the phone's calls or dictation. */
+  val optimusOnly: Boolean get() = uses.none { it == "calls" || it == "dictation" }
+
+  /** What it's used for, in plain words: "Calls · Dictation · Computer voice". */
+  val usedFor: String
+    get() = uses.mapNotNull {
+      when (it) { "calls" -> "Calls"; "dictation" -> "Dictation"; "optimus" -> "Computer voice"; else -> null }
+    }.joinToString(" · ")
+
+  /** "Not set", "Set · ••••1234", "Set on the computer", "From your OpenAI model". */
+  val status: String
+    get() = when {
+      !set -> "Not set"
+      source == "env" -> "Set on the computer"
+      source == "provider" -> "From your ${name.ifEmpty { "OpenAI" }} model"
+      !hint.isNullOrEmpty() -> "Set · ••••$hint"
+      else -> "Set"
+    }
+}
+
+object VoiceProviderList : KSerializer<List<VoiceProvider>> by LossyList(VoiceProvider.serializer())
+
+@Serializable
+data class VoiceProvidersResponse(
+  @Serializable(with = VoiceProviderList::class) val providers: List<VoiceProvider> = emptyList(),
+  val capabilities: VoiceCapabilities = VoiceCapabilities(),
+)
+
+/** PUT /api/voice/providers/:id's answer. */
+@Serializable
+data class VoiceKeyResult(
+  val ok: Boolean = false,
+  /** The provider accepted the key (false when it couldn't be checked). */
+  val verified: Boolean = false,
+  val message: String? = null,
+  val error: String? = null,
+  val provider: VoiceProvider? = null,
+  val capabilities: VoiceCapabilities? = null,
+)
+
+/** GET /api/voice/providers: every voice provider's key status, and what calls and dictation use. */
+suspend fun MercuryClient.voiceProviders(): VoiceProvidersResponse =
+  decode(VoiceProvidersResponse.serializer(), request("GET", "/api/voice/providers"))
+
+/**
+ * PUT /api/voice/providers/:id: saves [apiKey] (checked with the provider first), or removes the
+ * key when it's null. 428 → [MercuryException.NeedsOwner] (repeat with the approval's id); a key the
+ * provider rejected (400) or one set on the computer (409) → [MercuryException.Server] with the
+ * reason. The key is only ever in the request body.
+ */
+suspend fun MercuryClient.setVoiceKey(id: String, apiKey: String?, approval: String? = null): VoiceKeyResult {
+  val body = buildJsonObject { put("apiKey", apiKey) }
+  return decode(VoiceKeyResult.serializer(), gated("PUT", "/api/voice/providers/${MercuryClient.q(id)}", body, approval), 30)
 }
 
 /** Turns a reply into what's said on a call (iOS: Spoken). */

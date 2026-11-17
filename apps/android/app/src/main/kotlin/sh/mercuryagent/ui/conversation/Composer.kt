@@ -129,6 +129,9 @@ fun Composer(
   onDictate: () -> Unit,
   onCall: () -> Unit,
   modifier: Modifier = Modifier,
+  /** The Mercury has `voice.providers`: the model picker links to Settings → Voice. */
+  voiceKeys: Boolean = false,
+  onVoiceSettings: () -> Unit = {},
 ) {
   val draft = vm.draft
   val attachments by vm.attachments.collectAsStateWithLifecycle()
@@ -206,7 +209,11 @@ fun Composer(
     }
   }
 
-  if (models) ModelSheet(vm, composer, onDismiss = { models = false })
+  if (models) ModelSheet(
+    vm, composer, onDismiss = { models = false },
+    voice = if (voiceKeys) VoiceLine(dictation.capabilities) else null,
+    onVoiceSettings = { models = false; onVoiceSettings() },
+  )
   if (sheet) ComposerSheet(
     vm, composer, attachments.size,
     onDismiss = { sheet = false },
@@ -464,7 +471,13 @@ private fun ModelPill(name: String, busy: Boolean, onClick: () -> Unit) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ModelSheet(vm: ConversationViewModel, c: ComposerState, onDismiss: () -> Unit) {
+private fun ModelSheet(
+  vm: ConversationViewModel,
+  c: ComposerState,
+  onDismiss: () -> Unit,
+  voice: VoiceLine? = null,
+  onVoiceSettings: () -> Unit = {},
+) {
   val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var query by remember { mutableStateOf("") }
   androidx.compose.runtime.LaunchedEffect(Unit) { vm.loadModels() }
@@ -478,6 +491,15 @@ private fun ModelSheet(vm: ConversationViewModel, c: ComposerState, onDismiss: (
         "Changes the model for Mercury, in every chat.", style = MaterialTheme.typography.bodySmall, color = Mercury.colors.ink3,
         modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 8.dp),
       )
+      voice?.let { v ->
+        Row(
+          Modifier.fillMaxWidth().clickable(onClickLabel = "Set up voice", onClick = onVoiceSettings).padding(horizontal = 20.dp, vertical = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(v.status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+          Text("Set up voice →", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+        }
+      }
       if ((catalog?.models?.size ?: 0) > 8) Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).height(44.dp)
           .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(22.dp)).padding(horizontal = 14.dp),
@@ -512,6 +534,15 @@ private fun ModelSheet(vm: ConversationViewModel, c: ComposerState, onDismiss: (
       }
     }
   }
+}
+
+/** The model picker's voice line: what calls use, from the capabilities the mic already asked for. */
+data class VoiceLine(val capabilities: sh.mercuryagent.core.VoiceCapabilities?) {
+  val status: String
+    get() {
+      val c = capabilities ?: return "Voice"
+      return if (c.call) "Voice: ${c.callEngineName ?: c.callEngine ?: "ready"} ✓" else "Voice: not set up"
+    }
 }
 
 @Composable
