@@ -1,30 +1,38 @@
 import Foundation
 import MercuryCore
 
-/// The chat list's sections, as Mercury Desktop groups them (ThreadList.tsx `groupByDay`):
-/// Today, Yesterday, Previous 7 days, Previous 30 days, Older. Counted in calendar days, so a
-/// chat from 11 pm is "Yesterday" at 1 am.
+/// The side panel's day labels, after Mercury Desktop's ThreadList `groupByDay`, finer for the week:
+/// "Today", "Yesterday", "2 days ago" … "6 days ago", "Previous 30 days", then the month ("October",
+/// or "September 2025" in another year). Counted in calendar days in the phone's time zone, so a chat
+/// from 11 pm is "Yesterday" at 1 am. The same rules as Android's `ChatSections`.
 enum ChatSections {
-  struct Section: Equatable { var title: String; var threads: [ChatThread] }
+  /// `title` nil: no label (Saved, which is newest save first, not by day).
+  struct Section: Equatable { var title: String?; var threads: [ChatThread] }
+
+  static let months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
   static func title(_ d: Date, now: Date = .now, calendar: Calendar = .current) -> String {
     let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: d), to: calendar.startOfDay(for: now)).day ?? 0
     switch days {
     case ...0: return "Today"
     case 1: return "Yesterday"
-    case 2..<7: return "Previous 7 days"
+    case 2..<7: return "\(days) days ago"
     case 7..<30: return "Previous 30 days"
-    default: return "Older"
+    default:
+      let c = calendar.dateComponents([.year, .month], from: d)
+      let month = months[((c.month ?? 1) - 1 + 12) % 12]
+      return c.year == calendar.component(.year, from: now) ? month : "\(month) \(c.year ?? 0)"
     }
   }
 
   /// Threads in the order given, cut into day sections (in order of first appearance).
   static func byDay(_ threads: [ChatThread], now: Date = .now, calendar: Calendar = .current) -> [Section] {
     var out: [Section] = []
+    var index: [String: Int] = [:]
     for t in threads {
       let key = title(t.lastActivity, now: now, calendar: calendar)
-      if let i = out.firstIndex(where: { $0.title == key }) { out[i].threads.append(t) }
-      else { out.append(Section(title: key, threads: [t])) }
+      if let i = index[key] { out[i].threads.append(t) }
+      else { index[key] = out.count; out.append(Section(title: key, threads: [t])) }
     }
     return out
   }
@@ -122,24 +130,29 @@ enum DaySeparators {
   }
 }
 
-/// The side panel's history, as in Grok's: one flat list, newest first, rows the title alone.
-/// "Saved" shows only saved chats, newest save first. A search filters live, on titles and
-/// previews; the label above the list says which it is. The same rules as Android's `ChatHistory`.
+/// The side panel's history, as in Grok's: one list, newest first, rows the title alone, with small
+/// day labels between them ("Today", "3 days ago", "October"; search results keep them). "Saved" shows
+/// only saved chats, newest save first, unlabelled. A search filters live, on titles and previews;
+/// the label above the list says which it is. The same rules as Android's `ChatHistory`.
 struct ChatHistory: Equatable {
   var threads: [ChatThread] = []
   var query = ""
   var savedOnly = false
+  var sections: [ChatSections.Section] = []
 
   var isEmpty: Bool { threads.isEmpty }
   /// "Conversations", "Saved" or "Results".
   var label: String { !query.isEmpty ? "Results" : savedOnly ? "Saved" : "Conversations" }
 
-  static func build(_ threads: [ChatThread], query: String, savedOnly: Bool) -> ChatHistory {
+  static func build(_ threads: [ChatThread], query: String, savedOnly: Bool, now: Date = .now, calendar: Calendar = .current) -> ChatHistory {
     let q = query.trimmingCharacters(in: .whitespaces)
     let base = savedOnly
       ? threads.filter { $0.savedAt != nil }.sorted { $0.savedAt! > $1.savedAt! }
       : threads.sorted { $0.lastActivity > $1.lastActivity }
-    return ChatHistory(threads: q.isEmpty ? base : base.filter { ChatSearch.matches($0, q) }, query: q, savedOnly: savedOnly)
+    let shown = q.isEmpty ? base : base.filter { ChatSearch.matches($0, q) }
+    let sections = savedOnly ? (shown.isEmpty ? [] : [ChatSections.Section(title: nil, threads: shown)])
+      : ChatSections.byDay(shown, now: now, calendar: calendar)
+    return ChatHistory(threads: shown, query: q, savedOnly: savedOnly, sections: sections)
   }
 }
 

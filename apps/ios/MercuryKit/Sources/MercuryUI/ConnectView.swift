@@ -16,9 +16,12 @@ public struct ConnectView: View {
       case .signIn: SignIn(model: model)
       case .token: PasteToken(model: model)
       case .waiting(let p): Waiting(model: model, pairing: p)
+      case .name: NameStep(model: model)
       }
     }
     .animation(.snappy(duration: 0.25), value: model.step)
+    // Connected but the sheet swiped away at the name step: saved as it is, never a lost token.
+    .onDisappear { if model.pending != nil { model.save() } }
   }
 }
 

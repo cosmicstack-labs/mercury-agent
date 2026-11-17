@@ -83,6 +83,10 @@ public enum Gallery {
       ("01c-connect-signin-error", connect(.signIn, error: MercuryError.badCredentials.errorDescription)),
       ("01d-connect-waiting", connect(.waiting(pairing))),
       ("01e-connect-token", connect(.token)),
+      ("01f-connect-name", AnyView(IdentityGallery.nameStep(store: store))),
+      ("01g-logo-sheet", AnyView(IdentityGallery.sheet)),
+      ("01h-mercury-switcher", AnyView(IdentityGallery.switcher())),
+      ("01i-mercury-edit", AnyView(IdentityGallery.edit())),
       ("03b-conversation-markdown", AnyView(markdown)),
       ("04-approval", AnyView(approval)),
     ]

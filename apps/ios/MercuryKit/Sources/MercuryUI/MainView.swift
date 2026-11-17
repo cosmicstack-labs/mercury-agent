@@ -100,7 +100,8 @@ struct MainView: View {
         onBots: { go(.bots) }, onArtifacts: { go(.artifacts) }, onBrain: { go(.brain) }, onSettings: { go(.settings) },
         onClose: { withAnimation(.snappy(duration: 0.28)) { drawer = false } },
         onSwitch: { id in store.activate(id) },
-        onAddMercury: { adding = true }
+        onAddMercury: { adding = true },
+        store: store
       )
     }
     .sheet(isPresented: $adding) { ConnectView(store: store) }

@@ -258,10 +258,10 @@ public enum ChatGallery {
     return m
   }
 
-  static let connection = Connection(id: "gallery", name: "Mercury on MacBook", baseURL: URL(string: "http://192.168.1.7:6175")!)
+  static let connection = Connection(id: "gallery", name: "Mercury on MacBook", baseURL: URL(string: "http://192.168.1.7:6175")!, logo: "shades")
 
-  static func drawer(_ m: ChatsModel, current: String? = nil, online: Bool? = true, rows: Int = 10) -> some View {
-    ChatDrawer(model: m, connection: connection, connections: [connection], online: online, current: current, still: true, stillLimit: rows)
+  static func drawer(_ m: ChatsModel, current: String? = nil, online: Bool? = true, rows: Int = 10, scrolled: CGFloat = 0) -> some View {
+    ChatDrawer(model: m, connection: connection, connections: [connection], online: online, current: current, still: true, stillLimit: rows, stillScroll: scrolled)
   }
 
   /// The side panel open over a chat: the scrim, the panel at 85%.
@@ -296,6 +296,10 @@ public enum ChatGallery {
       ChatThread(id: "k", title: "Summarise the Q3 board deck", createdAt: now.addingTimeInterval(-3 * day), savedAt: now.addingTimeInterval(-3 * day), preview: "Revenue up 18%.", lastRole: "assistant"),
       ChatThread(id: "l", title: "Fix the flaky login test", createdAt: now.addingTimeInterval(-5 * day), preview: "The test waited on a timer.", lastRole: "assistant"),
       ChatThread(id: "m", title: "Kashmir trip budget", createdAt: now.addingTimeInterval(-20 * day), preview: "About ₹48,000 for two.", lastRole: "assistant"),
+      ChatThread(id: "n", title: "Diwali gift ideas", createdAt: now.addingTimeInterval(-45 * day), preview: "Twelve ideas under ₹2,000.", lastRole: "assistant"),
+      ChatThread(id: "o", title: "Rewrite the README intro", createdAt: now.addingTimeInterval(-52 * day), preview: "Shorter, with one example.", lastRole: "assistant"),
+      ChatThread(id: "p", title: "Monsoon photo walk route", createdAt: now.addingTimeInterval(-80 * day), preview: "Dal Lake at dawn.", lastRole: "assistant"),
+      ChatThread(id: "q", title: "Learn Rust ownership", createdAt: now.addingTimeInterval(-400 * day), preview: "Borrowing in five rules.", lastRole: "assistant"),
     ]
     return list
   }
@@ -308,6 +312,12 @@ public enum ChatGallery {
   static var drawerSearch: AnyView {
     let m = drawerModel(historyThreads, query: "carousel")
     return screen { drawer(m) }
+  }
+
+  /// The whole panel scrolls: the header and the nav rows go up with the chats; the bottom bar stays.
+  static var drawerScrolled: AnyView {
+    let m = drawerModel(historyThreads, status: ["a": .working], unread: ["i"])
+    return screen { drawer(m, current: "b", rows: 30, scrolled: 380) }
   }
 
   static var drawerSaved: AnyView {
@@ -419,6 +429,7 @@ public enum ChatGallery {
       ("02e-drawer-error", drawerError),
       ("02g-drawer-undo", drawerUndo),
       ("02f-drawer-saved", drawerSaved),
+      ("02h-drawer-scrolled", drawerScrolled),
       ("03n-chat-reply-actions", replyActions),
       ("03o-chat-title-states", titleStates),
       ("03c-chat-welcome", welcome),

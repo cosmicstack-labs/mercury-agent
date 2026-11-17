@@ -13,6 +13,8 @@ public final class ConnectionStore {
     self.defaults = defaults
     if let data = defaults.data(forKey: Self.key), let saved = try? JSONDecoder().decode(Saved.self, from: data) {
       connections = saved.connections; activeId = saved.activeId
+      // Saved before friendly names and logos: each gets its logo once, kept from then on.
+      if let migrated = ConnectionLogos.migrate(connections) { connections = migrated; save() }
     }
   }
 
@@ -22,10 +24,15 @@ public final class ConnectionStore {
     MercuryClient(baseURL: c.baseURL, token: Keychain.get("connection:\(c.id)"))
   }
 
-  /// Saves a newly paired Mercury and makes it active.
+  /// The logo a Mercury added now would get by default.
+  public var nextLogo: String { ConnectionLogos.next(after: connections) }
+
+  /// Saves a newly paired Mercury and makes it active (with the next logo when it has none).
   public func add(_ c: Connection, token: String) {
     Keychain.set(token, for: "connection:\(c.id)")
     connections.removeAll { $0.id == c.id }
+    var c = c
+    if c.logo == nil { c.logo = nextLogo }
     connections.append(c)
     activeId = c.id
     save()
@@ -35,6 +42,15 @@ public final class ConnectionStore {
     guard let i = connections.firstIndex(where: { $0.id == id }) else { return }
     connections[i].lastUsedAt = .now
     activeId = id
+    save()
+  }
+
+  /// A new friendly name (ignored when blank) and logo for a saved Mercury.
+  public func update(_ id: String, name: String, logo: String) {
+    guard let i = connections.firstIndex(where: { $0.id == id }) else { return }
+    let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !n.isEmpty { connections[i].name = String(n.prefix(60)) }
+    if ConnectionLogos.ids.contains(logo) { connections[i].logo = logo }
     save()
   }
 
@@ -48,7 +64,7 @@ public final class ConnectionStore {
     save()
   }
 
-  struct Saved: Codable { var version = 1; var connections: [Connection]; var activeId: String? }
+  struct Saved: Codable { var version = 2; var connections: [Connection]; var activeId: String? }
 
   func save() {
     if let data = try? JSONEncoder().encode(Saved(connections: connections, activeId: activeId)) { defaults.set(data, forKey: Self.key) }

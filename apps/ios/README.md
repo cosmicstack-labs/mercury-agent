@@ -104,10 +104,15 @@ The Snapshots renderer can't draw native text fields, plain buttons or spinners
 ## Screens
 
 1. Connect: sign in to your Mercury, then approve the phone with a 5-character code (ADR-035).
+   Last, a friendly name (the computer's name from GET /api/health's `host` as a first guess, as
+   Mercury Desktop names a remote) and one of twelve playful Mercury logos (`MercuryLogo.swift`: the
+   mark dressed up, all vector; the first Mercury gets the first, the next the second). Both are kept
+   per connection and can be changed from the side panel's header (the switcher's Edit) or Settings.
 The app is chat-first, like the Android app and the ChatGPT and Grok apps (no tab bar): the
 conversation fills the screen, and the round menu button or a swipe from the leading edge opens the
-side panel (`ChatsView.swift`: the connected Mercury, Bots, Artifacts, Saved, one flat list of
-chats, and Settings, Search and New chat at the bottom). It is monochrome: Mercury's green only in
+side panel (`ChatsView.swift`: the connected Mercury with its logo and name, Bots, Artifacts, Saved,
+the chats with small day labels between them (Today, Yesterday, 3 days ago, Previous 30 days,
+October), all one scrolling list, and Settings, Search and New chat pinned at the bottom). It is monochrome: Mercury's green only in
 the mark and the "working" dot, amber for needs you, red for failed. The chat's bar has Ask | Code
 (Code sends coding turns, `programming: "auto"` with `cwd`, Mercury's project folder from GET
 /api/workspace/info, as Mercury Desktop's Code view does; the folder's name shows under the pill); the

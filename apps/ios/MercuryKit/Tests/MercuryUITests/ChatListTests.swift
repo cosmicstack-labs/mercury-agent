@@ -30,20 +30,67 @@ struct ChatListTests {
     #expect(ChatSections.title(ago(hours: 0), now: now, calendar: cal) == "Today")
     // Two hours ago is 11 pm the day before.
     #expect(ChatSections.title(ago(hours: 2), now: now, calendar: cal) == "Yesterday")
-    #expect(ChatSections.title(ago(days: 2), now: now, calendar: cal) == "Previous 7 days")
-    #expect(ChatSections.title(ago(days: 6), now: now, calendar: cal) == "Previous 7 days")
+    #expect(ChatSections.title(ago(days: 2), now: now, calendar: cal) == "2 days ago")
+    #expect(ChatSections.title(ago(days: 3), now: now, calendar: cal) == "3 days ago")
+    #expect(ChatSections.title(ago(days: 6), now: now, calendar: cal) == "6 days ago")
     #expect(ChatSections.title(ago(days: 7), now: now, calendar: cal) == "Previous 30 days")
     #expect(ChatSections.title(ago(days: 29), now: now, calendar: cal) == "Previous 30 days")
-    #expect(ChatSections.title(ago(days: 30), now: now, calendar: cal) == "Older")
     // A clock running ahead is still today.
     #expect(ChatSections.title(now.addingTimeInterval(120), now: now, calendar: cal) == "Today")
   }
 
+  @Test func olderChatsAreLabelledByMonthWithTheYearWhenItIsAnother() {
+    #expect(ChatSections.title(ago(days: 30), now: now, calendar: cal) == "October")
+    #expect(ChatSections.title(ago(days: 60), now: now, calendar: cal) == "September")
+    #expect(ChatSections.title(cal.date(from: DateComponents(year: 2026, month: 1, day: 2))!, now: now, calendar: cal) == "January")
+    #expect(ChatSections.title(cal.date(from: DateComponents(year: 2025, month: 9, day: 20))!, now: now, calendar: cal) == "September 2025")
+    #expect(ChatSections.title(cal.date(from: DateComponents(year: 2025, month: 12, day: 31, hour: 23))!, now: now, calendar: cal) == "December 2025")
+  }
+
+  @Test func midnightIsTheBoundary() {
+    let midnight = cal.date(from: DateComponents(year: 2026, month: 11, day: 16))!
+    #expect(ChatSections.title(midnight, now: now, calendar: cal) == "Today")
+    #expect(ChatSections.title(midnight.addingTimeInterval(-1), now: now, calendar: cal) == "Yesterday")
+    let twoDays = cal.date(from: DateComponents(year: 2026, month: 11, day: 15))!
+    #expect(ChatSections.title(twoDays.addingTimeInterval(-1), now: now, calendar: cal) == "2 days ago")
+    // One second before midnight, "now" is still the 15th: a chat from 10 pm on the 15th is today.
+    let late = midnight.addingTimeInterval(-1)
+    #expect(ChatSections.title(midnight.addingTimeInterval(-7_200), now: late, calendar: cal) == "Today")
+  }
+
+  @Test func theSameMomentIsLabelledInThePhonesTimeZone() {
+    // 20:00 UTC on 15 Nov is 1:30 am on the 16th in Srinagar but noon on the 15th in Los Angeles.
+    var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+    let chat = utc.date(from: DateComponents(year: 2026, month: 11, day: 15, hour: 20))!
+    let later = utc.date(from: DateComponents(year: 2026, month: 11, day: 16, hour: 0, minute: 30))!
+    var la = Calendar(identifier: .gregorian); la.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+    #expect(ChatSections.title(chat, now: later, calendar: cal) == "Today")
+    #expect(ChatSections.title(chat, now: later, calendar: utc) == "Yesterday")
+    #expect(ChatSections.title(chat, now: later, calendar: la) == "Today")
+    // Months too: 1 Oct 02:00 in Srinagar is still 30 Sep in Los Angeles.
+    let oct = cal.date(from: DateComponents(year: 2026, month: 10, day: 1, hour: 2))!
+    #expect(ChatSections.title(oct, now: now, calendar: cal) == "October")
+    #expect(ChatSections.title(oct, now: now, calendar: la) == "September")
+  }
+
   @Test func sectionsKeepTheListsOrderAndSkipEmptyDays() {
-    let list = [thread("a", ago()), thread("b", ago(hours: 3)), thread("c", ago(days: 40)), thread("d", ago(days: 50))]
+    let list = [thread("a", ago()), thread("b", ago(hours: 3)), thread("c", ago(days: 40)), thread("d", ago(days: 45)), thread("e", ago(days: 400))]
     let s = ChatSections.byDay(list, now: now, calendar: cal)
-    #expect(s.map(\.title) == ["Today", "Yesterday", "Older"])
-    #expect(s.map { $0.threads.map(\.id) } == [["a"], ["b"], ["c", "d"]])
+    #expect(s.map(\.title) == ["Today", "Yesterday", "October", "October 2025"])
+    #expect(s.map { $0.threads.map(\.id) } == [["a"], ["b"], ["c", "d"], ["e"]])
+  }
+
+  @Test func searchResultsKeepTheirDayLabelsAndSavedHasNone() {
+    let list = [thread("a", ago(), preview: "carousel"), thread("b", ago(days: 3), preview: "carousel ride"),
+                thread("c", ago(days: 3)), thread("s", ago(days: 40), saved: ago(days: 1))]
+    let found = ChatHistory.build(list, query: "carousel", savedOnly: false, now: now, calendar: cal)
+    #expect(found.sections.map(\.title) == ["Today", "3 days ago"])
+    #expect(found.sections.flatMap(\.threads).map(\.id) == found.threads.map(\.id))
+    let all = ChatHistory.build(list, query: "", savedOnly: false, now: now, calendar: cal)
+    #expect(all.sections.map(\.title) == ["Today", "3 days ago", "October"])
+    let saved = ChatHistory.build(list, query: "", savedOnly: true, now: now, calendar: cal)
+    #expect(saved.sections.map(\.title) == [nil])
+    #expect(ChatHistory.build(list, query: "zzz", savedOnly: true, now: now, calendar: cal).sections.isEmpty)
   }
 
   // MARK: Unread

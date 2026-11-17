@@ -9,21 +9,25 @@ struct MoreView: View {
   @State var healthError: String?
   @State var adding = false
   @State var confirmDisconnect = false
+  @State var editing: Connection?
 
   var body: some View {
     List {
       Section {
-        HStack(spacing: 12) {
-          Image(systemName: "desktopcomputer").font(.system(size: 18)).foregroundStyle(Theme.accent)
-            .frame(width: 40, height: 40).background(Theme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
-          VStack(alignment: .leading, spacing: 2) {
-            Text(connection.name).font(.system(size: 16, weight: .semibold)).lineLimit(1)
-            Text(statusLine).font(.system(size: 13)).foregroundStyle(healthError == nil ? Theme.ink2 : Theme.red).lineLimit(2)
+        Button { editing = connection } label: {
+          HStack(spacing: 12) {
+            LogoBadge(id: connection.logoId, size: 44)
+            VStack(alignment: .leading, spacing: 2) {
+              Text(connection.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
+              Text(statusLine).font(.system(size: 13)).foregroundStyle(healthError == nil ? Theme.ink2 : Theme.red).lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            Circle().fill(healthError == nil && health != nil ? Theme.green : Theme.ink4).frame(width: 9, height: 9)
+            Image(systemName: "pencil").font(.system(size: 14)).foregroundStyle(Theme.ink3)
           }
-          Spacer(minLength: 0)
-          Circle().fill(healthError == nil && health != nil ? Theme.green : Theme.ink4).frame(width: 9, height: 9)
         }
         .accessibilityElement(children: .combine)
+        .accessibilityHint("Rename it or pick its logo")
         LabeledContent("Address", value: connection.baseURL.absoluteString)
         Button("Disconnect this phone", role: .destructive) { confirmDisconnect = true }
       } header: { Text("Connected to") }
@@ -44,8 +48,9 @@ struct MoreView: View {
       Section("Your Mercurys") {
         ForEach(store.connections) { c in
           Button { store.activate(c.id) } label: {
-            HStack {
-              Text(c.name).foregroundStyle(Theme.ink)
+            HStack(spacing: 12) {
+              LogoBadge(id: c.logoId, size: 32)
+              Text(c.name).foregroundStyle(Theme.ink).lineLimit(1)
               Spacer()
               if c.id == connection.id { Image(systemName: "checkmark").foregroundStyle(Theme.accent) }
             }
@@ -67,6 +72,7 @@ struct MoreView: View {
       catch { healthError = error.localizedDescription }
     }
     .sheet(isPresented: $adding) { ConnectView(store: store) }
+    .sheet(item: $editing) { c in EditMercury(store: store, connection: c) }
     .onChange(of: store.connections.count) { adding = false }
     .confirmationDialog("Disconnect from \(connection.name)?", isPresented: $confirmDisconnect, titleVisibility: .visible) {
       Button("Disconnect", role: .destructive) { Task { await store.remove(connection.id) } }
