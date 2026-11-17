@@ -515,7 +515,7 @@ export class PluginManager {
     return r;
   }
 
-  async setSetting(id: string, key: string, value: unknown): Promise<void> {
+  async setSetting(id: string, key: string, value: unknown, opts: { restartInBackground?: boolean } = {}): Promise<void> {
     const entry = readState().plugins[id];
     if (!entry) throw new Error(`Plugin "${id}" is not installed.`);
     const manifest = installedManifest(id, entry.version);
@@ -527,10 +527,7 @@ export class PluginManager {
       const v = typeof value === 'string' ? value.trim() : '';
       if (v && v.length < 8) throw new Error('That doesn\'t look like an API key.');
       setPluginKey(field.secret!, v || null);
-      if (this.running.has(id)) {
-        await this.stopRuntime(id);
-        await this.reconcile();
-      }
+      if (this.running.has(id)) await this.restartAfterSettings(id, opts.restartInBackground);
       return;
     }
     const coerced = coerceSetting(field.type, field.options, value, field.format);
@@ -539,10 +536,23 @@ export class PluginManager {
     // Settings are read at start: restart a running plugin so it sees them.
     // Channel settings Mercury itself reads (who may talk, at what level) apply
     // live: restarting would drop the plugin's connection for nothing.
-    if (this.running.has(id) && !(manifest.contributes.channel && LIVE_CHANNEL_SETTINGS.has(key))) {
+    if (this.running.has(id) && !(manifest.contributes.channel && LIVE_CHANNEL_SETTINGS.has(key))) await this.restartAfterSettings(id, opts.restartInBackground);
+  }
+
+  /**
+   * Restart a running plugin so it reads its new settings. From an app the caller doesn't wait:
+   * a restart (Optimus starting its companion on a server) can take longer than a phone waits,
+   * which made a saved choice look as if it had failed and snap back.
+   */
+  private async restartAfterSettings(id: string, inBackground = false): Promise<void> {
+    const restart = async () => {
       await this.stopRuntime(id);
       await this.reconcile();
-    }
+    };
+    if (!inBackground) return restart();
+    void restart().catch((err) => {
+      logger.warn({ id, err: err instanceof Error ? err.message : String(err) }, 'Plugin restart after a settings change failed');
+    });
   }
 
   /**

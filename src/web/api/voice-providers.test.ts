@@ -130,17 +130,12 @@ describe('voice providers share one key store with Optimus', () => {
     expect(ownerApprovals().pending()).toHaveLength(0);
   });
 
-  it('from another device, the owner approves first', async () => {
-    const first = await put('gemini', GEMINI_KEY, LAN);
-    expect(first.status).toBe(428);
-    const ask = (await first.json()) as { approvalId: string; code: string; error: string };
-    expect(ask.error).toContain('Gemini');
-    expect(JSON.stringify(ask)).not.toContain(GEMINI_KEY);
-    expect(secretValue('GEMINI_API_KEY')).toBeUndefined();
-    ownerApprovals().decide(ask.code, 'allow', 'telegram');
-    const second = await put('gemini', GEMINI_KEY, LAN, { 'X-Mercury-Approval': ask.approvalId });
-    expect(second.status).toBe(200);
+  it('a paired device sets a key without an approval step (and it is audited)', async () => {
+    const res = await put('gemini', GEMINI_KEY, LAN);
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(await res.json())).not.toContain(GEMINI_KEY);
     expect(secretValue('GEMINI_API_KEY')).toBe(GEMINI_KEY);
+    expect(ownerApprovals().pending()).toHaveLength(0);
   });
 
   it('capabilities reflect a newly saved key at once', async () => {

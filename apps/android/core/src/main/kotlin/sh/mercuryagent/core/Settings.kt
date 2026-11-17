@@ -284,7 +284,8 @@ suspend fun MercuryClient.plugin(id: String): PluginDetail? = try {
 /** POST /api/plugins/:id/settings `{ key, value }`. */
 suspend fun MercuryClient.setPluginSetting(id: String, key: String, value: JsonElement, approval: String? = null) {
   val body = buildJsonObject { put("key", key); put("value", value) }
-  decode(OkReply.serializer(), gated("POST", "/api/plugins/${MercuryClient.q(id)}/settings", body, approval))
+  // A plugin may restart to read the change; newer servers answer first, older ones only after it.
+  decode(OkReply.serializer(), gated("POST", "/api/plugins/${MercuryClient.q(id)}/settings", body, approval), timeoutSeconds = 60)
 }
 
 /** POST /api/voice/check: is this voice key good? With no key, checks the saved one. */

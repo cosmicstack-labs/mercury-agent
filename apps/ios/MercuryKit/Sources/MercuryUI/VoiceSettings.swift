@@ -394,7 +394,12 @@ struct PluginForm: View {
     }
     Task {
       do { try await gate.run { try await gate.client.setPluginSetting(pluginId, key: f.key, value: v, approval: $0) }; error = nil; await saved() }
-      catch { values[f.key] = old; self.error = error.localizedDescription }
+      catch {
+        // Don't guess: the server may have saved it (a slow answer). Show what it really has.
+        values[f.key] = nil
+        await saved()
+        if values[f.key] == nil, fields.first(where: { $0.key == f.key })?.value == old { self.error = error.localizedDescription }
+      }
     }
   }
 }

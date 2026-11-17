@@ -25,8 +25,8 @@ extension MercuryClient {
   }
 
   /// A request that may need the owner's go-ahead, carrying it once it was given.
-  func gated(_ method: String, _ path: String, body: [String: Any]? = nil, approval: String?) throws -> URLRequest {
-    var r = try request(method, path, body: body)
+  func gated(_ method: String, _ path: String, body: [String: Any]? = nil, approval: String?, timeout: TimeInterval = 15) throws -> URLRequest {
+    var r = try request(method, path, body: body, timeout: timeout)
     if let approval { r.setValue(approval, forHTTPHeaderField: "X-Mercury-Approval") }
     return r
   }
@@ -229,7 +229,7 @@ extension MercuryClient {
 
   public func setPluginSetting(_ id: String, key: String, value: Any, approval: String? = nil) async throws {
     struct R: Decodable { var ok: Bool? }
-    _ = try await decode(R.self, gated("POST", "/api/plugins/\(id)/settings", body: ["key": key, "value": value], approval: approval))
+    _ = try await decode(R.self, gated("POST", "/api/plugins/\(id)/settings", body: ["key": key, "value": value], approval: approval, timeout: 60))
   }
 
   /// POST /api/voice/check: is this voice key good? With no key, checks the saved one.

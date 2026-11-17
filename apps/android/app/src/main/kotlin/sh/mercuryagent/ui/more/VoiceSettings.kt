@@ -190,8 +190,12 @@ fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit,
       try {
         gate.run { a -> client.setPluginSetting(pluginId, f.key, v, approval = a) }
       } catch (e: Exception) {
-        if (had && old != null) values[f.key] = old else values.remove(f.key)
-        throw e
+        // Don't guess the old value back: the server may have saved it (a slow answer). Show what
+        // it really has, and only report the error when the change didn't stick.
+        values.remove(f.key)
+        load()
+        if (plugin?.settings?.firstOrNull { it.key == f.key }?.value != v) throw e
+        return@launchReporting
       }
       load()
       // The runtime's value is the truth once it's back.

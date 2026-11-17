@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import { audit } from '../../security/audit.js';
-import { requireOwner } from '../owner-gate.js';
 import { originOf, principalLabel, principalOf } from '../middleware.js';
 import { peekPluginManager } from '../../plugins/manager.js';
 import { isEditableVoiceProvider, listVoiceProviders, saveVoiceKey, voiceProviderInfo } from '../../plugins/voice-providers.js';
@@ -39,9 +38,8 @@ voiceProviders.put('/api/voice/providers/:id', async (c) => {
   if (info.source === 'env') {
     return c.json({ ok: false, verified: false, error: `${info.name}'s key is set on the computer (${info.env} in ~/.mercury/.env), which always wins. Change or remove it there.`, envSet: true }, 409);
   }
-  // A key is a credential the owner pays for: from another device, the owner approves.
-  const wait = requireOwner(c, { id: `voice.key:${id}`, title: removing ? `Remove the ${info.name} voice key` : `Set the ${info.name} voice key` });
-  if (wait) return wait;
+  // No approval step: a paired device is trusted like the owner (it was approved when it paired),
+  // and setting a voice key is ordinary setup from the phone. Every change is audited.
 
   const result = await saveVoiceKey(id, removing ? null : (body.apiKey as string));
   if (!result.ok) return c.json({ ok: false, verified: result.verified, error: result.error }, result.status as 400 | 409);

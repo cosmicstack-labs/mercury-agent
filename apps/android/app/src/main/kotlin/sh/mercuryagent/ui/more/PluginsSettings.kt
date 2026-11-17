@@ -387,8 +387,11 @@ fun PluginDetailSettings(client: MercuryClient, computer: String, id: String, on
     if (f.type != "secret") values[f.key] = v
     scope.launchReporting(snackbar) {
       try { gate.run { a -> client.setPluginSetting(p.id, f.key, v, approval = a) } } catch (e: Exception) {
-        if (old != null) values[f.key] = old else values.remove(f.key)
-        throw e
+        // Don't guess the old value back: the server may have saved it. Show what it really has.
+        values.remove(f.key)
+        load()
+        if (plugin?.settings?.firstOrNull { it.key == f.key }?.value != v) throw e
+        return@launchReporting
       }
       load(); values.remove(f.key)
     }
