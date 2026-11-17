@@ -19,6 +19,7 @@ struct Composer: View {
   @State private var photos: [PhotosPickerItem] = []
   @State private var importing = false
   @State private var choosingModel = false
+  @Environment(\.scenePhase) private var scenePhase
 
   private var stopMode: Bool { model.busy && !model.canSend }
 
@@ -41,7 +42,11 @@ struct Composer: View {
       GlassGroup(spacing: 8) {
         HStack(spacing: 8) {
           plusMenu
-          ModelPill(name: model.catalog?.pill ?? "Auto", busy: model.switching) { dismissKeyboard(); choosingModel = true }
+          // Allow All beside it: a shorter name (…) so the row still fits a small phone.
+          ModelPill(name: model.catalog?.pill ?? "Auto", busy: model.switching, maxName: model.permissions.allowAll ? 96 : 150) { dismissKeyboard(); choosingModel = true }
+          if model.permissions.allowAll {
+            AllowAllBadge { dismissKeyboard(); choosingModel = true }
+          }
           Spacer(minLength: 4)
           DictationButton(dictation: model.dictation)
           actionButton
@@ -66,6 +71,8 @@ struct Composer: View {
     .task { if model.model == nil { await model.loadComposerInfo() } }
     .task { if model.catalog == nil { await model.loadModels() } }
     .task { await model.dictation.load() }
+    .task { await model.permissions.refresh() }
+    .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await model.permissions.refresh() } } }
     .onDisappear { model.dictation.cancel() }
   }
 
@@ -386,12 +393,14 @@ enum ImagePrep {
 struct ModelPill: View {
   var name: String
   var busy = false
+  /// The name's widest, then it ends in "…".
+  var maxName: CGFloat = 150
   var action: () -> Void
   var body: some View {
     Button(action: action) {
       HStack(spacing: 6) {
         if busy { ProgressView().controlSize(.mini) } else { Image(systemName: "sparkles").font(.system(size: 13)) }
-        Text(name).font(.system(size: 15, weight: .medium)).lineLimit(1).frame(maxWidth: 150, alignment: .leading).fixedSize(horizontal: true, vertical: false)
+        Text(name).font(.system(size: 15, weight: .medium)).lineLimit(1).frame(maxWidth: maxName, alignment: .leading).fixedSize(horizontal: true, vertical: false)
         Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.ink3)
       }
       .foregroundStyle(Theme.ink)
@@ -404,6 +413,35 @@ struct ModelPill: View {
   }
 }
 
+/// Allow All is on: Mercury acts without asking. Always in sight next to the model pill
+/// ("⚡︎ Allow All", just the bolt when the row is tight); tap to change it in the model sheet.
+struct AllowAllBadge: View {
+  var action: () -> Void
+  var body: some View {
+    Button(action: action) {
+      ViewThatFits(in: .horizontal) {
+        label(text: true)
+        label(text: false)
+      }
+      .foregroundStyle(Theme.ink)
+      .frame(height: 40)
+      .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .glassSurface(in: Capsule(), interactive: true)
+    .accessibilityLabel("Allow All is on: Mercury acts without asking. Change it")
+  }
+
+  private func label(text: Bool) -> some View {
+    HStack(spacing: 4) {
+      Image(systemName: "bolt.fill").font(.system(size: 12, weight: .semibold))
+      if text { Text("Allow All").font(.system(size: 13, weight: .semibold)).lineLimit(1).fixedSize() }
+    }
+    .padding(.horizontal, text ? 11 : 0)
+    .frame(minWidth: 40)
+  }
+}
+
 /// The model picker: Auto (Mercury's configured default) first, then every model by family, the
 /// current one ticked, a search when there are many. Mercury has one model for every chat, so the
 /// sheet says a pick changes it everywhere.
@@ -413,8 +451,48 @@ struct ModelSheet: View {
   @State private var query = ""
   /// What calls and dictation use, on a Mercury with voice providers.
   @State private var voice: VoiceProviders?
+  /// Snapshots: no navigation or list (the renderer can't draw them).
+  var still = false
 
   var body: some View {
+    if still { stillBody } else { liveBody }
+  }
+
+  /// The sheet as the Snapshots tool draws it: the same rows and sections, in a plain stack.
+  private var stillBody: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Model").font(.system(size: 17, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 8)
+      if let c = model.catalog {
+        card { row("Auto", c.defaultChoice.map { "Mercury's default · \($0.title)" } ?? "Mercury's default model", on: c.isAuto, enabled: true) {} }
+        ForEach(ModelMenu.groups(c.models, query: ""), id: \.title) { g in
+          header(g.models.count > 1 ? "\(g.title) · \(g.models.count)" : g.title)
+          card {
+            ForEach(g.models) { m in
+              row(m.title, m.title != m.model ? m.model : ModelMenu.providerName(m.name), on: m.isCurrent && !c.isAuto, enabled: m.available) {}
+            }
+          }
+        }
+      }
+      header("Permissions")
+      card { ForEach(PermissionMode.allCases, id: \.self) { permissionRow($0) } }
+      Text(model.permissions.error ?? "For Mercury, in every chat.").font(.system(size: 13))
+        .foregroundStyle(model.permissions.error == nil ? Theme.ink3 : Theme.amber).padding(.horizontal, 16)
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 16)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+  }
+
+  private func header(_ t: String) -> some View {
+    Text(t).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink3).padding(.horizontal, 16).padding(.top, 8)
+  }
+
+  private func card<C: View>(@ViewBuilder _ c: () -> C) -> some View {
+    VStack(spacing: 14) { c() }.padding(.horizontal, 16).padding(.vertical, 12)
+      .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+
+  private var liveBody: some View {
     NavigationStack {
       List {
         if let voice, query.isEmpty {
@@ -440,6 +518,15 @@ struct ModelSheet: View {
         } else {
           ProgressView().frame(maxWidth: .infinity)
         }
+        if query.trimmingCharacters(in: .whitespaces).isEmpty {
+          Section {
+            ForEach(PermissionMode.allCases, id: \.self) { permissionRow($0) }
+          } header: {
+            Text("Permissions")
+          } footer: {
+            if let e = model.permissions.error { Text(e).foregroundStyle(Theme.amber) } else { Text("For Mercury, in every chat.") }
+          }
+        }
       }
       .navigationTitle("Model")
       #if os(iOS)
@@ -449,7 +536,9 @@ struct ModelSheet: View {
       .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
     }
     .presentationDetents([.medium, .large])
+    .ownerGate(model.gate)
     .task { await model.loadModels() }
+    .task { await model.permissions.refresh() }
     .task { voice = (try? await model.client.voiceProvidersIfSupported()) ?? nil }
   }
 
@@ -462,6 +551,26 @@ struct ModelSheet: View {
       Text("Set up voice").font(.system(size: 13)).foregroundStyle(Theme.ink3)
     }
     .font(.system(size: 14))
+  }
+
+  /// "Ask Me — Mercury asks before anything risky": applies at once, ticked when it's the mode.
+  private func permissionRow(_ m: PermissionMode) -> some View {
+    let p = model.permissions
+    let on = p.mode == m
+    return Button { Task { await p.set(m) } } label: {
+      HStack(spacing: 12) {
+        Image(systemName: m == .allowAll ? "bolt.fill" : "hand.raised").font(.system(size: 15)).foregroundStyle(Theme.ink2).frame(width: 22)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(m.title).foregroundStyle(Theme.ink).lineLimit(1)
+          Text(m.detail).font(.system(size: 13)).foregroundStyle(Theme.ink3).lineLimit(1)
+        }
+        Spacer()
+        if on && p.saving { ProgressView().controlSize(.small) } else if on { Image(systemName: "checkmark").foregroundStyle(Theme.ink) }
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(on ? .isSelected : [])
   }
 
   private func row(_ title: String, _ detail: String?, on: Bool, enabled: Bool, action: @escaping () -> Void) -> some View {

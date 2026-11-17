@@ -215,6 +215,26 @@ public enum ChatGallery {
     return screen { bottom(m) { MessageView(message: sent, client: client) } }
   }
 
+  /// Allow All is on: the bolt next to the model pill, with a long model name (the tight case).
+  static var allowAll: AnyView {
+    let m = model()
+    var picked = catalog
+    picked.defaultModel = "claude-haiku-4-5"  // a picked model, not Auto: the pill's longest
+    m.catalog = picked
+    m.permissions.show(.allowAll)
+    m.messages = [ChatMessage(role: "user", content: "Clean up the old build folders"), ChatMessage(role: "assistant", content: "Done: removed 4 folders (2.1 GB).")]
+    return screen { bottom(m) { ForEach(m.messages) { MessageView(message: $0, client: client) } } }
+  }
+
+  /// The model sheet with Permissions under the models (Ask Me ticked; a failed switch's line).
+  static func permissionSheet(_ mode: PermissionMode, error: String? = nil) -> AnyView {
+    let m = model()
+    m.catalog = catalog
+    m.permissions.show(mode)
+    m.permissions.error = error
+    return screen { ModelSheet(model: m, still: true) }
+  }
+
   static var thoughtAndSecurity: AnyView {
     var t = TurnTrace(startedAt: Date(timeIntervalSinceNow: -21))
     t.addReasoning("Read the page first, then answer.")
@@ -441,6 +461,9 @@ public enum ChatGallery {
       ("03f-chat-image-batch", finishedBatch),
       ("03g-chat-thought-security", thoughtAndSecurity),
       ("03h-chat-composer", composer),
+      ("03s-composer-allow-all", allowAll),
+      ("03t-model-sheet-permissions", permissionSheet(.askMe)),
+      ("03u-model-sheet-allow-all-failed", permissionSheet(.askMe, error: "Couldn't switch to Allow All: The owner said no.")),
       ("03i-chat-plan-paused", planPaused),
       ("03j-chat-plan-stopped", planStopped),
       ("04b-needs-you-carousel", needsYou),

@@ -42,6 +42,14 @@ public enum DictationGallery {
     return screen(m)
   }
 
+  /// Listening with the phone's own recogniser, the box still empty: the placeholder says who listens.
+  static var onPhone: AnyView {
+    let m = model(VoiceCapabilities(call: false, dictation: false, dictationFallback: "device"))
+    m.dictation.show(.listening, listening: .device)
+    m.dictation.meter.setEngine(mic: 0.2, voice: 0)
+    return screen(m)
+  }
+
   static var unavailable: AnyView {
     let m = model(VoiceCapabilities(call: false, dictation: false, dictationFallback: "device"))
     m.dictation.deviceSpeech = { false }
@@ -54,6 +62,7 @@ public enum DictationGallery {
       ("03k-composer-mic-ready", ready),
       ("03l-composer-dictating", dictating),
       ("03m-composer-mic-unavailable", unavailable),
+      ("03v-composer-listening-on-phone", onPhone),
     ]
   }
 }
