@@ -27,6 +27,8 @@ class AppContainer(context: Context) {
   val connections = ConnectionStore(PrefsKeyValueStore(app), KeystoreSecretStore(app))
   val appearance = AppearanceStore(app.prefs, scope)
   val readMarks = ReadMarksStore(app.prefs)
+  /** Brain → Mind map's display and force settings. */
+  val mindMapSettings = sh.mercuryagent.data.MindMapSettingsStore(app.prefs, scope)
   val notifier = sh.mercuryagent.notify.Notifier(app)
   val notifyPrefs = sh.mercuryagent.notify.NotifyPrefsStore(app)
   val monitor = sh.mercuryagent.notify.ActivityMonitor(app, connections, notifyPrefs, notifier, scope)

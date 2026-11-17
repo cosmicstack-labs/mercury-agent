@@ -57,11 +57,12 @@ import sh.mercuryagent.ui.more.SettingsNav
 import sh.mercuryagent.ui.more.settingsGraph
 
 // Routes (type-safe Navigation Compose). The app is one chat at a time with a drawer, as in the
-// ChatGPT and Grok apps; Bots, Artifacts and Settings open over it and back returns to the chat.
+// ChatGPT and Grok apps; Bots, Artifacts, Brain and Settings open over it and back returns to the chat.
 /** A chat: [id] null is a new one; [n] makes each "New chat" its own screen. */
 @Serializable data class ChatRoute(val id: String? = null, val n: Long = 0)
 @Serializable object BotsRoute
 @Serializable object ArtifactsRoute
+@Serializable object BrainRoute
 @Serializable object AddMercuryRoute
 
 /** Connect when no Mercury is saved yet, otherwise the app for the active one (iOS: RootView). */
@@ -167,6 +168,7 @@ private fun Home(container: AppContainer, connection: Connection) {
               onCall = { closeThen { if (!onChat) nav.openChat(currentChat); container.requestCall() } },
               onBots = { closeThen { nav.navigate(BotsRoute) } },
               onArtifacts = { closeThen { nav.navigate(ArtifactsRoute) } },
+              onBrain = { closeThen { nav.navigate(BrainRoute) } },
               onSettings = { closeThen { nav.navigate(SettingsNav.Root) } },
               onClose = { closeThen { } },
               onSwitchMercury = { id -> closeThen { container.connections.activate(id) } },
@@ -223,6 +225,15 @@ private fun Home(container: AppContainer, connection: Connection) {
               initializer { sh.mercuryagent.ui.artifacts.ArtifactsViewModel(client) }
             })
             sh.mercuryagent.ui.artifacts.ArtifactsScreen(vm, onBack = { nav.popBackStack() }, onOpenChat = { nav.openChat(it) })
+          }
+          composable<BrainRoute> {
+            // Kept for the activity's life (per Mercury), so the layout stays put between visits (desktop keeps it mounted).
+            val vm: sh.mercuryagent.ui.brain.MindMapViewModel = viewModel(viewModelStoreOwner = activity, key = "brain-${connection.id}", factory = viewModelFactory {
+              initializer {
+                sh.mercuryagent.ui.brain.MindMapViewModel(client, container.mindMapSettings.state.value, { container.mindMapSettings.save(it) })
+              }
+            })
+            sh.mercuryagent.ui.brain.MindMapScreen(vm, onBack = { nav.popBackStack() })
           }
           settingsGraph(nav, container, connection, client, onAddMercury = { nav.navigate(AddMercuryRoute) })
           composable<AddMercuryRoute> {

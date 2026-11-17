@@ -48,6 +48,7 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardDoubleArrowRight
 import androidx.compose.material.icons.outlined.Phone
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SmartToy
@@ -99,7 +100,7 @@ import sh.mercuryagent.ui.theme.Mercury
 
 /**
  * The left drawer, laid out like Grok's: at the top the connected Mercury (tap: switch or add
- * another) and a » button that closes the drawer; Call Mercury, Bots, Artifacts and Saved; "Conversations" (or
+ * another) and a » button that closes the drawer; Call Mercury, Bots, Artifacts, Brain (the mind map) and Saved; "Conversations" (or
  * "Results", or "Saved") over one flat list of chats, newest first, each row the title alone; and
  * pinned at the bottom over a fade, Settings, Search (filters live on titles and messages) and a
  * white New chat button. Better than Grok, quietly: a dot before a title only when the chat works
@@ -120,6 +121,8 @@ fun ChatDrawer(
   onCall: () -> Unit,
   onBots: () -> Unit,
   onArtifacts: () -> Unit,
+  /** Brain: the second brain's mind map. */
+  onBrain: () -> Unit,
   onSettings: () -> Unit,
   onClose: () -> Unit,
   onSwitchMercury: (String) -> Unit,
@@ -138,6 +141,7 @@ fun ChatDrawer(
       NavRow(Icons.Outlined.Phone, "Call Mercury", onClick = onCall)
       NavRow(Icons.Outlined.SmartToy, "Bots", onClick = onBots)
       NavRow(Icons.Outlined.FolderOpen, "Artifacts", onClick = onArtifacts)
+      NavRow(Icons.Outlined.Psychology, "Brain", onClick = onBrain)
       NavRow(
         if (ui.savedOnly) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder, "Saved", selected = ui.savedOnly,
         onClick = { vm.setSavedOnly(!ui.savedOnly) },
