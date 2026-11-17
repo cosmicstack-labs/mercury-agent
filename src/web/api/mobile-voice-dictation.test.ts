@@ -14,8 +14,9 @@ const home = await vi.hoisted(async () => {
 });
 
 import mobileVoice, {
-  DICTATION_SETUP, dictationLanguage, openaiTranscriptionSession, pickDictationEngine, redactKeys, setMobileVoiceFetch, transcriptionUrl,
+  DICTATION_SETUP, dictationLanguage, geminiDictationSetup, openaiTranscriptionSession, pickDictationEngine, redactKeys, setMobileVoiceFetch, transcriptionUrl,
 } from './mobile-voice.js';
+import transcribe from './transcribe.js';
 
 const OPENAI_KEY = 'sk-test-openai-000000000000';
 const DEEPGRAM_KEY = '0123456789abcdef0123456789abcdef01234567';
@@ -38,17 +39,33 @@ afterEach(() => {
 });
 
 describe('GET /api/mobile/voice/capabilities', () => {
-  it('with no keys: no call, no dictation, and what to add', async () => {
+  it('with no keys: no call; dictation on the phone itself, and how to do better', async () => {
     const c = await capabilities();
-    expect(c).toMatchObject({ call: false, dictation: false, dictationSetup: DICTATION_SETUP });
+    expect(c).toMatchObject({ call: false, dictation: false, dictationFallback: 'device', dictationSetup: DICTATION_SETUP });
     expect(c.callSetup).toContain('OpenAI key');
+    expect(DICTATION_SETUP).not.toMatch(/can't|cannot/);
   });
 
-  it('Gemini only: calls yes, dictation no, and says why', async () => {
+  it('Gemini only: calls and dictation both use Gemini', async () => {
     process.env.GEMINI_API_KEY = 'AIza-test';
     const c = await capabilities();
-    expect(c).toMatchObject({ call: true, callEngine: 'gemini', dictation: false });
-    expect(c.dictationSetup).toContain("Gemini can't do it");
+    expect(c).toEqual({ call: true, callEngine: 'gemini', callEngineName: 'Gemini Live', dictation: true, dictationEngine: 'gemini', dictationEngineName: 'Gemini' });
+  });
+
+  it('dictation on the phone and voice typing on Desktop pick the same service', async () => {
+    withOpenAI();
+    process.env.GEMINI_API_KEY = 'AIza-test';
+    process.env.ELEVENLABS_API_KEY = 'sk_eleven_test_key';
+    const desktop = async () => ((await transcribe.request('http://127.0.0.1/api/transcribe')).json()) as Promise<{ engine: string }>;
+    for (const [values, phone, label] of [
+      [{}, 'openai', 'OpenAI'],
+      [{ voiceEngine: 'gemini' }, 'gemini', 'Gemini'],
+      [{ voiceEngine: 'mercury', sttProvider: 'elevenlabs' }, 'elevenlabs', 'ElevenLabs'],
+    ] as const) {
+      chooseVoice(values);
+      expect((await capabilities()).dictationEngine).toBe(phone);
+      expect((await desktop()).engine).toBe(label);
+    }
   });
 
   it('OpenAI: both, without calling any provider', async () => {
@@ -69,7 +86,32 @@ describe('POST /api/mobile/voice/dictation', () => {
   it('with no speech key: 409 with the setup line', async () => {
     const res = await post();
     expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: DICTATION_SETUP, fallback: true, setup: DICTATION_SETUP });
+    expect(await res.json()).toEqual({ error: DICTATION_SETUP, fallback: true, device: true, setup: DICTATION_SETUP });
+  });
+
+  it('Gemini (the owner\'s voice): an ephemeral token locked to a transcription-only session', async () => {
+    withOpenAI();
+    process.env.GEMINI_API_KEY = 'AIza-gemini-test-key';
+    chooseVoice({ voiceEngine: 'gemini' });
+    const f = vi.fn().mockResolvedValue(reply(200, { name: 'auth_tokens/abc', expireTime: '2030-01-01T00:00:00Z' }));
+    setMobileVoiceFetch(f as never);
+    const res = await post();
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('AIza-gemini-test-key');
+    expect(JSON.parse(text)).toEqual({ engine: 'gemini', token: 'auth_tokens/abc', ephemeral: true, expiresAt: '2030-01-01T00:00:00Z', model: 'gemini-2.5-flash-native-audio-latest' });
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/auth_tokens');
+    expect(init.headers['x-goog-api-key']).toBe('AIza-gemini-test-key');
+    const body = JSON.parse(init.body);
+    expect(body.uses).toBe(1);
+    expect(body.bidiGenerateContentSetup).toEqual({
+      model: 'models/gemini-2.5-flash-native-audio-latest',
+      generationConfig: { responseModalities: ['AUDIO'] },
+      inputAudioTranscription: {},
+      realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
+    });
+    expect(geminiDictationSetup('m')).toMatchObject({ model: 'models/m', realtimeInputConfig: { automaticActivityDetection: { disabled: true } } });
   });
 
   it('mints an OpenAI transcription client secret; the key never leaves the server', async () => {
@@ -141,13 +183,17 @@ describe('POST /api/mobile/voice/dictation', () => {
 
 describe('dictation choices', () => {
   const all = { openai: { apiKey: 'k', baseUrl: 'b' }, gemini: { apiKey: 'g' }, deepgram: { apiKey: 'd' }, elevenlabs: { apiKey: 'e' } };
-  it('asked, then the owner\'s listener, then OpenAI, Deepgram, ElevenLabs; never Gemini', () => {
+  it('asked, then the owner\'s voice (Optimus), then OpenAI, Gemini, Deepgram, ElevenLabs', () => {
     expect(pickDictationEngine(all, {}, 'deepgram')).toBe('deepgram');
     expect(pickDictationEngine(all, { voiceEngine: 'mercury', sttProvider: 'elevenlabs' })).toBe('elevenlabs');
     expect(pickDictationEngine(all, { voiceEngine: 'mercury' })).toBe('deepgram');
-    expect(pickDictationEngine(all, { voiceEngine: 'gemini' })).toBe('openai');
+    expect(pickDictationEngine(all, { voiceEngine: 'gemini' })).toBe('gemini');
+    expect(pickDictationEngine(all, {})).toBe('openai');
     expect(pickDictationEngine({ elevenlabs: { apiKey: 'e' } }, {}, 'openai')).toBe('elevenlabs');
-    expect(pickDictationEngine({ gemini: { apiKey: 'g' } }, { voiceEngine: 'gemini' }, 'gemini')).toBeNull();
+    expect(pickDictationEngine({ gemini: { apiKey: 'g' } }, {})).toBe('gemini');
+    expect(pickDictationEngine({ gemini: { apiKey: 'g' }, deepgram: { apiKey: 'd' } }, { voiceEngine: 'openai' })).toBe('gemini');
+    expect(pickDictationEngine({ deepgram: { apiKey: 'd' } }, { voiceEngine: 'grok' })).toBe('deepgram');
+    expect(pickDictationEngine({}, { voiceEngine: 'gemini' })).toBeNull();
   });
 
   it('language: a code from Settings → Voice, never auto or junk', () => {

@@ -42,10 +42,10 @@ const NAMES: Record<VoiceProviderId, string> = {
   cartesia: 'Cartesia', qwen: 'Alibaba Qwen (DashScope)', azure: 'Azure OpenAI', sarvam: 'Sarvam', minimax: 'MiniMax',
 };
 
-/** Phone calls: OpenAI Realtime, Gemini Live. Dictation: OpenAI, Deepgram, ElevenLabs (mobile-voice.ts). Every vendor here is one Optimus can use. */
+/** Phone calls: OpenAI Realtime, Gemini Live. Dictation: OpenAI, Gemini, Deepgram, ElevenLabs (mobile-voice.ts). Every vendor here is one Optimus can use. */
 const USES: Record<VoiceProviderId, VoiceUse[]> = {
   openai: ['calls', 'dictation', 'optimus'],
-  gemini: ['calls', 'optimus'],
+  gemini: ['calls', 'dictation', 'optimus'],
   deepgram: ['dictation', 'optimus'],
   elevenlabs: ['dictation', 'optimus'],
   assemblyai: ['optimus'], cartesia: ['optimus'], qwen: ['optimus'], azure: ['optimus'], sarvam: ['optimus'], minimax: ['optimus'],

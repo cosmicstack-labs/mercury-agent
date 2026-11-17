@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { loadConfig } from '../../utils/config.js';
 import { readSettings, secretValue } from '../../plugins/store.js';
 import { voiceBriefing } from '../../plugins/channel-bridge.js';
+import { pickSpeechEngine, preferredSpeech } from '../../plugins/transcribe.js';
 
 /**
  * Voice calls from the phone, on Mercury's shared Rust voice engine
@@ -17,18 +18,22 @@ import { voiceBriefing } from '../../plugins/channel-bridge.js';
  * Optimus's `voiceEngine`) when it has a key, else whichever has one.
  * Owner-authenticated like every /api route (a paired device's token is fine).
  *
- *   POST /api/mobile/voice/dictation  { engine?: 'openai' | 'deepgram' | 'elevenlabs' }
+ *   POST /api/mobile/voice/dictation  { engine?: 'openai' | 'gemini' | 'deepgram' | 'elevenlabs' }
  *     → { engine, token, ephemeral: true, expiresAt, model, url?, language? }
- *     → 409 { error, fallback: true, setup } when no speech service can dictate live
+ *     → 409 { error, fallback: true, device: true, setup } when no speech service is set up
+ *       (the phone then dictates with its own speech recognition)
  *   GET  /api/mobile/voice/capabilities
- *     → { call, callEngine?, callEngineName?, callSetup?, dictation, dictationEngine?, dictationEngineName?, dictationSetup? } (no provider calls)
+ *     → { call, callEngine?, callEngineName?, callSetup?, dictation, dictationEngine?, dictationEngineName?, dictationSetup?, dictationFallback? } (no provider calls)
  *
  * Live dictation (the phone's message box) is speech to text only, on the
- * same engine (crates/mercury-voice dictation.rs): an OpenAI Realtime
- * transcription session (gpt-live-transcribe), Deepgram streaming (a
- * temporary token from /v1/auth/grant) or ElevenLabs Scribe (a single-use
- * token). Gemini can't: Gemini Live only transcribes inside a conversation
- * where the model answers too, so a Gemini-only Mercury has no dictation.
+ * same engine (crates/mercury-voice dictation.rs), with the speech service
+ * every other listening feature uses (pickSpeechEngine: the owner's voice
+ * choice in Settings → Voice first, else OpenAI, Gemini, Deepgram,
+ * ElevenLabs): an OpenAI Realtime transcription session, a Gemini Live
+ * session that only transcribes (an ephemeral auth token; the model never
+ * answers), Deepgram streaming (a temporary token from /v1/auth/grant) or
+ * ElevenLabs Scribe (a single-use token). With none, `dictationFallback:
+ * 'device'`: the phone uses its own speech recognition.
  */
 
 type Fetch = typeof fetch;
@@ -209,11 +214,17 @@ export const NO_REALTIME_VOICE =
 
 // ── Live dictation ────────────────────────────────────────────────────────
 
-export type DictationEngine = 'openai' | 'deepgram' | 'elevenlabs';
+export type DictationEngine = 'openai' | 'gemini' | 'deepgram' | 'elevenlabs';
 
-/** The engines' models (crates/mercury-voice dictation.rs uses the same defaults). */
+/**
+ * The engines' models (crates/mercury-voice dictation.rs uses the same defaults).
+ * Gemini: the 2.5 native-audio Live model streams the input transcription word by word while
+ * the owner talks (gemini-3.8-live only sends it when the turn ends), and with automatic
+ * activity detection off and no activityEnd it never answers (checked against the live API).
+ */
 export const DICTATION_DEFAULTS = {
   openai: { model: 'gpt-live-transcribe' },
+  gemini: { model: 'gemini-2.5-flash-native-audio-latest' },
   deepgram: { model: 'nova-3' },
   elevenlabs: { model: 'scribe_v2_realtime' },
 } as const;
@@ -228,28 +239,34 @@ export const ELEVENLABS_TOKEN_SECONDS = 15 * 60;
 const DEEPGRAM_BASE = 'https://api.deepgram.com/v1';
 const ELEVENLABS_BASE = 'https://api.elevenlabs.io/v1';
 
+/** No speech service: the phone dictates with its own speech recognition; this says how to do better. */
 export const DICTATION_SETUP =
-  'Live dictation needs a speech provider. Add an OpenAI key in Settings → Models, or a Deepgram or ElevenLabs key in Settings → Voice.';
-const GEMINI_CANT_DICTATE = " Gemini can't do it: it only transcribes while it's also replying.";
+  "Dictation uses this phone's own speech recognition. For better dictation, add a Gemini, OpenAI, Deepgram or ElevenLabs key in Settings → Voice.";
 
-/** Why there's no dictation, in plain words (mentions Gemini when that's the only key). */
-export function dictationSetup(keys: Keys): string {
-  return keys.gemini ? DICTATION_SETUP + GEMINI_CANT_DICTATE : DICTATION_SETUP;
+/**
+ * The engine for dictation: the one asked for (when it has a key), else exactly what every
+ * other listening feature uses (pickSpeechEngine with the owner's voice choice, as Desktop's
+ * voice typing and voice notes do), so there's one answer to "who listens".
+ */
+export function pickDictationEngine(keys: Keys, settings: Record<string, unknown>, asked?: string): DictationEngine | null {
+  const secrets: Record<string, string | undefined> = {
+    GEMINI_API_KEY: keys.gemini?.apiKey, DEEPGRAM_API_KEY: keys.deepgram?.apiKey, ELEVENLABS_API_KEY: keys.elevenlabs?.apiKey,
+  };
+  const e = pickSpeechEngine(keys.openai, (name) => secrets[name], [asked, ...preferredSpeech(settings, 'listen')]);
+  return e ? e.kind : null;
 }
 
 /**
- * The engine for dictation: the one asked for, else the owner's listening choice
- * (Settings → Voice: the voice engine, or "Who listens" with Mercury's own pipeline),
- * else OpenAI, Deepgram, ElevenLabs, whichever has a key. Gemini can't dictate.
+ * The Gemini Live session dictation opens (crates/mercury-voice dictation.rs gemini_setup):
+ * transcribe what's heard, and with activity detection off the model never takes a turn.
  */
-export function pickDictationEngine(keys: Keys, settings: Record<string, unknown>, asked?: string): DictationEngine | null {
-  const has = (e: string | undefined): e is DictationEngine => (e === 'openai' || e === 'deepgram' || e === 'elevenlabs') && !!keys[e];
-  if (has(asked)) return asked;
-  const engine = str(settings.voiceEngine);
-  const chosen = engine === 'mercury' ? str(settings.sttProvider) ?? 'deepgram' : engine;
-  if (has(chosen)) return chosen;
-  for (const e of ['openai', 'deepgram', 'elevenlabs'] as const) if (keys[e]) return e;
-  return null;
+export function geminiDictationSetup(model: string): Record<string, unknown> {
+  return {
+    model: `models/${model}`,
+    generationConfig: { responseModalities: ['AUDIO'] },
+    inputAudioTranscription: {},
+    realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
+  };
 }
 
 /** The language the owner speaks (Settings → Voice), or undefined to detect it. */
@@ -295,6 +312,25 @@ async function mintDictation(engine: DictationEngine, keys: Keys, language: stri
     const expires = typeof body.expires_at === 'number' ? body.expires_at * 1000 : Date.now() + DICTATION_SECRET_SECONDS * 1000;
     return { token: body.value, expiresAt: new Date(expires).toISOString(), url: transcriptionUrl(key.baseUrl), model };
   }
+  if (engine === 'gemini') {
+    // Single use, short to start; the setup is locked to transcription only, so the token can't
+    // be used for a conversation.
+    const now = Date.now();
+    const expireTime = new Date(now + GEMINI_TOKEN_SECONDS * 1000).toISOString();
+    const res = await f(`${GEMINI_BASE}/auth_tokens`, {
+      method: 'POST',
+      headers: { 'x-goog-api-key': keys.gemini!.apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        uses: 1, expireTime, newSessionExpireTime: new Date(now + GEMINI_START_SECONDS * 1000).toISOString(),
+        bidiGenerateContentSetup: geminiDictationSetup(model),
+      }),
+      signal,
+    });
+    if (!res.ok) throw new Error(`Gemini didn't issue a dictation token (${await errorText(res)})`);
+    const body = (await res.json()) as { name?: unknown; expireTime?: unknown };
+    if (typeof body.name !== 'string' || !body.name) throw new Error("Gemini didn't return a dictation token");
+    return { token: body.name, expiresAt: typeof body.expireTime === 'string' ? body.expireTime : expireTime, model };
+  }
   if (engine === 'deepgram') {
     const res = await f(`${DEEPGRAM_BASE}/auth/grant`, {
       method: 'POST',
@@ -325,6 +361,8 @@ const mobileVoice = new Hono();
 export const ENGINE_NAMES: Record<MobileVoiceEngine | DictationEngine, string> = {
   openai: 'OpenAI', gemini: 'Gemini Live', deepgram: 'Deepgram', elevenlabs: 'ElevenLabs Scribe',
 };
+/** "Listening · Gemini" on the phone's mic. */
+const DICTATION_NAMES: Record<DictationEngine, string> = { ...ENGINE_NAMES, gemini: 'Gemini' };
 
 export interface VoiceCapabilities {
   call: boolean;
@@ -335,6 +373,8 @@ export interface VoiceCapabilities {
   dictationEngine?: DictationEngine;
   dictationEngineName?: string;
   dictationSetup?: string;
+  /** No speech service: the phone dictates with its own speech recognition. */
+  dictationFallback?: 'device';
 }
 
 export function voiceCapabilities(): VoiceCapabilities {
@@ -346,7 +386,7 @@ export function voiceCapabilities(): VoiceCapabilities {
     call: !!call,
     ...(call ? { callEngine: call, callEngineName: call === 'openai' ? 'OpenAI Realtime' : ENGINE_NAMES[call] } : { callSetup: NO_REALTIME_VOICE }),
     dictation: !!dictation,
-    ...(dictation ? { dictationEngine: dictation, dictationEngineName: ENGINE_NAMES[dictation] } : { dictationSetup: dictationSetup(keys) }),
+    ...(dictation ? { dictationEngine: dictation, dictationEngineName: DICTATION_NAMES[dictation] } : { dictationSetup: DICTATION_SETUP, dictationFallback: 'device' as const }),
   };
 }
 
@@ -357,10 +397,7 @@ mobileVoice.post('/api/mobile/voice/dictation', async (c) => {
   const keys = availableKeys();
   const settings = voiceSettings();
   const engine = pickDictationEngine(keys, settings, str(body.engine));
-  if (!engine) {
-    const setup = dictationSetup(keys);
-    return c.json({ error: setup, fallback: true, setup }, 409);
-  }
+  if (!engine) return c.json({ error: DICTATION_SETUP, fallback: true, device: true, setup: DICTATION_SETUP }, 409);
   const language = dictationLanguage(settings);
   try {
     const m = await mintDictation(engine, keys, language, c.req.raw.signal);
