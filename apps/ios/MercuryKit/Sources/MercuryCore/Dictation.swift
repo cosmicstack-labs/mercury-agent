@@ -6,15 +6,34 @@ import Foundation
 public struct VoiceCapabilities: Sendable, Equatable {
   public var call: Bool
   public var callEngine: String?
+  /// "OpenAI Realtime", "Gemini Live" (newer Mercurys).
+  public var callEngineName: String?
   public var callSetup: String?
   public var dictation: Bool
   public var dictationEngine: String?
+  /// "OpenAI", "Deepgram", "ElevenLabs Scribe" (newer Mercurys).
+  public var dictationEngineName: String?
   /// What to add for dictation, in plain words, when it isn't available.
   public var dictationSetup: String?
 
-  public init(call: Bool, callEngine: String? = nil, callSetup: String? = nil, dictation: Bool, dictationEngine: String? = nil, dictationSetup: String? = nil) {
-    self.call = call; self.callEngine = callEngine; self.callSetup = callSetup
-    self.dictation = dictation; self.dictationEngine = dictationEngine; self.dictationSetup = dictationSetup
+  public init(call: Bool, callEngine: String? = nil, callEngineName: String? = nil, callSetup: String? = nil, dictation: Bool, dictationEngine: String? = nil, dictationEngineName: String? = nil, dictationSetup: String? = nil) {
+    self.call = call; self.callEngine = callEngine; self.callEngineName = callEngineName; self.callSetup = callSetup
+    self.dictation = dictation; self.dictationEngine = dictationEngine; self.dictationEngineName = dictationEngineName; self.dictationSetup = dictationSetup
+  }
+
+  /// "Gemini Live", for "Calls use: …"; nil when calls aren't set up.
+  public var callName: String? { call ? (callEngineName ?? callEngine.map(Self.engineName)) : nil }
+  /// "Deepgram", for "Dictation uses: …"; nil when dictation isn't set up.
+  public var dictationName: String? { dictation ? (dictationEngineName ?? dictationEngine.map(Self.engineName)) : nil }
+
+  static func engineName(_ id: String) -> String {
+    switch id {
+    case "openai": "OpenAI"
+    case "gemini": "Gemini Live"
+    case "deepgram": "Deepgram"
+    case "elevenlabs": "ElevenLabs"
+    default: id
+    }
   }
 
   /// The setup line when the Mercury didn't send one.
@@ -30,11 +49,7 @@ public struct VoiceCapabilities: Sendable, Equatable {
   public static func decode(status: Int, data: Data) throws -> VoiceCapabilities {
     switch status {
     case 200:
-      let j = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
-      return VoiceCapabilities(
-        call: j["call"] as? Bool ?? false, callEngine: j["callEngine"] as? String, callSetup: j["callSetup"] as? String,
-        dictation: j["dictation"] as? Bool ?? false, dictationEngine: j["dictationEngine"] as? String,
-        dictationSetup: j["dictationSetup"] as? String)
+      return .from((try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:])
     case 404: return .tooOld
     case 401: throw MercuryError.unauthorized
     default: throw MercuryError.server(status, MercuryClient.message(data))

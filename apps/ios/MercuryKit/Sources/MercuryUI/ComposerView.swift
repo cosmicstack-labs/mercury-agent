@@ -410,10 +410,17 @@ struct ModelSheet: View {
   var model: ConversationModel
   @Environment(\.dismiss) private var dismiss
   @State private var query = ""
+  /// What calls and dictation use, on a Mercury with voice providers.
+  @State private var voice: VoiceProviders?
 
   var body: some View {
     NavigationStack {
       List {
+        if let voice, query.isEmpty {
+          Section {
+            NavigationLink { VoiceSettings(client: model.client) } label: { voiceRow(voice.capabilities) }
+          }
+        }
         if let c = model.catalog {
           Section {
             if query.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -442,6 +449,18 @@ struct ModelSheet: View {
     }
     .presentationDetents([.medium, .large])
     .task { await model.loadModels() }
+    .task { voice = (try? await model.client.voiceProvidersIfSupported()) ?? nil }
+  }
+
+  /// "Voice: Gemini Live ✓ · Set up voice →".
+  private func voiceRow(_ c: VoiceCapabilities) -> some View {
+    HStack(spacing: 6) {
+      Image(systemName: "waveform").foregroundStyle(Theme.ink2)
+      Text(c.callName.map { "Voice: \($0) ✓" } ?? "Voice: not set up").foregroundStyle(Theme.ink).lineLimit(1)
+      Spacer(minLength: 6)
+      Text("Set up voice").font(.system(size: 13)).foregroundStyle(Theme.ink3)
+    }
+    .font(.system(size: 14))
   }
 
   private func row(_ title: String, _ detail: String?, on: Bool, enabled: Bool, action: @escaping () -> Void) -> some View {

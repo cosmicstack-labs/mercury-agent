@@ -36,8 +36,29 @@ final class DictationModel {
   /// Quiet this long while listening stops dictation.
   static let silenceLimit: TimeInterval = 60
 
+  @ObservationIgnored private var keysObserver: NSObjectProtocol?
+
   init(meter: CallMeter = CallMeter()) {
     self.meter = meter
+    // A voice key saved in Settings → Voice: the mic enables (or greys out) at once.
+    keysObserver = NotificationCenter.default.addObserver(forName: VoiceCapabilities.changed, object: nil, queue: .main) { [weak self] n in
+      guard let caps = n.object as? VoiceCapabilities else { return }
+      let url = n.userInfo?["baseURL"] as? URL
+      MainActor.assumeIsolated { self?.voiceKeysChanged(caps, at: url) }
+    }
+  }
+
+  deinit {
+    if let keysObserver { NotificationCenter.default.removeObserver(keysObserver) }
+  }
+
+  /// What this Mercury can do changed (a key was saved or removed): use it, and get a fresh token ready.
+  func voiceKeysChanged(_ caps: VoiceCapabilities, at url: URL?) {
+    if let url, let mine = client?.baseURL, url != mine { return }
+    capabilities = caps
+    prefetched = nil
+    if caps.dictation { notice = nil }
+    Task { await load() }
   }
 
   var client: MercuryClient? { conversation?.client }
