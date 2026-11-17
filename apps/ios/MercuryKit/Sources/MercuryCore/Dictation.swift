@@ -11,25 +11,28 @@ public struct VoiceCapabilities: Sendable, Equatable {
   public var callSetup: String?
   public var dictation: Bool
   public var dictationEngine: String?
-  /// "OpenAI", "Deepgram", "ElevenLabs Scribe" (newer Mercurys).
+  /// "OpenAI", "Gemini", "Deepgram", "ElevenLabs Scribe" (newer Mercurys).
   public var dictationEngineName: String?
   /// What to add for dictation, in plain words, when it isn't available.
   public var dictationSetup: String?
+  /// "device": this Mercury has no speech service, so the phone dictates with its own speech recognition.
+  public var dictationFallback: String?
 
-  public init(call: Bool, callEngine: String? = nil, callEngineName: String? = nil, callSetup: String? = nil, dictation: Bool, dictationEngine: String? = nil, dictationEngineName: String? = nil, dictationSetup: String? = nil) {
+  public init(call: Bool, callEngine: String? = nil, callEngineName: String? = nil, callSetup: String? = nil, dictation: Bool, dictationEngine: String? = nil, dictationEngineName: String? = nil, dictationSetup: String? = nil, dictationFallback: String? = nil) {
     self.call = call; self.callEngine = callEngine; self.callEngineName = callEngineName; self.callSetup = callSetup
     self.dictation = dictation; self.dictationEngine = dictationEngine; self.dictationEngineName = dictationEngineName; self.dictationSetup = dictationSetup
+    self.dictationFallback = dictationFallback
   }
 
   /// "Gemini Live", for "Calls use: …"; nil when calls aren't set up.
-  public var callName: String? { call ? (callEngineName ?? callEngine.map(Self.engineName)) : nil }
+  public var callName: String? { call ? (callEngineName ?? callEngine.map { $0 == "gemini" ? "Gemini Live" : Self.engineName($0) }) : nil }
   /// "Deepgram", for "Dictation uses: …"; nil when dictation isn't set up.
   public var dictationName: String? { dictation ? (dictationEngineName ?? dictationEngine.map(Self.engineName)) : nil }
 
-  static func engineName(_ id: String) -> String {
+  public static func engineName(_ id: String) -> String {
     switch id {
     case "openai": "OpenAI"
-    case "gemini": "Gemini Live"
+    case "gemini": "Gemini"
     case "deepgram": "Deepgram"
     case "elevenlabs": "ElevenLabs"
     default: id
@@ -37,12 +40,12 @@ public struct VoiceCapabilities: Sendable, Equatable {
   }
 
   /// The setup line when the Mercury didn't send one.
-  public static let defaultDictationSetup = "Live dictation needs a speech provider. Add an OpenAI key in Settings → Models, or a Deepgram or ElevenLabs key in Settings → Voice."
+  public static let defaultDictationSetup = "Dictation uses this phone's own speech recognition. For better dictation, add a Gemini, OpenAI, Deepgram or ElevenLabs key in Settings → Voice."
   /// A Mercury from before the route: no dictation (calls fall back on their own).
   public static let tooOld = VoiceCapabilities(call: false, dictation: false,
     dictationSetup: "Live dictation needs a newer Mercury. Update Mercury on your computer, then try again.")
 
-  /// What to tell the owner when the mic is greyed out.
+  /// What to tell the owner about dictation without a speech service.
   public var setupLine: String { dictationSetup ?? Self.defaultDictationSetup }
 
   /// The route's answer: 200 JSON, or a Mercury without the route (404).
@@ -82,7 +85,7 @@ public struct DictationSession: Sendable, Equatable {
 
 public enum DictationStart: Sendable, Equatable {
   case live(DictationSession)
-  /// No dictation on this Mercury: what to add, in plain words.
+  /// No speech service on this Mercury (the phone uses its own): what to add, in plain words.
   case unavailable(setup: String)
 
   public static func decode(status: Int, data: Data) throws -> DictationStart {
@@ -114,5 +117,44 @@ extension MercuryClient {
   public func dictationSession(engine: String? = nil) async throws -> DictationStart {
     let (data, res) = try await send(request("POST", "/api/mobile/voice/dictation", body: engine.map { ["engine": $0] } ?? [:], timeout: 10))
     return try DictationStart.decode(status: res.statusCode, data: data)
+  }
+}
+
+/// Who listens when the owner taps the mic: the speech service Mercury uses (the owner's voice
+/// choice, the same one Desktop's voice typing uses), or, when Mercury has none or is too old to
+/// say, this phone's own speech recognition. The mic is never greyed out for want of a key.
+public enum DictationRoute: Sendable, Equatable {
+  /// Mercury mints a token for its speech service ("Gemini", "OpenAI", …; nil when not yet known).
+  case server(name: String?)
+  /// The phone's speech recognition (on the device when it can).
+  case device
+  /// Nothing can listen: why, in plain words.
+  case unavailable(String)
+
+  public static let deviceName = "On this phone"
+  public static let duringCall = "Dictation is off during a voice call."
+  public static let noSpeech = "This phone can't recognise speech right now, and Mercury has no speech service. Add a Gemini, OpenAI, Deepgram or ElevenLabs key in Settings → Voice, or allow Speech Recognition in Settings → Mercury."
+
+  /// - caps: GET /api/mobile/voice/capabilities (nil: not known yet, so Mercury is asked first).
+  /// - deviceAvailable: the phone's recogniser is there and not refused.
+  public static func decide(caps: VoiceCapabilities?, deviceAvailable: Bool, callRunning: Bool = false) -> DictationRoute {
+    if callRunning { return .unavailable(duringCall) }
+    guard let caps else { return .server(name: nil) }
+    if caps.dictation { return .server(name: caps.dictationName) }
+    return deviceAvailable ? .device : .unavailable(noSpeech)
+  }
+
+  /// Mercury couldn't start its speech service (none set up, an older Mercury, or offline).
+  public static func afterServerRefused(_ why: String, deviceAvailable: Bool) -> DictationRoute {
+    deviceAvailable ? .device : .unavailable(why)
+  }
+
+  /// The box's placeholder while listening: "Listening · Gemini", "Listening · On this phone".
+  public var listeningLabel: String {
+    switch self {
+    case .server(let name?): "Listening · \(name)"
+    case .device: "Listening · \(Self.deviceName)"
+    default: "Listening…"
+    }
   }
 }

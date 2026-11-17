@@ -6,8 +6,8 @@ import MercuryCore
 /// The message box. The + menu adds a photo or a file (image, PDF, TXT or Markdown), sets the next
 /// message to make an image, a video or music (ADR-042), and picks how hard the model thinks in
 /// this chat (ADR-041). What's set shows as small chips above the text, each one tap to remove.
-/// The mic dictates live into the box (DictationModel): greyed out, with what to add, when this
-/// Mercury has no speech service that can. Send, or stop while Mercury works on this chat.
+/// The mic dictates live into the box (DictationModel) with Mercury's speech service, or the phone's
+/// own speech recognition when Mercury has none. Send, or stop while Mercury works on this chat.
 struct Composer: View {
   @Bindable var model: ConversationModel
   var focus: FocusState<Bool>.Binding
@@ -70,7 +70,7 @@ struct Composer: View {
   }
 
   private var placeholder: String {
-    if model.dictation.active { return "Listening…" }
+    if model.dictation.active { return model.dictation.listeningLabel }
     return switch model.media?.kind {
     case .image?: "Describe the image"
     case .video?: "Describe the video"
@@ -250,8 +250,9 @@ struct Composer: View {
   }
 }
 
-/// The composer's mic: dictates live into the box. Greyed out when this Mercury can't (a tap says
-/// what to add); while listening, filled, with a ring that follows the voice. Tap again to stop.
+/// The composer's mic: dictates live into the box. Greyed out only when nothing can listen (during a
+/// call, or no speech service and the phone's recogniser refused); while listening, filled, with a
+/// ring that follows the voice. Tap again to stop.
 struct DictationButton: View {
   var dictation: DictationModel
 

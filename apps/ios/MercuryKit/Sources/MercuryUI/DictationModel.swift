@@ -6,8 +6,11 @@ import MercuryVoice
 ///
 /// The microphone is the call's (CallAudioEngine: echo-cancelled, 60 ms frames of 16 kHz PCM16);
 /// the speech-to-text is Mercury's shared Rust engine (MercuryVoice `Dictation`) with a short-lived
-/// token from the Mercury (POST /api/mobile/voice/dictation). The mic starts on the tap, while the
-/// token and the stream come up; what's said meanwhile is kept and sent once the stream is open.
+/// token from the Mercury (POST /api/mobile/voice/dictation) for the speech service the owner uses
+/// (Gemini, OpenAI, Deepgram or ElevenLabs: the same one Desktop's voice typing uses). With none, or
+/// a Mercury too old to dictate, the phone's own speech recognition listens (DeviceDictation), so
+/// the mic always works (DictationRoute). The mic starts on the tap, while the token and the stream
+/// come up; what's said meanwhile is kept and sent once the stream is open.
 /// Partial text shows as it's heard and is replaced by the final text; both go after what was
 /// already typed (DictationText). Tap again to stop; sending, a call, or 60 s of quiet stop it too.
 @MainActor @Observable
@@ -25,7 +28,11 @@ final class DictationModel {
   @ObservationIgnored private var text: DictationText?
   @ObservationIgnored private var audio: CallAudioEngine?
   @ObservationIgnored private var relay: DictationRelay?
-  @ObservationIgnored private var session: Dictation?
+  @ObservationIgnored private var session: DictationProtocol?
+  /// Who's listening right now ("Listening · Gemini"), nil while idle.
+  private(set) var listening: DictationRoute?
+  /// Whether the phone's own speech recognition can be used (tests replace it).
+  @ObservationIgnored var deviceSpeech: () -> Bool = { DeviceDictation.available() }
   @ObservationIgnored private var prefetched: DictationSession?
   @ObservationIgnored private var watchdog: Task<Void, Never>?
   @ObservationIgnored private var lastHeard = Date.now
@@ -65,15 +72,24 @@ final class DictationModel {
   var active: Bool { phase != .idle }
   /// A voice call runs (this chat's or another): the mic belongs to it.
   var callRunning: Bool { conversation?.callId != nil || CallKitCall.shared.active }
-  /// The mic button works: this Mercury can dictate and no call has the mic.
-  var available: Bool { capabilities?.dictation == true && !callRunning }
-
-  /// Why the mic is greyed out, in plain words (nil while it isn't known yet).
-  var unavailableReason: String? {
-    if callRunning { return "Dictation is off during a voice call." }
-    guard let c = capabilities, !c.dictation else { return nil }
-    return c.setupLine
+  /// Who would listen if the mic were tapped now.
+  var route: DictationRoute {
+    DictationRoute.decide(caps: capabilities, deviceAvailable: deviceSpeech(), callRunning: callRunning)
   }
+  /// The mic button works: Mercury's speech service or the phone's own, and no call has the mic.
+  var available: Bool {
+    if case .unavailable = route { return false }
+    return true
+  }
+
+  /// Why the mic is greyed out, in plain words (nil when it works).
+  var unavailableReason: String? {
+    if case .unavailable(let why) = route { return why }
+    return nil
+  }
+
+  /// The box's placeholder while dictating: "Listening · Gemini", "Listening · On this phone".
+  var listeningLabel: String { (listening ?? .server(name: nil)).listeningLabel }
 
   /// Asks the Mercury once what it can do, and gets a token ready so the first tap starts at once.
   func load() async {
@@ -91,7 +107,8 @@ final class DictationModel {
   func tap() {
     if active { stop(); return }
     guard available else {
-      // No speech service yet, on a Mercury that can set one up: "Set up voice" instead of the line.
+      // Nothing can listen (no speech service, and the phone's recogniser is off or refused), on a
+      // Mercury that can set one up: "Set up voice" instead of the line.
       if !callRunning, let caps = capabilities, !caps.dictation, let client, let conversation {
         Task {
           if VoiceSetup.decide(.dictation, supported: await client.hasVoiceProviders(), caps: caps) == .setup {
@@ -120,6 +137,7 @@ final class DictationModel {
     generation += 1
     let gen = generation
     notice = nil
+    listening = route
     phase = .starting
     haptics.prepare()
     haptics.play(.dictationStarted)
@@ -139,7 +157,9 @@ final class DictationModel {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.fail("Couldn't open the microphone.", gen) } }
       }
     }
-    Task { await self.connect(gen, relay: relay) }
+    Task {
+      if case .device? = self.listening { await self.startOnPhone(gen, relay: relay, why: nil) } else { await self.connect(gen, relay: relay) }
+    }
     watch(gen)
   }
 
@@ -177,15 +197,19 @@ final class DictationModel {
         switch try await client.dictationSession() {
         case .live(let fresh): s = fresh
         case .unavailable(let setup):
+          // No speech service (or an older Mercury): the phone listens instead.
           capabilities?.dictation = false
           capabilities?.dictationSetup = setup
-          return fail(setup, gen)
+          return await startOnPhone(gen, relay: relay, why: setup)
         }
       } catch {
-        return fail("Dictation couldn't start: \(error.localizedDescription)", gen)
+        return await startOnPhone(gen, relay: relay, why: "Dictation couldn't start: \(error.localizedDescription)")
       }
     }
     guard gen == generation, phase == .starting || phase == .stopping else { return }
+    if case .server(nil)? = listening {
+      listening = .server(name: capabilities?.dictationName ?? VoiceCapabilities.engineName(s.engine))
+    }
     let config = DictationConfig(engine: s.engine, token: s.token, ephemeral: s.ephemeral, url: s.url, model: s.model, language: s.language)
     do {
       let d = try Dictation.start(config: config, listener: DictationListenerBox { [weak self] e in
@@ -197,6 +221,29 @@ final class DictationModel {
     } catch {
       fail("Dictation couldn't start: \(error.localizedDescription)", gen)
     }
+  }
+
+  /// The phone's own speech recognition, when Mercury has no speech service (or can't be reached).
+  /// `why`: what to say if the phone can't either.
+  private func startOnPhone(_ gen: Int, relay: DictationRelay, why: String?) async {
+    switch DictationRoute.afterServerRefused(why ?? DictationRoute.noSpeech, deviceAvailable: deviceSpeech()) {
+    case .unavailable(let reason): return fail(reason, gen)
+    default: break
+    }
+    guard await DeviceDictation.authorize() else {
+      return fail("Mercury can't recognise speech on this phone. Allow Speech Recognition in Settings → Mercury, or add a voice key in Settings → Voice.", gen)
+    }
+    guard gen == generation, phase == .starting || phase == .stopping else { return }
+    listening = .device
+    let box = DictationListenerBox { [weak self] e in
+      DispatchQueue.main.async { MainActor.assumeIsolated { self?.handle(e, gen) } }
+    }
+    guard let d = DeviceDictation(listener: { box.onEvent(event: $0) }) else {
+      return fail(why ?? DictationRoute.noSpeech, gen)
+    }
+    session = d
+    relay.attach(d)
+    if phase == .stopping { d.stop() }
   }
 
   func handle(_ e: DictationEvent, _ gen: Int) {
@@ -235,7 +282,8 @@ final class DictationModel {
         guard let self, gen == self.generation, self.active else { return }
         if self.callRunning { self.cancel(); return }
         // The engine never confirmed the stop: give up waiting.
-        if self.phase == .stopping, Date.now.timeIntervalSince(self.stoppingSince) > 10 { self.cancel(); return }
+        // (Gemini can take ~10 s to settle the last words of a long dictation.)
+        if self.phase == .stopping, Date.now.timeIntervalSince(self.stoppingSince) > 14 { self.cancel(); return }
         if self.phase == .listening, Date.now.timeIntervalSince(self.lastHeard) >= Self.silenceLimit {
           self.notice = "Dictation stopped after a minute of quiet."
           self.stop()
@@ -268,14 +316,16 @@ final class DictationModel {
     session = nil
     relay = nil
     text = nil
+    listening = nil
     meter.reset()
     phase = .idle
   }
 
   /// Gallery and tests: a dictation in a given state, with no audio or engine.
-  func show(_ phase: Phase, draft: String? = nil) {
+  func show(_ phase: Phase, draft: String? = nil, listening: DictationRoute? = nil) {
     if let draft { conversation?.draft = draft }
     self.phase = phase
+    self.listening = phase == .idle ? nil : listening
     text = phase == .idle ? nil : DictationText(draft: conversation?.draft ?? "")
   }
 
@@ -341,7 +391,7 @@ struct DictationText: Equatable {
 final class DictationRelay: @unchecked Sendable {
   private let lock = NSLock()
   private var held: [Data] = []
-  private var target: Dictation?
+  private var target: DictationProtocol?
   private var closed = false
   /// The mic stopped: frames already kept still go to the stream when it opens.
   private var inputDone = false
@@ -357,7 +407,7 @@ final class DictationRelay: @unchecked Sendable {
     lock.unlock()
   }
 
-  func attach(_ d: Dictation) {
+  func attach(_ d: DictationProtocol) {
     lock.lock()
     let early = held
     held = []

@@ -149,7 +149,7 @@ public enum VoiceSetup {
   public static func blurb(_ id: String) -> String {
     switch id {
     case "openai": "Natural, quick replies. Calls and dictation."
-    case "gemini": "Google's live voice. Calls."
+    case "gemini": "Google's live voice. Calls and dictation."
     case "deepgram": "Fast speech to text. Dictation."
     case "elevenlabs": "Accurate speech to text. Dictation."
     default: "Voice"

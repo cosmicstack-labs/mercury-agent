@@ -75,7 +75,8 @@ extension VoiceCapabilities {
       call: j["call"] as? Bool ?? false, callEngine: j["callEngine"] as? String, callEngineName: j["callEngineName"] as? String,
       callSetup: j["callSetup"] as? String,
       dictation: j["dictation"] as? Bool ?? false, dictationEngine: j["dictationEngine"] as? String,
-      dictationEngineName: j["dictationEngineName"] as? String, dictationSetup: j["dictationSetup"] as? String)
+      dictationEngineName: j["dictationEngineName"] as? String, dictationSetup: j["dictationSetup"] as? String,
+      dictationFallback: j["dictationFallback"] as? String)
   }
 }
 

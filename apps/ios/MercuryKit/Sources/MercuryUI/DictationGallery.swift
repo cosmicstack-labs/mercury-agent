@@ -1,8 +1,8 @@
 import SwiftUI
 import MercuryCore
 
-/// The composer's mic states for the Snapshots tool: ready, dictating with live text, and greyed
-/// out with what to add (a Gemini-only Mercury).
+/// The composer's mic states for the Snapshots tool: ready, dictating with live text (with Gemini),
+/// and greyed out with why (no speech service, and the phone's recogniser refused).
 @MainActor
 public enum DictationGallery {
   static func model(_ caps: VoiceCapabilities) -> ConversationModel {
@@ -32,9 +32,9 @@ public enum DictationGallery {
   }
 
   static var dictating: AnyView {
-    let m = model(VoiceCapabilities(call: true, callEngine: "openai", dictation: true, dictationEngine: "openai"))
+    let m = model(VoiceCapabilities(call: true, callEngine: "gemini", dictation: true, dictationEngine: "gemini", dictationEngineName: "Gemini"))
     m.draft = "Also:"
-    m.dictation.show(.listening)
+    m.dictation.show(.listening, listening: .server(name: "Gemini"))
     let g = m.dictation.currentGeneration
     m.dictation.handle(.final(text: "Remind me to call the plumber tomorrow at nine."), g)
     m.dictation.handle(.partial(text: "And book a table for four at the Italian"), g)
@@ -43,8 +43,8 @@ public enum DictationGallery {
   }
 
   static var unavailable: AnyView {
-    let m = model(VoiceCapabilities(call: true, callEngine: "gemini", dictation: false,
-      dictationSetup: "Live dictation needs a speech provider. Add an OpenAI key in Settings → Models, or a Deepgram or ElevenLabs key in Settings → Voice. Gemini can't do it: it only transcribes while it's also replying."))
+    let m = model(VoiceCapabilities(call: false, dictation: false, dictationFallback: "device"))
+    m.dictation.deviceSpeech = { false }
     m.dictation.unavailable()
     return screen(m)
   }

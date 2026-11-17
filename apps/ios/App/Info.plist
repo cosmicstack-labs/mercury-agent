@@ -31,6 +31,8 @@
 	<string>Mercury connects to the Mercury running on your computer.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Mercury uses the microphone for voice calls and dictation.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>When your Mercury has no speech service, Mercury types what you say with this iPhone's own speech recognition.</string>
 	<key>UIApplicationShortcutItems</key>
 	<array>
 		<dict>

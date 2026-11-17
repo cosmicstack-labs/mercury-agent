@@ -56,7 +56,7 @@ struct VoiceSetupTests {
   @Test func nothingSetShowsSetup() {
     #expect(VoiceSetup.decide(.call, supported: true, caps: none) == .setup)
     #expect(VoiceSetup.decide(.dictation, supported: true, caps: none) == .setup)
-    // Gemini takes calls but can't dictate: the mic asks to set up.
+    // An older Mercury where Gemini only takes calls: the mic asks to set up.
     #expect(VoiceSetup.decide(.dictation, supported: true, caps: callOnly) == .setup)
   }
 
@@ -123,7 +123,7 @@ struct VoiceSetupTests {
     #expect(VoiceSetup.next(after: .call, caps: callOnly) == .startCall)
     #expect(VoiceSetup.next(after: .dictation, caps: both) == .startDictation)
     #expect(VoiceSetup.next(after: .settings, caps: callOnly) == .done)
-    if case .stillMissing = VoiceSetup.next(after: .dictation, caps: callOnly) {} else { Issue.record("Gemini can't dictate") }
+    if case .stillMissing = VoiceSetup.next(after: .dictation, caps: callOnly) {} else { Issue.record("calls only: dictation still missing") }
     if case .stillMissing = VoiceSetup.next(after: .call, caps: nil) {} else { Issue.record("unknown caps") }
   }
 
@@ -183,6 +183,8 @@ struct VoiceSetupTests {
     let client = MercuryClient(baseURL: URL(string: "http://voice-setup.test")!, token: "t", session: URLSession(configuration: config))
     let c = ConversationModel(client: client, thread: nil)
     c.dictation.capabilities = none
+    // The phone's own recogniser can't listen either, so the mic is gated (with it, the phone listens).
+    c.dictation.deviceSpeech = { false }
     return c
   }
 
@@ -197,7 +199,7 @@ struct VoiceSetupTests {
       #expect(c.dictation.haptics.played.isEmpty)
     } else {
       #expect(c.voiceSetup == nil)
-      #expect(c.dictation.notice == VoiceCapabilities.defaultDictationSetup)
+      #expect(c.dictation.notice == DictationRoute.noSpeech)
       #expect(c.dictation.haptics.played == [.failed])
     }
   }
