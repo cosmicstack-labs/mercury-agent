@@ -166,6 +166,15 @@ pub fn setting<'a>(settings: &'a Value, key: &str, default: &'a str) -> String {
     settings.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()).unwrap_or(default).trim().to_string()
 }
 
+/// A call from the phone app (mercury-voice-mobile sets `phoneCall: true`):
+/// the links tune how they hear the caller for a phone held close, with
+/// people and noise around (near-field noise reduction, less trigger-happy
+/// voice detection, interruptions judged by the phone). Unset everywhere
+/// else, so desktop calls (Optimus) keep their behaviour exactly.
+pub fn phone_call(settings: &Value) -> bool {
+    settings.get("phoneCall").and_then(Value::as_bool).unwrap_or(false)
+}
+
 pub fn env_key(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|k| !k.trim().is_empty())
 }

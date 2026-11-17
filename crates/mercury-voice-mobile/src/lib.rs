@@ -136,7 +136,8 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 /// The mercury-voice settings for this engine (the same keys Optimus reads).
 fn settings_for(cfg: &VoiceConfig) -> Result<Value, VoiceError> {
     let opt = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-    let mut s = json!({ "voiceEngine": cfg.engine });
+    // phoneCall: the engine tunes its hearing for a phone (noise reduction, voice detection).
+    let mut s = json!({ "voiceEngine": cfg.engine, "phoneCall": true });
     match cfg.engine.as_str() {
         "openai" => {
             if let Some(m) = opt(&cfg.model) { s["voiceModel"] = json!(m); }

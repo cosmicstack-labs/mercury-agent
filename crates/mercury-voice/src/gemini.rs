@@ -49,8 +49,28 @@ fn setup(cfg: &LinkConfig, handle: Option<&str>) -> Value {
         "contextWindowCompression": { "slidingWindow": {} },
         "sessionResumption": {},
     });
+    if crate::phone_call(s) {
+        // A phone call: only clear, sustained speech starts a turn (background talk and short
+        // noises don't), and a slightly longer pause ends it so a pause mid-sentence isn't the end.
+        setup["realtimeInputConfig"]["automaticActivityDetection"] = phone_activity_detection();
+    }
     if let Some(h) = handle { setup["sessionResumption"] = json!({ "handle": h }); }
     json!({ "setup": setup })
+}
+
+/// Gemini Live voice activity detection for a phone call
+/// (ai.google.dev/api/live: AutomaticActivityDetection, StartSensitivity, EndSensitivity).
+fn phone_activity_detection() -> Value {
+    json!({
+        "disabled": false,
+        // Default is HIGH: LOW detects the start of speech less often (distant voices, TV, chatter).
+        "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
+        // Default (HIGH) kept explicit: in noise a LOW end sensitivity can hold a turn open.
+        "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH",
+        // Speech must last this long before it counts as a start (a clatter or a cough doesn't).
+        "prefixPaddingMs": 100,
+        "silenceDurationMs": 700,
+    })
 }
 
 pub async fn open(cfg: LinkConfig, auth: Auth) -> Result<Link, String> {
@@ -183,6 +203,27 @@ mod tests {
 
     fn token(secret: &str, ephemeral: bool, url: Option<&str>) -> Auth {
         Auth::Token(Credential { secret: secret.into(), ephemeral, url: url.map(str::to_string) })
+    }
+
+    fn cfg(settings: Value) -> LinkConfig {
+        LinkConfig { instructions: "hi".into(), tools: json!([]), settings }
+    }
+
+    #[test]
+    fn desktop_setup_is_unchanged_and_phones_hear_less_background() {
+        let desktop = setup(&cfg(json!({ "voiceEngine": "gemini" })), None);
+        assert_eq!(desktop.pointer("/setup/realtimeInputConfig").unwrap(), &json!({
+            "automaticActivityDetection": { "disabled": false, "silenceDurationMs": 600 },
+            "activityHandling": "START_OF_ACTIVITY_INTERRUPTS",
+        }));
+        let phone = setup(&cfg(json!({ "voiceEngine": "gemini", "phoneCall": true })), Some("h"));
+        let aad = phone.pointer("/setup/realtimeInputConfig/automaticActivityDetection").unwrap();
+        assert_eq!(aad["startOfSpeechSensitivity"], "START_SENSITIVITY_LOW");
+        assert_eq!(aad["endOfSpeechSensitivity"], "END_SENSITIVITY_HIGH");
+        assert_eq!(aad["prefixPaddingMs"], 100);
+        assert_eq!(aad["silenceDurationMs"], 700);
+        assert_eq!(phone.pointer("/setup/realtimeInputConfig/activityHandling").unwrap(), "START_OF_ACTIVITY_INTERRUPTS");
+        assert_eq!(phone.pointer("/setup/sessionResumption/handle").unwrap(), "h");
     }
 
     #[test]

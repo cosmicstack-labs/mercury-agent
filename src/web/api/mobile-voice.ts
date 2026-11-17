@@ -165,6 +165,13 @@ async function errorText(res: Response): Promise<string> {
 
 interface Minted { token: string; expiresAt: string; url?: string }
 
+// How a phone call hears the owner (noise and other people nearby) isn't set in the minted
+// sessions: the engine (crates/mercury-voice, `phoneCall`, set by mercury-voice-mobile) sends it
+// on connect. OpenAI: the whole `audio.input` (near_field noise reduction, semantic_vad) goes in
+// session.update steps after the main one, so a field the model rejects never costs the call.
+// Gemini: the token carries no liveConnectConstraints, so the app's setup message decides
+// realtimeInputConfig (START_SENSITIVITY_LOW, prefix padding, silence).
+
 async function mintOpenAI(key: { apiKey: string; baseUrl: string }, model: string, voice: string, signal?: AbortSignal): Promise<Minted> {
   const res = await (doFetch ?? fetch)(`${key.baseUrl.replace(/\/+$/, '')}/realtime/client_secrets`, {
     method: 'POST',

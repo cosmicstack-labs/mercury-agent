@@ -15,10 +15,10 @@ fn cfg(engine: &str) -> VoiceConfig {
 
 #[test]
 fn engines_map_to_the_optimus_setting_keys() {
-    assert_eq!(settings_for(&cfg("openai")).unwrap(), json!({ "voiceEngine": "openai", "voiceModel": "m", "voice": "v" }));
+    assert_eq!(settings_for(&cfg("openai")).unwrap(), json!({ "voiceEngine": "openai", "phoneCall": true, "voiceModel": "m", "voice": "v" }));
     let mut g = cfg("gemini");
     g.model = Some("models/gemini-live".into());
-    assert_eq!(settings_for(&g).unwrap(), json!({ "voiceEngine": "gemini", "geminiModel": "gemini-live", "geminiVoice": "v" }));
+    assert_eq!(settings_for(&g).unwrap(), json!({ "voiceEngine": "gemini", "phoneCall": true, "geminiModel": "gemini-live", "geminiVoice": "v" }));
     assert!(matches!(settings_for(&cfg("grok")), Err(VoiceError::Config { .. })));
 }
 

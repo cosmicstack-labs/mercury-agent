@@ -128,21 +128,43 @@ async fn eleven_client_secret(_key: &str, _model: &str, _voice: &str) -> Result<
     Err("ElevenLabs Realtime isn't available in this build".into())
 }
 
+/// How the GA session hears the caller. `Hearing::Default` is what every
+/// desktop call (Optimus) uses; only a phone call opts into the rest.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Hearing {
+    /// Server VAD that interrupts and answers by itself, no noise reduction.
+    Default,
+    /// Plus OpenAI's near-field noise reduction (a phone held close).
+    NearField,
+    /// Plus semantic VAD with low eagerness and no automatic interruption:
+    /// the phone decides whether a "speech started" while Mercury talks is
+    /// the owner (and cancels the reply) or someone in the background.
+    NearFieldSemantic,
+}
+
+/// The GA session's `audio` object.
+fn ga_audio(p: &Profile, hearing: Hearing) -> Value {
+    let turn_detection = match hearing {
+        Hearing::NearFieldSemantic => json!({ "type": "semantic_vad", "eagerness": "low", "interrupt_response": false, "create_response": true }),
+        _ => json!({ "type": "server_vad", "interrupt_response": true, "create_response": true }),
+    };
+    let mut input = json!({
+        "format": { "type": "audio/pcm", "rate": p.in_rate },
+        "turn_detection": turn_detection,
+    });
+    if hearing != Hearing::Default { input["noise_reduction"] = json!({ "type": "near_field" }); }
+    if let Some(t) = &p.transcribe { input["transcription"] = json!({ "model": t }); }
+    json!({ "input": input, "output": { "format": { "type": "audio/pcm", "rate": p.out_rate }, "voice": p.voice } })
+}
+
 fn session(p: &Profile, cfg: &LinkConfig) -> Value {
     let tools: Vec<Value> = cfg.tools.as_array().cloned().unwrap_or_default();
     match p.dialect {
-        Dialect::Ga => {
-            let mut input = json!({
-                "format": { "type": "audio/pcm", "rate": p.in_rate },
-                "turn_detection": { "type": "server_vad", "interrupt_response": true, "create_response": true },
-            });
-            if let Some(t) = &p.transcribe { input["transcription"] = json!({ "model": t }); }
-            json!({ "type": "session.update", "session": {
-                "type": "realtime", "model": p.model, "instructions": cfg.instructions,
-                "audio": { "input": input, "output": { "format": { "type": "audio/pcm", "rate": p.out_rate }, "voice": p.voice } },
-                "tools": tools,
-            } })
-        }
+        Dialect::Ga => json!({ "type": "session.update", "session": {
+            "type": "realtime", "model": p.model, "instructions": cfg.instructions,
+            "audio": ga_audio(p, Hearing::Default),
+            "tools": tools,
+        } }),
         Dialect::Grok => json!({ "type": "session.update", "session": {
             "instructions": cfg.instructions, "voice": p.voice,
             "turn_detection": { "type": "server_vad" },
@@ -160,6 +182,64 @@ fn session(p: &Profile, cfg: &LinkConfig) -> Value {
             "tools": tools.iter().map(|t| json!({ "type": "function", "function": {
                 "name": t.get("name"), "description": t.get("description"), "parameters": t.get("parameters") } })).collect::<Vec<_>>(),
         } }),
+    }
+}
+
+/// Phone calls only (`phoneCall` in the settings, set by mercury-voice-mobile):
+/// the hearing upgrades, each as its own session.update after the main one,
+/// with the whole `audio` object (nested objects aren't merged). Each one adds
+/// to the last, so if the provider rejects one (an error event, logged) the
+/// session keeps the one before it: near-field noise reduction first, then
+/// semantic VAD on top. The instructions and tools are never at risk.
+fn phone_hearing(p: &Profile) -> Vec<Value> {
+    if p.dialect != Dialect::Ga { return vec![]; }
+    [Hearing::NearField, Hearing::NearFieldSemantic]
+        .into_iter()
+        .map(|h| json!({ "type": "session.update", "session": { "type": "realtime", "audio": ga_audio(p, h) } }))
+        .collect()
+}
+
+/// Phone calls with semantic VAD don't let the server cut a reply off, so a
+/// caller who spoke while Mercury talked (and the phone judged it background
+/// speech) could be left unanswered: the server commits their turn but can't
+/// start a reply over the one in progress. This remembers such a turn and,
+/// once the reply ends and the turn has words, asks for the answer.
+#[derive(Default, Debug)]
+struct OwedReply {
+    responding: bool,
+    /// The phone cancelled the current reply (a barge-in it accepted).
+    cancelled: bool,
+    /// A caller turn committed during a reply: (item id, transcript has words?).
+    owed: Option<(String, Option<bool>)>,
+    /// The reply ended while the owed turn's transcript was still coming.
+    reply_over: bool,
+}
+
+impl OwedReply {
+    fn response_started(&mut self) { self.responding = true; self.cancelled = false; self.owed = None; self.reply_over = false; }
+    fn cancel(&mut self) { if self.responding { self.cancelled = true; } }
+    fn committed(&mut self, item: &str) {
+        if self.responding && !self.cancelled && !item.is_empty() { self.owed = Some((item.to_string(), None)); self.reply_over = false; }
+    }
+    /// True: send response.create now.
+    fn transcribed(&mut self, item: &str, words: bool) -> bool {
+        match &mut self.owed {
+            Some((id, heard)) if id == item => {
+                *heard = Some(words);
+                if self.reply_over { let go = words; self.owed = None; self.reply_over = false; go } else { false }
+            }
+            _ => false,
+        }
+    }
+    /// True: send response.create now.
+    fn response_done(&mut self) -> bool {
+        self.responding = false;
+        self.cancelled = false;
+        match &self.owed {
+            Some((_, Some(words))) => { let go = *words; self.owed = None; go }
+            Some((_, None)) => { self.reply_over = true; false }
+            None => false,
+        }
     }
 }
 
@@ -183,11 +263,28 @@ pub async fn open(cfg: LinkConfig, auth: Auth) -> Result<Link, String> {
     let (ev_tx, ev_rx) = mpsc::unbounded_channel::<LinkEvent>();
 
     tx.send(Message::text(session(&p, &cfg).to_string())).await.map_err(|e| e.to_string())?;
+    // A phone call hears with near-field noise reduction and semantic VAD (desktop calls: unchanged).
+    let phone = crate::phone_call(&cfg.settings) && p.dialect == Dialect::Ga;
+    if phone {
+        for m in phone_hearing(&p) { tx.send(Message::text(m.to_string())).await.map_err(|e| e.to_string())?; }
+    }
+    // Messages the reading side needs sent (a phone call's owed reply).
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+    let owed = std::sync::Arc::new(std::sync::Mutex::new(OwedReply::default()));
+    let owed_tx = owed.clone();
 
     let (in_rate, dialect) = (p.in_rate, p.dialect);
     let p2 = Profile { url: String::new(), headers: vec![], model: p.model.clone(), dialect: p.dialect, in_rate: p.in_rate, out_rate: p.out_rate, voice: p.voice.clone(), transcribe: None };
     tokio::spawn(async move {
-        while let Some(c) = cmd_rx.recv().await {
+        loop {
+            let c = tokio::select! {
+                c = cmd_rx.recv() => match c { Some(c) => c, None => break },
+                m = out_rx.recv() => {
+                    let Some(m) = m else { continue };
+                    if tx.send(Message::text(m.to_string())).await.is_err() { return; }
+                    continue;
+                }
+            };
             let msgs: Vec<Value> = match c {
                 LinkCmd::Audio(frame) => vec![json!({ "type": "input_audio_buffer.append", "audio": b64(&resample(&frame, CALL_RATE, in_rate)) })],
                 LinkCmd::Instruct(text) => instruct(&p2, &text),
@@ -196,6 +293,11 @@ pub async fn open(cfg: LinkConfig, auth: Auth) -> Result<Link, String> {
                     json!({ "type": "conversation.item.create", "item": { "type": "function_call_output", "call_id": id, "output": output } }),
                     json!({ "type": "response.create" }),
                 ],
+                // A phone call's semantic VAD leaves interrupting to the phone: cancel the reply.
+                LinkCmd::Cancel if phone => {
+                    owed_tx.lock().unwrap().cancel();
+                    vec![json!({ "type": "response.cancel" })]
+                }
                 // Server VAD already interrupts the response; nothing to send.
                 LinkCmd::Cancel => vec![],
             };
@@ -218,6 +320,19 @@ pub async fn open(cfg: LinkConfig, auth: Auth) -> Result<Link, String> {
             let Some(t) = m.as_text() else { continue };
             let Ok(v) = serde_json::from_str::<Value>(t) else { continue };
             let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            if phone {
+                let mut o = owed.lock().unwrap();
+                let ask = match s("type").as_str() {
+                    "response.created" => { o.response_started(); false }
+                    "response.done" | "response.cancelled" => o.response_done(),
+                    "input_audio_buffer.committed" => { o.committed(&s("item_id")); false }
+                    "conversation.item.input_audio_transcription.completed" => o.transcribed(&s("item_id"), !s("transcript").trim().is_empty()),
+                    // No transcript to judge by: answer rather than leave the caller hanging.
+                    "conversation.item.input_audio_transcription.failed" => o.transcribed(&s("item_id"), true),
+                    _ => false,
+                };
+                if ask { let _ = out_tx.send(json!({ "type": "response.create" })); }
+            }
             let e = match s("type").as_str() {
                 "response.created" => Some(LinkEvent::ResponseStarted),
                 "response.done" | "response.cancelled" => Some(LinkEvent::ResponseDone),
@@ -265,6 +380,82 @@ mod tests {
         let no_url = Auth::Token(Credential { secret: "ek".into(), ephemeral: true, url: None });
         let p = profile(&json!({ "voiceEngine": "openai" }), &no_url).await.unwrap();
         assert!(p.url.ends_with("/realtime?model=gpt-realtime-2.1"), "{}", p.url);
+    }
+
+    fn openai_profile() -> Profile {
+        Profile { url: String::new(), headers: vec![], model: "m".into(), dialect: Dialect::Ga, in_rate: 24_000, out_rate: 24_000, voice: "marin".into(), transcribe: Some("t".into()) }
+    }
+
+    #[test]
+    fn desktop_session_is_unchanged() {
+        let cfg = LinkConfig { instructions: "i".into(), tools: json!([]), settings: json!({}) };
+        let s = session(&openai_profile(), &cfg);
+        assert_eq!(s.pointer("/session/audio").unwrap(), &json!({
+            "input": {
+                "format": { "type": "audio/pcm", "rate": 24_000 },
+                "turn_detection": { "type": "server_vad", "interrupt_response": true, "create_response": true },
+                "transcription": { "model": "t" },
+            },
+            "output": { "format": { "type": "audio/pcm", "rate": 24_000 }, "voice": "marin" },
+        }));
+        assert!(!crate::phone_call(&cfg.settings));
+    }
+
+    #[test]
+    fn phone_hearing_steps_up_one_update_at_a_time() {
+        let ups = phone_hearing(&openai_profile());
+        assert_eq!(ups.len(), 2);
+        let first = &ups[0]["session"]["audio"]["input"];
+        assert_eq!(first["noise_reduction"], json!({ "type": "near_field" }));
+        assert_eq!(first["turn_detection"]["type"], "server_vad");
+        let second = &ups[1]["session"]["audio"]["input"];
+        assert_eq!(second["noise_reduction"], json!({ "type": "near_field" }));
+        assert_eq!(second["turn_detection"], json!({ "type": "semantic_vad", "eagerness": "low", "interrupt_response": false, "create_response": true }));
+        // Whole audio object each time: format, transcription and voice stay.
+        for u in &ups {
+            assert_eq!(u["session"]["type"], "realtime");
+            assert_eq!(u["session"]["audio"]["input"]["transcription"]["model"], "t");
+            assert_eq!(u["session"]["audio"]["output"]["voice"], "marin");
+            assert!(u["session"].get("instructions").is_none() && u["session"].get("tools").is_none());
+        }
+        let mut grok = openai_profile();
+        grok.dialect = Dialect::Grok;
+        assert!(phone_hearing(&grok).is_empty());
+    }
+
+    #[test]
+    fn a_turn_spoken_over_a_reply_is_answered_after_it() {
+        // Committed during a reply, transcript in before the reply ends.
+        let mut o = OwedReply::default();
+        o.response_started();
+        o.committed("item1");
+        assert!(!o.transcribed("item1", true));
+        assert!(o.response_done());
+        // Transcript arrives after the reply ended.
+        o.response_started();
+        o.committed("item2");
+        assert!(!o.response_done());
+        assert!(o.transcribed("item2", true));
+        // Background noise with no words: no reply.
+        o.response_started();
+        o.committed("item3");
+        assert!(!o.response_done());
+        assert!(!o.transcribed("item3", false));
+        // The phone cancelled the reply (accepted barge-in): the server answers by itself.
+        o.response_started();
+        o.cancel();
+        o.committed("item4");
+        assert!(!o.transcribed("item4", true));
+        assert!(!o.response_done());
+        // A turn while no reply is playing: the server answers by itself.
+        o.committed("item5");
+        assert!(!o.transcribed("item5", true));
+        // Another item's transcript doesn't count.
+        o.response_started();
+        o.committed("item6");
+        assert!(!o.response_done());
+        assert!(!o.transcribed("other", true));
+        assert!(o.transcribed("item6", true));
     }
 
     #[test]
