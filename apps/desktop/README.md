@@ -91,6 +91,17 @@ runs `mercury setup --headless --owner <name>`, `mercury service install`
 (optional) and `mercury start`, and attaches. Runtime releases must stay the
 GitHub "latest" release: publish desktop releases with `--latest=false`.
 
+On Windows, Desktop also detects the supported global npm installation when
+`mercury.cmd` or `mercury.ps1` is in the npm prefix (`%APPDATA%\npm` or PATH).
+It runs that package's `dist/index.js` with an adjacent or PATH `node.exe`,
+passing every argument separately. Shell shims are never interpreted, and
+existing standalone `mercury.exe` installations keep their precedence. An
+incomplete npm install or missing Node executable is not treated as runnable.
+
+Windows service status uses Task Scheduler's numeric COM state instead of
+localized `schtasks` labels. If the bounded query fails, status says unavailable;
+the HKCU Run fallback continues to use daemon liveness.
+
 ## Not yet here
 
 - QR pairing (`mercury://connect?...` deep link is registered; the phone
