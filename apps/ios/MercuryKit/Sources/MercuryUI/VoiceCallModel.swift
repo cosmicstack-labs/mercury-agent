@@ -44,6 +44,8 @@ final class VoiceCallModel {
 
   // Live
   private(set) var brain: CallBrain?
+  /// Keeps Mercury's own voice from interrupting it (live calls).
+  @ObservationIgnored var echoGuard: CallEchoGuard?
   @ObservationIgnored let meter: CallMeter
   @ObservationIgnored private var voice: VoiceLink?
   @ObservationIgnored private var audio: CallAudioEngine?
@@ -250,16 +252,27 @@ final class VoiceCallModel {
     gate.onDue = { [weak self] in
       DispatchQueue.main.async { MainActor.assumeIsolated { self?.brain?.bargeInDue() } }
     }
-    // Every frame goes to the voice as it is; the gate only listens.
-    engine.onFrame { [call, gate] data in
-      call.pushAudio(pcm16: data)
+    // While Mercury is audible, its own voice coming back into the mic must not count as the
+    // caller talking (it made Mercury stop itself mid-word): the echo guard sends silence in its
+    // place until a near voice is heard. When Mercury is quiet every frame goes up untouched.
+    let echo = CallEchoGuard()
+    let judge = CallTalkOverJudge(echo: echo, gate: CallBargeIn.judges(engine: s.engine) ? gate : nil)
+    echo.mercuryAudible = { [weak engine] in engine?.isPlaying ?? false }
+    echo.ownerTalking = { [judge] in judge.ownerTalking }
+    echo.onOpened = { [weak self] in
+      DispatchQueue.main.async { MainActor.assumeIsolated { self?.brain?.bargeInDue() } }
+    }
+    echoGuard = echo
+    engine.onFrame { [call, gate, echo] data in
+      for frame in echo.filter(data) { call.pushAudio(pcm16: frame) }
       gate.frame(data)
     }
     engine.onPlayback { [weak self] on in
       DispatchQueue.main.async { MainActor.assumeIsolated { self?.brain?.playbackChanged(on) } }
     }
     useLive(link: call, chat: ConversationCallChat(conversation: conversation, callId: callId), playback: engine)
-    brain?.bargeIn = gate
+    brain?.bargeIn = judge
+    brain?.logExtra = { [echo] in echo.summary() }
     brain?.begin()
   }
 
@@ -385,6 +398,7 @@ final class VoiceCallModel {
   }
 
   private func fail(_ message: String) {
+    CallLog.note("call failed: \(message.prefix(300))")
     guard !isEnded else { return }
     error = message
     if let brain, brain.ended == nil { brain.finish(.dropped(message)); return }

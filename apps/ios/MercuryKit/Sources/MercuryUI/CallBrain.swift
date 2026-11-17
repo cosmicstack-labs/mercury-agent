@@ -96,6 +96,8 @@ final class CallBrain {
   @ObservationIgnored var onEnd: (End) -> Void = { _ in }
   /// Judges barge-ins while Mercury speaks (is it the owner, or someone nearby?). None: every one counts.
   @ObservationIgnored var bargeIn: BargeInJudge?
+  /// Extra state for the call log's per-second line (the echo guard's levels).
+  @ObservationIgnored var logExtra: (() -> String)?
   /// Mute changed (from the screen or by voice): the model syncs CallKit and the meter.
   @ObservationIgnored var onMuted: (Bool) -> Void = { _ in }
 
@@ -405,7 +407,7 @@ final class CallBrain {
   // MARK: The status tick (every second)
 
   func tick() {
-    CallLog.summary("audible=\(mercuryAudible) playing=\(playback.isPlaying) responding=\(responding)")
+    CallLog.summary("audible=\(mercuryAudible) playing=\(playback.isPlaying) responding=\(responding) \(logExtra?() ?? "")")
     guard ended == nil else { return }
     let t = now()
     if t.timeIntervalSince(started) >= maxDuration { finish(.timeLimit); return }
