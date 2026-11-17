@@ -144,6 +144,7 @@ final class VoiceCallModel {
 
   /// Starts the call (once). The screen is already up: this runs everything else.
   func start() async {
+    CallLog.note("— call starting —")
     guard startTask == nil, !isEnded else { return }
     timeline.mark(.screen)
     let t = Task { await self.run() }
@@ -237,6 +238,7 @@ final class VoiceCallModel {
     let config = VoiceConfig(engine: s.engine, token: s.token, ephemeral: s.ephemeral, url: s.url, model: s.model, voice: s.voice,
                              instructions: s.instructions, toolsJson: s.toolsJSON)
     let listener = CallListener(model: self, audio: engine, meter: meter)
+    CallLog.note("live engine=\(s.engine) model=\(s.model ?? "-") voice=\(s.voice ?? "-")")
     let call: VoiceCall
     do { call = try VoiceCall.start(config: config, listener: listener) } catch {
       return fail("Couldn't start the voice: \(Self.plain(error))")
@@ -585,6 +587,7 @@ final class CallListener: VoiceListener, @unchecked Sendable {
   func onEvent(event: VoiceEvent) {
     switch event {
     case .audio(let pcm):
+      CallLog.count("event.audio")
       audio.play(pcm)
       lock.lock(); let first = !heardAudio; heardAudio = true; lock.unlock()
       if first { main { $0.firstAudio() } }

@@ -43,6 +43,7 @@ final class ConversationCallChat: CallChat {
         m.draft = question
         m.attachments = []
         m.media = nil
+        CallLog.note("ask_mercury → chat send (busy=\(m.busy) thread=\(m.threadId ?? "new"))")
         await m.send()
         if let e = m.error {
           m.error = nil
@@ -59,6 +60,11 @@ final class ConversationCallChat: CallChat {
 
   private func resolve(_ id: UUID, _ answer: CallAnswer) {
     guard let c = waiting.removeValue(forKey: id) else { return }
+    switch answer {
+    case .reply(let text, let failed): CallLog.note("ask_mercury answered (\(text.count) chars, failed steps \(failed.count)) thread=\(conversation.threadId ?? "-")")
+    case .failed(let e): CallLog.note("ask_mercury failed: \(e.prefix(200))")
+    default: CallLog.note("ask_mercury ended: \(answer)")
+    }
     order.removeAll { $0 == id }
     c.resume(returning: answer)
   }

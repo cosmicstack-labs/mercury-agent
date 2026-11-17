@@ -167,6 +167,7 @@ extension CallKitCall: CXProviderDelegate {
   nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
     MainActor.assumeIsolated {
       active = true
+      CallLog.note("callkit activated \(CallLog.routeLine())")
       onActivate()
     }
   }
@@ -174,6 +175,7 @@ extension CallKitCall: CXProviderDelegate {
   nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
     MainActor.assumeIsolated {
       active = false
+      CallLog.note("callkit deactivated")
       onDeactivate()
     }
   }
