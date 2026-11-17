@@ -67,6 +67,7 @@ import sh.mercuryagent.core.plugin
 import sh.mercuryagent.core.setPluginSetting
 import sh.mercuryagent.core.settingBool
 import sh.mercuryagent.core.setVoiceKey
+import sh.mercuryagent.core.VoiceSetup
 import sh.mercuryagent.core.settingText
 import sh.mercuryagent.core.voiceProviders
 import sh.mercuryagent.ui.components.ErrorText
@@ -131,6 +132,8 @@ fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit,
   var feature by remember(client) { mutableStateOf(false) }
   var loaded by remember(client) { mutableStateOf(false) }
   var editing by remember(client) { mutableStateOf<String?>(null) }
+  /** "Set up voice" is open. */
+  var settingUp by remember(client) { mutableStateOf(false) }
   /** What the person changed, shown before the save comes back. */
   val values = remember(client) { mutableStateMapOf<String, JsonElement>() }
 
@@ -205,6 +208,12 @@ fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit,
           if (r == null) {
             item(key = "providers:error") { RetryBlock(state.providersError ?: "Couldn't load the voice providers.", retry) }
           } else {
+            if (VoiceSetup.settingsOffersSetup(r.providers)) item(key = "setup") {
+              Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Talk to Mercury from this phone: pick a voice and paste its key.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(onClick = { settingUp = true }, modifier = Modifier.fillMaxWidth()) { Text("Set up voice") }
+              }
+            }
             voiceProviderRows(r) { p -> if (p.canEdit || p.id == "openai") editing = p.id }
           }
         }
@@ -236,6 +245,13 @@ fun VoiceSettings(client: MercuryClient, calls: CallManager, onBack: () -> Unit,
     }
   }
 
+  if (settingUp) {
+    VoiceSetupSheet(
+      client, calls, VoiceSetup.Trigger.Settings,
+      onDismiss = { settingUp = false; scope.launch { load() } },
+      onContinue = { settingUp = false; scope.launch { load() } },
+    )
+  }
   val open = editing?.let { id -> providers?.providers?.firstOrNull { it.id == id } }
   if (open != null) {
     VoiceKeySheet(
