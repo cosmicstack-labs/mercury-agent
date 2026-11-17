@@ -25,11 +25,14 @@ MainActor.assumeIsolated {
   // --- Set up voice (11a–11i): VoiceSetupSheet.swift ---
   let voiceSetupScreens = VoiceSetupGallery.screens()
   // --- end Set up voice ---
+  // --- Plugins (12a–12g): PluginsSettings.swift ---
+  let pluginScreens = PluginsGallery.screens()
+  // --- end Plugins ---
   // --- Media on its way (09a–09e) and Appearance (10a, 10d): AppearanceGallery.swift ---
   let mediaScreens = AppearanceGallery.screens() + AppearanceGallery.themed()
   // --- end Media/Appearance ---
   let only = CommandLine.arguments.dropFirst(2).first
-  for s in Gallery.screens() + artifactScreens + botScreens + chatScreens + callScreens + dictationScreens + voiceSetupScreens + mediaScreens
+  for s in Gallery.screens() + artifactScreens + botScreens + chatScreens + callScreens + dictationScreens + voiceSetupScreens + pluginScreens + mediaScreens
   where only == nil || s.name.hasPrefix(only!) {
     let (name, view) = (s.name, { s.view })
     for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {

@@ -31,7 +31,8 @@ struct MoreView: View {
       Section("Settings") {
         let client = store.client(for: connection)
         NavigationLink { ModelsSettings(client: client) } label: { Label("Models", systemImage: "cpu") }
-        NavigationLink { VoiceSettings(client: client) } label: { Label("Voice", systemImage: "waveform") }
+        NavigationLink { VoiceSettings(client: client, computer: connection.name) } label: { Label("Voice", systemImage: "waveform") }
+        NavigationLink { PluginsSettings(client: client, computer: connection.name) } label: { Label("Plugins", systemImage: "puzzlepiece.extension") }
         NavigationLink { ChannelsSettings(client: client) } label: { Label("Channels", systemImage: "bubble.left.and.bubble.right") }
         NavigationLink { AppearanceSettings() } label: { Label("Appearance", systemImage: "paintpalette") }
         NavigationLink { NotificationsSettings() } label: { Label("Notifications", systemImage: "bell") }

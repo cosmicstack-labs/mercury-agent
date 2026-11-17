@@ -38,6 +38,16 @@ struct VoiceScreen: Equatable {
     return .loaded(providers: providers != nil, optimus: optimus)
   }
 
+  /// "Install Optimus" (opens its plugin page) instead of the line saying where to install it,
+  /// when this Mercury takes plugin changes from the phone.
+  /// (An installed Optimus whose settings can't be read still counts as installed here.)
+  static func offersInstall(_ o: Optimus, plugin: PluginDetail?, canManage: Bool) -> Bool {
+    o == .notInstalled && canManage && !Plugins.isInstalled(plugin)
+  }
+
+  static let installTitle = "Install Optimus"
+  static let installLine = "For talking to Mercury on your computer and letting it use your screen"
+
   static let optimusLine = "Talking to Mercury on your computer comes with the Optimus plugin. Install it in Mercury Desktop (Plugins); it uses the same keys as above."
   static let optimusOnlyLine = "Voice comes with the Optimus plugin. Install it on your computer (Plugins in Mercury Desktop) to talk to Mercury in real time."
 }
@@ -56,9 +66,14 @@ struct VoiceSettings: View {
   @State var gate: OwnerGate
   @State var moreOpen = false
   @State var settingUp = false
+  /// This Mercury takes plugin installs from the phone (Plugins.canManage).
+  @State var canManagePlugins = false
+  /// The computer's name, for the Optimus page.
+  var computer: String
 
-  init(client: MercuryClient) {
+  init(client: MercuryClient, computer: String = "your computer") {
     self.client = client
+    self.computer = computer
     _gate = State(initialValue: OwnerGate(client: client))
   }
 
@@ -77,7 +92,7 @@ struct VoiceSettings: View {
           Button("Retry") { Task { await load() } }
         }
       case .loaded(let hasProviders, let optimus):
-        if let providers, hasProviders { providerSections(providers) }
+        if let providers, hasProviders { providerSections(providers, optimus: optimus) }
         else if let providersError {
           Section("Voice providers") {
             ErrorText(text: providersError)
@@ -102,7 +117,7 @@ struct VoiceSettings: View {
     }
   }
 
-  @ViewBuilder func providerSections(_ v: VoiceProviders) -> some View {
+  @ViewBuilder func providerSections(_ v: VoiceProviders, optimus: VoiceScreen.Optimus) -> some View {
     let phone = v.providers.filter(\.forPhone)
     let more = v.providers.filter { !$0.forPhone }
     if VoiceSetup.settingsOffersSetup(v) {
@@ -120,6 +135,7 @@ struct VoiceSettings: View {
     } header: { Text("Voice providers") } footer: {
       Text("Keys stay on your computer, shared with Optimus. Calls use OpenAI or Gemini; dictation uses OpenAI, Deepgram or ElevenLabs.")
     }
+    if VoiceScreen.offersInstall(optimus, plugin: plugin, canManage: canManagePlugins) { installOptimusCard }
     Section("In use") {
       LabeledContent("Calls use", value: v.capabilities.callName ?? "Not set up")
       if v.capabilities.callName == nil, let s = v.capabilities.callSetup { Text(s).font(.system(size: 13)).foregroundStyle(Theme.ink3) }
@@ -161,6 +177,8 @@ struct VoiceSettings: View {
         }
         PluginForm(pluginId: plugin.id, fields: plugin.settings ?? [], groups: plugin.settingGroups ?? [], gate: gate) { await load() }
       }
+    case .notInstalled where VoiceScreen.offersInstall(o, plugin: plugin, canManage: canManagePlugins):
+      if alone { installOptimusCard }
     case .notInstalled:
       Section(alone ? "" : "On your computer") {
         Text(alone ? VoiceScreen.optimusOnlyLine : VoiceScreen.optimusLine).foregroundStyle(Theme.ink2)
@@ -169,6 +187,24 @@ struct VoiceSettings: View {
       Section("On your computer") {
         ErrorText(text: "Couldn't load Optimus's voice settings. \(why)")
         Button("Retry") { Task { await load() } }
+      }
+    }
+  }
+
+  /// "Install Optimus": opens its plugin page (what it can do, Install).
+  var installOptimusCard: some View {
+    Section {
+      NavigationLink {
+        PluginDetailScreen(client: client, computer: computer, plugin: plugin ?? PluginDetail(id: "optimus", name: "Optimus"), canManage: true)
+      } label: {
+        HStack(spacing: 12) {
+          PluginMark(name: "Optimus", size: 40)
+          VStack(alignment: .leading, spacing: 2) {
+            Text(VoiceScreen.installTitle).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.ink)
+            Text(VoiceScreen.installLine).font(.system(size: 13)).foregroundStyle(Theme.ink2)
+          }
+        }
+        .padding(.vertical, 4)
       }
     }
   }
@@ -182,6 +218,7 @@ struct VoiceSettings: View {
 
   func load() async {
     async let pluginLoad: Result<PluginDetail?, Error> = { do { return .success(try await client.plugin("optimus")) } catch { return .failure(error) } }()
+    async let features = try? await client.health().features
     async let providersLoad: Result<VoiceProviders?, Error> = { do { return .success(try await client.voiceProvidersIfSupported()) } catch { return .failure(error) } }()
     switch await pluginLoad {
     case .success(let p): plugin = p; pluginError = nil
@@ -191,6 +228,7 @@ struct VoiceSettings: View {
     case .success(let v): providers = v; providersError = nil
     case .failure(let e): providersError = e.localizedDescription
     }
+    canManagePlugins = Plugins.canManage(await features)
     loaded = true
   }
 }

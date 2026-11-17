@@ -163,9 +163,12 @@ public struct PluginField: Decodable, Identifiable, Sendable {
   }
 }
 
-public struct PluginDetail: Decodable, Sendable {
+/// One plugin as GET /api/plugins lists it and GET /api/plugins/:id describes it (PluginListItem in
+/// src/plugins/types.ts). A catalog-only entry (not installed) has no `installedVersion`.
+public struct PluginDetail: Decodable, Sendable, Identifiable {
   public struct Group: Decodable, Sendable, Identifiable { public var id: String; public var label: String; public var description: String?; public var ready: Bool }
   public struct Missing: Decodable, Sendable { public var key: String; public var needs: String; public var fix: String }
+  public struct Disabled: Decodable, Sendable { public var code: String?; public var message: String? }
   public var id: String
   public var name: String
   public var enabled: Bool
@@ -174,6 +177,44 @@ public struct PluginDetail: Decodable, Sendable {
   public var settings: [PluginField]?
   public var settingGroups: [Group]?
   public var missing: [Missing]?
+  public var description: String?
+  /// "in-process" or "out-of-process".
+  public var kind: String?
+  /// "official", "community" or "local".
+  public var tier: String?
+  /// available, installed, enabled, disabled, update-available, incompatible, error.
+  public var status: String?
+  public var latestVersion: String?
+  public var sizeBytes: Int?
+  public var tools: [String]?
+  public var permissions: PluginPermissions?
+  public var disabled: Disabled?
+  public var lastError: String?
+  public var incompatibleReason: String?
+
+  public init(id: String, name: String, enabled: Bool = false, running: Bool = false, installedVersion: String? = nil,
+              description: String? = nil, kind: String? = nil, tier: String? = nil, status: String? = nil,
+              latestVersion: String? = nil, tools: [String]? = nil, permissions: PluginPermissions? = nil,
+              lastError: String? = nil, incompatibleReason: String? = nil) {
+    self.id = id; self.name = name; self.enabled = enabled; self.running = running; self.installedVersion = installedVersion
+    self.description = description; self.kind = kind; self.tier = tier; self.status = status; self.latestVersion = latestVersion
+    self.tools = tools; self.permissions = permissions; self.lastError = lastError; self.incompatibleReason = incompatibleReason
+  }
+}
+
+/// What a plugin may reach (the manifest's `permissions`; a catalog entry only has network and secrets).
+public struct PluginPermissions: Decodable, Sendable, Equatable {
+  public struct Provider: Decodable, Sendable, Equatable { public var unlocks: String? }
+  public var network: [String]?
+  public var secrets: [String]?
+  /// It sees the screen and uses the mouse and keyboard (Plugin API 1.2).
+  public var desktop: Bool?
+  public var optionalSecrets: [String: String]?
+  public var providers: [String: Provider]?
+
+  public init(network: [String]? = nil, secrets: [String]? = nil, desktop: Bool? = nil, optionalSecrets: [String: String]? = nil, providers: [String: Provider]? = nil) {
+    self.network = network; self.secrets = secrets; self.desktop = desktop; self.optionalSecrets = optionalSecrets; self.providers = providers
+  }
 }
 
 public struct VoiceKeyCheck: Decodable, Sendable { public var ok: Bool; public var verified: Bool; public var message: String }
