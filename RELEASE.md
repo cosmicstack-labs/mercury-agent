@@ -1,36 +1,18 @@
-# Release v1.5.3
+# Release v1.5.4
 
-## ☿ Mercury Agent v1.5.3
+## ☿ Mercury Agent v1.5.4
 
-Ready for Mercury on your phone, Google Workspace in one command, and bots that can't be steered by what they read.
+Set up voice from your phone, and fewer approval prompts.
 
-### Mercury on your phone
-The native iPhone and Android apps connect to this release. They aren't in the app stores yet.
-- **Real-time voice calls.** The phone gets a short-lived token from your Mercury and runs Mercury's own voice engine, so a call answers in about two seconds. Your API keys never leave your computer.
-- **Calls hear you, not the room.** Background talk and noise don't count as you speaking.
-- **Live dictation** types your words into the message box as you speak, with OpenAI, Deepgram or ElevenLabs.
-- **Chat lists show a preview** of each chat's last message.
+### Voice from any device
+- **Set voice keys from your phone**, with or without Optimus: OpenAI, Gemini, ElevenLabs, Deepgram and more. Mercury checks each key before saving it. A key is never shown back to a device, only its last four characters.
+- **One place for keys.** A key saved from the phone, Mercury Desktop or Optimus is the same key everywhere.
 
-### Google Workspace
-- **`mercury google connect`** connects Gmail, Drive and Docs.
-  - It installs Google's `gws` tool, pinned and checksum-checked.
-  - It signs you in to your own Google account.
-  - It adds Mercury's Google Workspace skill.
-  - Access is read-only unless you add `--write`.
-  - `/google connect` works from any chat.
-- **Sends, shares, uploads and deletes always ask you**, even under Allow All. They're refused in scheduled tasks and for bots.
-- **Your Google sign-in stays out of reach** of Mercury's own tools, and Google tokens and keys are masked in command output.
+### Fewer prompts
+- **Only plugin installs ask from another device.** Changing a plugin's settings, like Optimus's voice, and setting voice keys no longer ask for your approval. Both are still recorded in the audit log.
 
-### Security
-- **Bots keep the full protection against planted instructions**, whatever the model. It's relaxed only in a chat you're in.
-- **A bot's own tools are guarded:** scheduling runs, creating bots and messaging the fleet ask you after a bot reads outside content.
-- **No laundering across the fleet.** Work passed between bots carries what the sender read.
-
-### Also
-- **A new device token is shown whole** in the terminal, with **Copy to clipboard**.
-- **Bot faces are drawn properly again** in Mercury Desktop.
-- **`mercury skills install --from`** accepts a SKILL.md without an `id`.
-- **Windows opens links whole**, and only http and https links.
+### Fixes
+- **A setting changed from a phone no longer snaps back** when the plugin takes a while to restart.
 
 ### Install
 - **Desktop:** [mercuryagent.sh/download](https://mercuryagent.sh/download) · Mac: `curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh`
