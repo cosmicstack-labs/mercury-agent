@@ -91,11 +91,28 @@ final class DictationModel {
   func tap() {
     if active { stop(); return }
     guard available else {
-      notice = unavailableReason ?? VoiceCapabilities.defaultDictationSetup
-      haptics.play(.failed)
+      // No speech service yet, on a Mercury that can set one up: "Set up voice" instead of the line.
+      if !callRunning, let caps = capabilities, !caps.dictation, let client, let conversation {
+        Task {
+          if VoiceSetup.decide(.dictation, supported: await client.hasVoiceProviders(), caps: caps) == .setup {
+            notice = nil
+            conversation.voiceSetup = .dictation
+          } else {
+            unavailable()
+          }
+        }
+        return
+      }
+      unavailable()
       return
     }
     start()
+  }
+
+  /// The mic can't be used: say why.
+  func unavailable() {
+    notice = unavailableReason ?? VoiceCapabilities.defaultDictationSetup
+    haptics.play(.failed)
   }
 
   func start() {

@@ -74,6 +74,8 @@ final class ConversationModel {
   /// A call was asked for from outside the chat (the side panel, a Home Screen quick action):
   /// the chat's screen starts it and clears this.
   var callRequested = false
+  /// "Set up voice" is showing (a call or the mic was tapped on a Mercury that can't do it yet).
+  var voiceSetup: VoiceSetup.Trigger?
   var titleCheck: Task<Void, Never>?
   var stopFallback: Task<Void, Never>?
   /// A turn ended, with Mercury's reply when it gave one (a voice call reads it aloud).

@@ -45,7 +45,7 @@ public enum DictationGallery {
   static var unavailable: AnyView {
     let m = model(VoiceCapabilities(call: true, callEngine: "gemini", dictation: false,
       dictationSetup: "Live dictation needs a speech provider. Add an OpenAI key in Settings → Models, or a Deepgram or ElevenLabs key in Settings → Voice. Gemini can't do it: it only transcribes while it's also replying."))
-    m.dictation.tap()
+    m.dictation.unavailable()
     return screen(m)
   }
 

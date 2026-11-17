@@ -50,12 +50,13 @@ struct DictationTextTests {
 @MainActor
 struct DictationModelTests {
   func conversation(_ caps: VoiceCapabilities?) -> ConversationModel {
-    let c = ConversationModel(client: MercuryClient(baseURL: URL(string: "http://localhost")!), thread: nil)
+    // Its own address: other suites' saved keys (VoiceCapabilities.changed) are for theirs. Nothing listens on port 9.
+    let c = ConversationModel(client: MercuryClient(baseURL: URL(string: "http://127.0.0.1:9")!), thread: nil)
     c.dictation.capabilities = caps
     return c
   }
 
-  @Test func enabledOnlyWhenTheMercuryCanDictate() {
+  @Test func enabledOnlyWhenTheMercuryCanDictate() async throws {
     let on = conversation(VoiceCapabilities(call: true, dictation: true, dictationEngine: "openai"))
     #expect(on.dictation.available)
     #expect(on.dictation.unavailableReason == nil)
@@ -65,6 +66,9 @@ struct DictationModelTests {
     #expect(!off.dictation.available)
     off.dictation.tap()
     #expect(off.dictation.phase == .idle)
+    // It asks the Mercury whether it can set up voice first (no Mercury here: it can't, so the line shows).
+    for _ in 0..<100 where off.dictation.notice == nil { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(off.voiceSetup == nil)
     #expect(off.dictation.notice == "Live dictation needs a speech provider. Add an OpenAI key in Settings → Models.")
     #expect(off.dictation.haptics.played == [.failed])
 

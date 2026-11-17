@@ -55,6 +55,7 @@ struct VoiceSettings: View {
   @State var editing: VoiceProvider?
   @State var gate: OwnerGate
   @State var moreOpen = false
+  @State var settingUp = false
 
   init(client: MercuryClient) {
     self.client = client
@@ -90,6 +91,9 @@ struct VoiceSettings: View {
     .task { await load() }
     .refreshable { await load() }
     .ownerGate(gate)
+    .sheet(isPresented: $settingUp, onDismiss: { Task { await load() } }) {
+      VoiceSetupSheet(client: client, trigger: .settings) { _ in settingUp = false }
+    }
     .sheet(item: $editing) { p in
       VoiceKeySheet(client: client, provider: p) { saved in
         if let saved { apply(saved) }
@@ -101,6 +105,16 @@ struct VoiceSettings: View {
   @ViewBuilder func providerSections(_ v: VoiceProviders) -> some View {
     let phone = v.providers.filter(\.forPhone)
     let more = v.providers.filter { !$0.forPhone }
+    if VoiceSetup.settingsOffersSetup(v) {
+      Section {
+        Button { settingUp = true } label: {
+          Label("Set up voice", systemImage: "waveform").font(.system(size: 16, weight: .semibold)).frame(maxWidth: .infinity)
+        }
+        .buttonStyle(PrimaryButtonStyle())
+        .listRowBackground(Color.clear)
+        .listRowInsets(EdgeInsets())
+      } footer: { Text("Talk to Mercury and dictate from your phone. Takes a minute.") }
+    }
     Section {
       ForEach(phone) { providerRow($0) }
     } header: { Text("Voice providers") } footer: {

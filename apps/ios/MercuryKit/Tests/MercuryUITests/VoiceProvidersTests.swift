@@ -121,7 +121,9 @@ struct VoiceProvidersTests {
   @MainActor @Test func theMicReChecksWhenAKeyIsSaved() async {
     let d = DictationModel()
     d.capabilities = VoiceCapabilities(call: false, dictation: false, dictationSetup: "Add a key.")
-    NotificationCenter.default.post(name: VoiceCapabilities.changed, object: VoiceCapabilities(call: true, dictation: true, dictationEngine: "deepgram"))
+    NotificationCenter.default.post(name: VoiceCapabilities.changed, object: VoiceCapabilities(call: true, dictation: true, dictationEngine: "deepgram"),
+                                    // An address of its own, so other suites' conversations ignore it.
+                                    userInfo: ["baseURL": URL(string: "http://mic-recheck.test")!])
     #expect(d.capabilities?.dictation == true)
   }
 }
