@@ -1,30 +1,61 @@
 import SwiftUI
 
-/// Mercury's palette, the same tokens as Mercury Desktop (apps/desktop/src/styles/tokens.css):
-/// a near-white paper in light mode, Mercury's ground in dark mode, one accent.
-/// Amber (needs you) and red (halt) are semantic and fixed. The accent is the person's tint
-/// (Settings → Appearance), Mercury's green unless changed: views that draw it follow a change.
+/// Mercury on iPhone is monochrome, like the Android app and the ChatGPT and Grok apps: white
+/// paper in light mode, true black in dark mode, greys for surfaces, and ink (black on light,
+/// white on dark) for primary actions. Mercury's green lives only in the mark and the small
+/// "working" dots; amber (needs you) and red (failed) are the only other colours.
+/// The same values as Android's `mercuryColorScheme` (apps/android/…/ui/theme/Color.kt).
 public enum Theme {
-  public static let bg = Color(light: 0xF7F7F5, dark: 0x0F1113)
-  public static let bgSoft = Color(light: 0xF0F0ED, dark: 0x141719)
-  public static let surface = Color(light: 0xFFFFFF, dark: 0x171A1D)
-  public static let surface2 = Color(light: 0xF3F3F0, dark: 0x1D2125)
-  public static let ink = Color(light: 0x16181A, dark: 0xE6EAED)
-  public static let ink2 = Color(light: 0x4B5157, dark: 0xAEB6BC)
-  public static let ink3 = Color(light: 0x7A8187, dark: 0x7E878E)
-  public static let ink4 = Color(light: 0xA3A9AE, dark: 0x545C63)
-  public static var accent: Color { Appearance.shared.accent }
-  /// Text and icons on the accent: white, or dark when the tint is too light for white.
-  public static var onAccent: Color { Appearance.shared.onAccent }
-  public static let amber = Color(light: 0xB7791F, dark: 0xF5C451)
-  public static let red = Color(light: 0xC53030, dark: 0xFF6B6B)
-  public static let cyan = Color(light: 0x0E7C8C, dark: 0x7FD8E8)
-  public static let line = Color(light: 0x16181A, dark: 0xFFFFFF).opacity(0.08)
+  public static let bg = Color(Palette.bg)
+  /// The side panel and other quiet grounds.
+  public static let bgSoft = Color(Palette.bgSoft)
+  public static let surface = Color(Palette.surface)
+  public static let surface2 = Color(Palette.surface2)
+  /// The selected row, the pressed row.
+  public static let surface3 = Color(Palette.surface3)
+  public static let ink = Color(Palette.ink)
+  public static let ink2 = Color(Palette.ink2)
+  public static let ink3 = Color(Palette.ink3)
+  public static let ink4 = Color(Palette.ink4)
+  /// Primary actions: ink.
+  public static let accent = Color(Palette.accent)
+  /// Text and icons on `accent`.
+  public static let onAccent = Color(Palette.onAccent)
+  /// Mercury's green: the mark, "working" and "connected" dots. Nowhere else.
+  public static let green = Color(Palette.green)
+  public static let amber = Color(Palette.amber)
+  public static let red = Color(Palette.red)
+  /// A neutral stand-in where cyan used to mark thinking: the app stays monochrome.
+  public static let cyan = ink3
+  public static let line = Color(light: 0x000000, dark: 0xFFFFFF).opacity(0.08)
 
   public static let radius: CGFloat = 18
 }
 
+/// Theme's numbers, light and dark, kept apart so tests can check them without drawing.
+public enum Palette {
+  public typealias Pair = (light: UInt32, dark: UInt32)
+  public static let bg: Pair = (0xFFFFFF, 0x000000)
+  public static let bgSoft: Pair = (0xF9F9F9, 0x0E0E0E)
+  public static let surface: Pair = (0xFFFFFF, 0x141414)
+  public static let surface2: Pair = (0xF4F4F4, 0x1E1E1E)
+  public static let surface3: Pair = (0xE8E8E8, 0x282828)
+  public static let ink: Pair = (0x0D0D0D, 0xECECEC)
+  public static let ink2: Pair = (0x5D5D5D, 0xA3A3A3)
+  public static let ink3: Pair = (0x7A7A7A, 0x8E8E8E)
+  public static let ink4: Pair = (0xABABAB, 0x5E5E5E)
+  public static let accent: Pair = (0x0D0D0D, 0xF2F2F2)
+  public static let onAccent: Pair = (0xFFFFFF, 0x000000)
+  public static let green: Pair = (0x1A9E6E, 0x34E1A1)
+  public static let amber: Pair = (0xB7791F, 0xF5C451)
+  public static let red: Pair = (0xC53030, 0xFF6B6B)
+  /// Everything but the status colours: greys only.
+  public static let monochrome: [Pair] = [bg, bgSoft, surface, surface2, surface3, ink, ink2, ink3, ink4, accent, onAccent]
+}
+
 extension Color {
+  init(_ p: Palette.Pair) { self.init(light: p.light, dark: p.dark) }
+
   init(hex: UInt32) {
     self.init(
       .sRGB,

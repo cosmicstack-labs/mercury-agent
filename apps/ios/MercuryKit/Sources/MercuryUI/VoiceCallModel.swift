@@ -241,11 +241,23 @@ final class VoiceCallModel {
     do { call = try VoiceCall.start(config: config, listener: listener) } catch {
       return fail("Couldn't start the voice: \(Self.plain(error))")
     }
-    engine.onFrame { [call] data in call.pushAudio(pcm16: data) }
+    // Barge-ins while Mercury speaks are judged on the phone's own microphone level (OpenAI
+    // Realtime leaves interrupting to the phone on a phone call; Gemini Live cuts in by itself).
+    let gate = CallBargeIn(enabled: CallBargeIn.judges(engine: s.engine))
+    gate.mercuryAudible = { [weak engine] in engine?.isPlaying ?? false }
+    gate.onDue = { [weak self] in
+      DispatchQueue.main.async { MainActor.assumeIsolated { self?.brain?.bargeInDue() } }
+    }
+    // Every frame goes to the voice as it is; the gate only listens.
+    engine.onFrame { [call, gate] data in
+      call.pushAudio(pcm16: data)
+      gate.frame(data)
+    }
     engine.onPlayback { [weak self] on in
       DispatchQueue.main.async { MainActor.assumeIsolated { self?.brain?.playbackChanged(on) } }
     }
     useLive(link: call, chat: ConversationCallChat(conversation: conversation, callId: callId), playback: engine)
+    brain?.bargeIn = gate
     brain?.begin()
   }
 
@@ -556,8 +568,9 @@ final class VoiceCallModel {
   }
 }
 
-/// The engine's events, from its own thread: Mercury's audio goes straight to the player (and a
-/// barge-in flushes it straight away); everything else goes to the model on the main thread, in order.
+/// The engine's events, from its own thread: Mercury's audio goes straight to the player;
+/// everything else goes to the model on the main thread, in order (a barge-in included: the brain
+/// decides whether it's the owner before Mercury's voice stops).
 final class CallListener: VoiceListener, @unchecked Sendable {
   private weak var model: VoiceCallModel?
   private let audio: CallAudioEngine
@@ -577,9 +590,6 @@ final class CallListener: VoiceListener, @unchecked Sendable {
       if first { main { $0.firstAudio() } }
     case .levels(let mic, let voice):
       meter.setEngine(mic: mic, voice: voice)
-    case .speechStarted:
-      audio.flush()
-      main { $0.voiceEvent(event) }
     default:
       main { $0.voiceEvent(event) }
     }

@@ -3,68 +3,6 @@ import SwiftUI
 @testable import MercuryUI
 @testable import MercuryCore
 
-@Suite struct TintTests {
-  @Test func hexRoundTrips() {
-    #expect(Tint.rgb("#1A9E6E") == 0x1A9E6E)
-    #expect(Tint.rgb("1a9e6e") == 0x1A9E6E)
-    #expect(Tint.rgb(" #19e ") == 0x1199EE)
-    #expect(Tint.rgb("#12345") == nil)
-    #expect(Tint.rgb("zzzzzz") == nil)
-    #expect(Tint.hex(0x0E7C8C) == "#0E7C8C")
-    for p in Tint.presets { #expect(Tint.rgb(p.hex) == p.light) }
-  }
-
-  @Test func colourToHex() {
-    #expect(Tint.hex(Color(hex: 0x6D4CCC)) == "#6D4CCC")
-    #expect(Tint.hex(Color(.sRGB, red: 1, green: 1, blue: 1)) == "#FFFFFF")
-    #expect(Tint.hex(Color(.sRGB, red: 0, green: 0, blue: 0)) == "#000000")
-  }
-
-  @Test func contrast() {
-    #expect(abs(Tint.contrast(0xFFFFFF, 0x000000) - 21) < 0.01)
-    #expect(Tint.contrast(0x777777, 0x777777) == 1)
-  }
-
-  @Test func textOnATintStaysReadable() {
-    // Mercury's green and the deep shades carry white text, as on Desktop.
-    #expect(Tint.on(0x1A9E6E) == 0xFFFFFF)
-    #expect(Tint.on(0x6D4CCC) == 0xFFFFFF)
-    #expect(Tint.on(0x0E7C8C) == 0xFFFFFF)
-    // Light tints (the dark-mode shades, yellow) carry dark text.
-    #expect(Tint.on(0x34E1A1) == Tint.darkText)
-    #expect(Tint.on(0xF5C451) == Tint.darkText)
-    #expect(Tint.on(0xFFE14D) == Tint.darkText)
-    #expect(Tint.on(0xFFFFFF) == Tint.darkText)
-    #expect(Tint.on(0x000000) == 0xFFFFFF)
-  }
-
-  @Test func everyPresetReadsOnItsGround() {
-    for p in Tint.presets {
-      #expect(Tint.contrast(p.light, Tint.lightGround) >= 3, "\(p.name) light")
-      #expect(Tint.contrast(p.dark, Tint.darkGround) >= 3, "\(p.name) dark")
-      #expect(Tint.contrast(p.light, p.pair.onLight) >= 3, "\(p.name) text on light")
-      #expect(Tint.contrast(p.dark, p.pair.onDark) >= 3, "\(p.name) text on dark")
-    }
-    #expect(Tint.presets.first == Tint.mercury)
-    #expect(Set(Tint.presets.map(\.id)).count == Tint.presets.count)
-  }
-
-  @Test func aCustomColourIsMadeLegible() {
-    // Pale yellow is darkened for the light ground, kept for the dark one.
-    let p = Tint.pair(for: "#FFE14D")
-    #expect(p.light != 0xFFE14D && Tint.contrast(p.light, Tint.lightGround) >= 3)
-    #expect(p.dark == 0xFFE14D)
-    // Navy is lightened for the dark ground.
-    let n = Tint.pair(for: "#14213D")
-    #expect(n.light == 0x14213D)
-    #expect(Tint.contrast(n.dark, Tint.darkGround) >= 3)
-    // A preset's hex gives the preset, both shades.
-    #expect(Tint.pair(for: "#6d4ccc") == Tint.presets.first { $0.id == "violet" }!.pair)
-    #expect(Tint.pair(for: nil) == Tint.mercury.pair)
-    #expect(Tint.pair(for: "nonsense") == Tint.mercury.pair)
-  }
-}
-
 @Suite(.serialized) struct AppearanceStoreTests {
   func defaults() -> UserDefaults {
     let d = UserDefaults(suiteName: "appearance-tests")!
@@ -72,40 +10,31 @@ import SwiftUI
     return d
   }
 
-  @Test func remembersTintAndThemeOnThisDevice() {
+  @Test func remembersTheThemeOnThisDevice() {
     let d = defaults()
     let a = Appearance(defaults: d)
-    #expect(a.tintHex == nil && a.mode == .system && a.preset == Tint.mercury)
-    a.setTint("#0e7c8c")
+    #expect(a.mode == .system && a.mode.scheme == nil)
     a.mode = .dark
-    #expect(d.string(forKey: "appearance.tint") == "#0E7C8C")
     let b = Appearance(defaults: d)
-    #expect(b.tintHex == "#0E7C8C" && b.mode == .dark && b.preset?.id == "teal")
-    #expect(b.mode.scheme == .dark)
+    #expect(b.mode == .dark && b.mode.scheme == .dark)
   }
 
-  @Test func resetGoesBackToMercury() {
+  @Test func anOldTintIsForgotten() {
     let d = defaults()
-    let a = Appearance(defaults: d)
-    a.setTint("#FFE14D")
-    #expect(a.preset == nil)
-    a.setTint(nil)
-    #expect(a.tintHex == nil && a.pair == Tint.mercury.pair)
+    d.set("#6D4CCC", forKey: "appearance.tint")
+    _ = Appearance(defaults: d)
     #expect(d.string(forKey: "appearance.tint") == nil)
-    // Picking Mercury's own green is the default, not a custom colour.
-    a.setTint(Tint.mercury.hex)
-    #expect(a.tintHex == nil)
   }
 
-  @Test @MainActor func previewingDoesNotRemember() {
-    let d = defaults()
-    let a = Appearance(defaults: d)
-    let seen = a.previewing("#6D4CCC") { a.preset?.id }
-    #expect(seen == "violet")
-    #expect(a.tintHex == nil)
-    #expect(d.string(forKey: "appearance.tint") == nil)
+  /// Monochrome, like Android: ink for actions, Mercury's green only for status.
+  @Test func theThemeIsMonochrome() {
+    func grey(_ v: UInt32) -> Bool { (v >> 16) & 0xFF == (v >> 8) & 0xFF && (v >> 8) & 0xFF == v & 0xFF }
+    for p in Palette.monochrome { #expect(grey(p.light) && grey(p.dark)) }
+    #expect(Palette.bg.light == 0xFFFFFF && Palette.bg.dark == 0x000000)
+    #expect(!grey(Palette.green.light) && !grey(Palette.amber.dark) && !grey(Palette.red.light))
   }
 }
+
 
 @Suite struct MediaGeneratingTests {
   typealias Shape = TurnTrace.MediaShape

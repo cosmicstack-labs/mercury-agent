@@ -154,21 +154,51 @@ public enum ChatGallery {
     }
   }
 
-  static var welcome: AnyView {
+  /// `typing`: the keyboard is up (`keyboard` points of it, drawn as a grey block); `height`: a
+  /// shorter phone (667 pt, an iPhone SE, less the status bar and home area).
+  static func welcomeScreen(_ pick: SuggestionPick, code: Bool = false, typing: Bool = false, keyboard: CGFloat = 0, height: CGFloat? = nil) -> AnyView {
     let m = model("New chat")
-    let pick = SuggestionPick(greeting: "Good evening, Salman", subtitle: "Ready to wrap up Sunday with Mercury or the community", items: [
+    m.threadId = nil
+    m.workspace = WorkspaceInfo(cwd: "/Users/salman/mercury", name: "mercury")
+    m.code = code
+    m.catalog = catalog
+    return screen {
+      VStack(spacing: 0) {
+        topBar(m)
+        NewChatSpace(pick: pick, ideas: Array(pick.items.prefix(2)), media: .unknown, typing: typing, onMedia: { _ in }, onPick: { _ in })
+        Composer(model: m, focus: FocusState<Bool>().projectedValue, still: true, onCall: {})
+        if keyboard > 0 { Theme.surface3.frame(height: keyboard).overlay(Text("keyboard").foregroundStyle(Theme.ink3)) }
+      }
+      .frame(height: height)
+    }
+  }
+
+  static var welcomeTyping: AnyView { welcomeScreen(welcomePick, typing: true, keyboard: 291) }
+  /// An iPhone SE (667 pt): 667 − 20 status bar = 647, no home indicator.
+  static var welcomeSmall: AnyView { welcomeScreen(welcomePick, height: 647) }
+  static var welcomeSmallTyping: AnyView { welcomeScreen(welcomePick, typing: true, keyboard: 216, height: 647) }
+
+  static let catalog = ModelCatalog(
+    models: [
+      ModelChoice(name: "anthropic", model: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", group: "Claude", isCurrent: true),
+      ModelChoice(name: "anthropic", model: "claude-haiku-4-5", label: "Claude Haiku 4.5", group: "Claude"),
+      ModelChoice(name: "openrouter", model: "openai/gpt-5", label: "GPT-5", group: "GPT"),
+    ],
+    current: ModelChoice(name: "anthropic", model: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", group: "Claude", isCurrent: true),
+    defaultProvider: "anthropic", defaultModel: "claude-sonnet-4-5")
+
+  static var welcome: AnyView { welcomeScreen(welcomePick) }
+
+  static var welcomePick: SuggestionPick {
+    SuggestionPick(greeting: "Good evening, Salman", subtitle: "Ready to wrap up Sunday with Mercury or the community", items: [
       Suggestion(id: "a", title: "Draft r/OpenSourceEvolved welcome message", prompt: "Help me write…", why: "You're setting up the community rules", kind: "create"),
       Suggestion(id: "b", title: "Plan Mercury promo push for this week", prompt: "What's the best sequence…", why: "You're focusing on conversion campaigns", kind: "plan"),
       Suggestion(id: "c", title: "Check Dun & Bradstreet registration", prompt: "Has my DUNS number…", why: "You're obtaining DUNS for Cosmic Stack", kind: "check"),
       Suggestion(id: "d", title: "Pick up the Shehzen Runner launch", prompt: "When should we launch…", why: "You built the 30KB HTML5 game", kind: "continue"),
     ])
-    return screen { bottom(m) { WelcomeView(model: WelcomeModel(client: client, pick: pick)) { _ in } } }
   }
 
-  static var welcomePlain: AnyView {
-    let m = model("New chat")
-    return screen { bottom(m) { WelcomeView(model: WelcomeModel(client: client, pick: SuggestionPick(greeting: nil, subtitle: nil, items: []))) { _ in } } }
-  }
+  static var welcomePlain: AnyView { welcomeScreen(SuggestionPick(greeting: nil, subtitle: nil, items: []), code: true) }
 
   static var composer: AnyView {
     let m = model()
@@ -206,57 +236,102 @@ public enum ChatGallery {
     }
   }
 
-  static var runningChats: AnyView {
-    let now = Date.now
-    let rows: [(ChatThread, ChatsModel.Status?)] = [
-      (ChatThread(id: "1", title: "Fox images", createdAt: now), .working),
-      (ChatThread(id: "2", title: "Speed up the dashboard", createdAt: now.addingTimeInterval(-120)), .waiting),
-      (ChatThread(id: "3", title: "Ship the landing page", createdAt: now.addingTimeInterval(-600)), .needsYou("Run command: npm run deploy")),
-      (ChatThread(id: "4", title: "Weekly report", createdAt: now.addingTimeInterval(-7200)), nil),
-      (ChatThread(id: "5", title: "Trip to Gulmarg", createdAt: now.addingTimeInterval(-90_000)), nil),
-    ]
+  /// The chat screen's bar, as the app draws it: round buttons, Ask | Code, the chat's name.
+  static func topBar(_ m: ConversationModel) -> some View {
+    ConversationHeader(model: m, onMenu: {}, onNewChat: {})
+  }
+
+  /// A side panel with a list in it: read marks from a scratch store, so chosen rows are unread.
+  static func drawerModel(_ threads: [ChatThread], status: [String: ChatsModel.Status] = [:], unread: Set<String> = [],
+                          query: String = "", savedOnly: Bool = false) -> ChatsModel {
+    let d = UserDefaults(suiteName: "gallery-drawer")!
+    d.removePersistentDomain(forName: "gallery-drawer")
+    var marks: [String: Double] = ["_since": Date.now.addingTimeInterval(-400 * 86_400).timeIntervalSince1970]
+    for t in threads where !unread.contains(t.id) { marks[t.id] = Date.now.addingTimeInterval(60).timeIntervalSince1970 }
+    d.set(marks, forKey: "chats.seen.gallery")
+    let m = ChatsModel(client: client, scope: "gallery", defaults: d)
+    m.threads = threads
+    m.status = status
+    m.loaded = true
+    m.query = query
+    m.savedOnly = savedOnly
+    return m
+  }
+
+  static let connection = Connection(id: "gallery", name: "Mercury on MacBook", baseURL: URL(string: "http://192.168.1.7:6175")!)
+
+  static func drawer(_ m: ChatsModel, current: String? = nil, online: Bool? = true, rows: Int = 10) -> some View {
+    ChatDrawer(model: m, connection: connection, connections: [connection], online: online, current: current, still: true, stillLimit: rows)
+  }
+
+  /// The side panel open over a chat: the scrim, the panel at 85%.
+  static func drawerOpen(_ m: ChatsModel, current: String?) -> AnyView {
+    let chat = model("Ship the landing page")
+    chat.messages = [ChatMessage(role: "user", content: "Ship the landing page"),
+                     ChatMessage(role: "assistant", content: "It's live at landing.example.com. The largest paint went from 2.4 s to 1.1 s on mobile.")]
     return screen {
-      VStack(alignment: .leading, spacing: 0) {
-        Text("Chats").font(.system(size: 34, weight: .bold)).padding(.horizontal, 16).padding(.bottom, 8)
-        ConnectedLine(name: "Mercury on MacBook").padding(.horizontal, 16).padding(.bottom, 8)
-        ForEach(rows, id: \.0.id) { t, s in
-          ThreadRow(thread: t, status: s).padding(.horizontal, 16).padding(.vertical, 10)
-          Divider().overlay(Theme.line)
+      GeometryReader { geo in
+        ZStack(alignment: .leading) {
+          VStack(spacing: 0) {
+            topBar(chat)
+            VStack(alignment: .leading, spacing: 18) { ForEach(chat.messages) { MessageView(message: $0, client: client) } }
+              .padding(.horizontal, 16).padding(.top, 12)
+            Spacer(minLength: 0)
+            Composer(model: chat, focus: FocusState<Bool>().projectedValue, still: true, onCall: {})
+          }
+          Color.black.opacity(0.4)
+          drawer(m, current: current).frame(width: geo.size.width * 0.88).background(Theme.bg)
         }
       }
     }
   }
 
-  /// The list as the app lays it out, without a List (the renderer can't draw one).
-  static func chatList(title: String, sections: [ChatSections.Section], status: [String: ChatsModel.Status] = [:],
-                       unread: Set<String> = [], markAll: Bool = false, savedOnly: Bool = false) -> AnyView {
-    screen {
-      VStack(alignment: .leading, spacing: 0) {
-        HStack(spacing: 18) {
-          Image(systemName: savedOnly ? "bookmark.fill" : "bookmark").foregroundStyle(savedOnly ? Theme.accent : Theme.ink2)
-          Spacer()
-          Image(systemName: "phone").foregroundStyle(Theme.accent)
-          Image(systemName: "plus").font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.onAccent)
-            .frame(width: 34, height: 34).background(Theme.accent, in: RoundedRectangle(cornerRadius: 11))
-        }
-        .font(.system(size: 17)).padding(.horizontal, 16).padding(.bottom, 4)
-        Text(title).font(.system(size: 34, weight: .bold)).padding(.horizontal, 16).padding(.bottom, 8)
-        HStack {
-          ConnectedLine(name: "Mercury on MacBook")
-          Spacer(minLength: 8)
-          if markAll { MarkAllRead {} }
-        }
-        .padding(.horizontal, 16).padding(.bottom, 4)
-        ForEach(sections, id: \.title) { sec in
-          if !savedOnly { ChatSectionHeader(title: sec.title).padding(.horizontal, 16).padding(.bottom, 2) }
-          ForEach(sec.threads) { t in
-            ThreadRow(thread: t, status: status[t.id], unread: unread.contains(t.id)).padding(.horizontal, 16).padding(.vertical, 10)
-            Divider().overlay(Theme.line)
-          }
-        }
-      }
-    }
+  static var historyThreads: [ChatThread] {
+    let now = Date.now
+    let day: TimeInterval = 86_400
+    var list = sampleThreads
+    list += [
+      ChatThread(id: "i", title: "GitHub Projects Carousel Post", createdAt: now.addingTimeInterval(-600), preview: "Here's the carousel: five slides, one per project.", lastRole: "assistant"),
+      ChatThread(id: "j", title: "Gym plan for December", createdAt: now.addingTimeInterval(-2 * day), savedAt: now.addingTimeInterval(-2 * day), preview: "Three days a week, 45 minutes.", lastRole: "assistant"),
+      ChatThread(id: "k", title: "Summarise the Q3 board deck", createdAt: now.addingTimeInterval(-3 * day), savedAt: now.addingTimeInterval(-3 * day), preview: "Revenue up 18%.", lastRole: "assistant"),
+      ChatThread(id: "l", title: "Fix the flaky login test", createdAt: now.addingTimeInterval(-5 * day), preview: "The test waited on a timer.", lastRole: "assistant"),
+      ChatThread(id: "m", title: "Kashmir trip budget", createdAt: now.addingTimeInterval(-20 * day), preview: "About ₹48,000 for two.", lastRole: "assistant"),
+    ]
+    return list
   }
+
+  static var drawerHistory: AnyView {
+    let m = drawerModel(historyThreads, status: ["a": .working, "c": .needsYou("Run command: npm run report"), "l": .failed], unread: ["b", "i", "g"])
+    return screen { drawer(m, current: "i") }
+  }
+
+  static var drawerSearch: AnyView {
+    let m = drawerModel(historyThreads, query: "carousel")
+    return screen { drawer(m) }
+  }
+
+  static var drawerSaved: AnyView {
+    screen { drawer(drawerModel(historyThreads, savedOnly: true)) }
+  }
+
+  static var drawerOverChat: AnyView {
+    drawerOpen(drawerModel(historyThreads, status: ["a": .working], unread: ["i"]), current: "b")
+  }
+
+  /// A list that couldn't load says so, with Retry (never a silent empty panel).
+  static var drawerError: AnyView {
+    let failed = drawerModel([])
+    failed.error = "Mercury didn't answer in time. Check that it's running."
+    return screen { drawer(failed, online: false) }
+  }
+
+  /// A chat swiped away: Undo for a few seconds before Mercury deletes it.
+  static var drawerUndo: AnyView {
+    let m = drawerModel(Array(historyThreads.prefix(6)), status: ["a": .working])
+    m.deleted = [historyThreads[6]]
+    return screen { drawer(m, current: "b") }
+  }
+
 
   static var sampleThreads: [ChatThread] {
     let now = Date.now
@@ -273,16 +348,6 @@ public enum ChatGallery {
       ChatThread(id: "g", title: "Tax documents", createdAt: now.addingTimeInterval(-12 * day), preview: "All 2025 receipts are in one folder now, sorted by month.", lastRole: "assistant"),
       ChatThread(id: "h", title: "Old notes", createdAt: now.addingTimeInterval(-60 * day), preview: "Thanks!", lastRole: "user"),
     ]
-  }
-
-  static var chatSections: AnyView {
-    chatList(title: "Chats", sections: ChatSections.byDay(sampleThreads),
-             status: ["a": .working, "c": .needsYou("Run command: npm run report")], unread: ["b", "d"], markAll: true)
-  }
-
-  static var chatSaved: AnyView {
-    let saved = sampleThreads.filter { $0.savedAt != nil }.sorted { $0.savedAt! > $1.savedAt! }
-    return chatList(title: "Saved", sections: [.init(title: "Saved", threads: saved)], savedOnly: true)
   }
 
   /// A conversation over two days: the bar's title with what it's doing, a day line, the action
@@ -306,15 +371,7 @@ public enum ChatGallery {
     m.messages = msgs
     return screen {
       VStack(spacing: 0) {
-        HStack {
-          Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.accent)
-          Spacer()
-          ConversationTitle(title: "Landing page", status: .working, saved: true)
-          Spacer()
-          Image(systemName: "phone").font(.system(size: 17)).foregroundStyle(Theme.accent)
-        }
-        .padding(.horizontal, 16).padding(.bottom, 8)
-        Divider().overlay(Theme.line)
+        topBar(m)
         VStack(alignment: .leading, spacing: 18) {
           ForEach(msgs) { msg in
             if let d = days[msg.id] { DaySeparator(label: d) }
@@ -327,7 +384,7 @@ public enum ChatGallery {
           Spacer()
           JumpToLatest {}.padding(.trailing, 16).padding(.bottom, 12)
         }
-        Composer(model: m, focus: FocusState<Bool>().projectedValue)
+        Composer(model: m, focus: FocusState<Bool>().projectedValue, still: true, onCall: {})
       }
     }
   }
@@ -356,13 +413,19 @@ public enum ChatGallery {
 
   public static func screens() -> [(name: String, view: AnyView)] {
     [
-      ("02c-chats-sections", chatSections),
-      ("02d-chats-saved", chatSaved),
+      ("02a-drawer-over-chat", drawerOverChat),
+      ("02c-drawer-history", drawerHistory),
+      ("02d-drawer-search", drawerSearch),
+      ("02e-drawer-error", drawerError),
+      ("02g-drawer-undo", drawerUndo),
+      ("02f-drawer-saved", drawerSaved),
       ("03n-chat-reply-actions", replyActions),
       ("03o-chat-title-states", titleStates),
-      ("02b-chats-running", runningChats),
       ("03c-chat-welcome", welcome),
       ("03d-chat-welcome-offline", welcomePlain),
+      ("03p-chat-welcome-typing", welcomeTyping),
+      ("03q-chat-welcome-small", welcomeSmall),
+      ("03r-chat-welcome-small-typing", welcomeSmallTyping),
       ("03e-chat-live-turn", liveTurn),
       ("03f-chat-image-batch", finishedBatch),
       ("03g-chat-thought-security", thoughtAndSecurity),

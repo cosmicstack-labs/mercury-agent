@@ -22,14 +22,15 @@ MainActor.assumeIsolated {
   // --- Dictation screens (03k–03m, the composer's mic): DictationGallery.swift ---
   let dictationScreens = DictationGallery.screens()
   // --- end Dictation ---
-  // --- Media on its way (09a–09e) and Appearance tints (10a–10g): AppearanceGallery.swift ---
-  let mediaScreens = AppearanceGallery.screens()
-  let tinted = AppearanceGallery.tinted()
+  // --- Media on its way (09a–09e) and Appearance (10a, 10d): AppearanceGallery.swift ---
+  let mediaScreens = AppearanceGallery.screens() + AppearanceGallery.themed()
   // --- end Media/Appearance ---
-  for (name, view, tint) in (Gallery.screens() + artifactScreens + botScreens + chatScreens + callScreens + dictationScreens + mediaScreens).map({ s in (s.name, { s.view }, String?.none) })
-    + tinted.map({ ($0.name, $0.view, $0.tint) }) {
+  let only = CommandLine.arguments.dropFirst(2).first
+  for s in Gallery.screens() + artifactScreens + botScreens + chatScreens + callScreens + dictationScreens + mediaScreens
+  where only == nil || s.name.hasPrefix(only!) {
+    let (name, view) = (s.name, { s.view })
     for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-      Appearance.shared.previewing(tint) {
+      do {
         NSAppearance(named: appearance)!.performAsCurrentDrawingAppearance {
           let r = ImageRenderer(content: view()
             .environment(\.colorScheme, mode == "dark" ? .dark : .light)

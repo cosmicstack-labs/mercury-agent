@@ -174,7 +174,16 @@ final class CallAudioEngine: CallPlayback, @unchecked Sendable {
     lock.lock(); let done = attached; lock.unlock()
     guard !done else { return }
     #if os(iOS)
-    try engine.inputNode.setVoiceProcessingEnabled(true)
+    let input = engine.inputNode
+    // Voice processing: echo cancellation, noise suppression, and the Mic Mode (Voice Isolation)
+    // the owner picks in Control Center applies to it.
+    try input.setVoiceProcessingEnabled(true)
+    // Stays on: automatic gain keeps a quiet or distant-held owner at a steady level.
+    input.isVoiceProcessingAGCEnabled = true
+    input.isVoiceProcessingBypassed = false
+    // Anything else playing on the phone (music, navigation) ducks fully while anyone talks, so it
+    // doesn't compete with the owner's voice in the microphone, and comes back between turns.
+    input.voiceProcessingOtherAudioDuckingConfiguration = AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: true, duckingLevel: .max)
     #endif
     engine.attach(player)
     engine.connect(player, to: engine.mainMixerNode, format: PCM.playFormat)

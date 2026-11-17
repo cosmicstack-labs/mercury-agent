@@ -121,3 +121,77 @@ enum DaySeparators {
     return out
   }
 }
+
+/// The side panel's history, as in Grok's: one flat list, newest first, rows the title alone.
+/// "Saved" shows only saved chats, newest save first. A search filters live, on titles and
+/// previews; the label above the list says which it is. The same rules as Android's `ChatHistory`.
+struct ChatHistory: Equatable {
+  var threads: [ChatThread] = []
+  var query = ""
+  var savedOnly = false
+
+  var isEmpty: Bool { threads.isEmpty }
+  /// "Conversations", "Saved" or "Results".
+  var label: String { !query.isEmpty ? "Results" : savedOnly ? "Saved" : "Conversations" }
+
+  static func build(_ threads: [ChatThread], query: String, savedOnly: Bool) -> ChatHistory {
+    let q = query.trimmingCharacters(in: .whitespaces)
+    let base = savedOnly
+      ? threads.filter { $0.savedAt != nil }.sorted { $0.savedAt! > $1.savedAt! }
+      : threads.sorted { $0.lastActivity > $1.lastActivity }
+    return ChatHistory(threads: q.isEmpty ? base : base.filter { ChatSearch.matches($0, q) }, query: q, savedOnly: savedOnly)
+  }
+}
+
+/// Live search over the history: case-insensitive, on the title and the last message.
+enum ChatSearch {
+  static func matches(_ t: ChatThread, _ query: String) -> Bool {
+    let q = query.trimmingCharacters(in: .whitespaces)
+    if q.isEmpty { return true }
+    return t.displayTitle.localizedCaseInsensitiveContains(q) || (t.preview?.localizedCaseInsensitiveContains(q) ?? false)
+  }
+
+  /// Where `query` occurs in `text` (every occurrence, never overlapping), as character offsets.
+  static func ranges(_ text: String, _ query: String) -> [Range<Int>] {
+    let q = query.trimmingCharacters(in: .whitespaces)
+    guard !q.isEmpty else { return [] }
+    var out: [Range<Int>] = []
+    var from = text.startIndex
+    while let r = text.range(of: q, options: .caseInsensitive, range: from..<text.endIndex) {
+      let a = text.distance(from: text.startIndex, to: r.lowerBound)
+      out.append(a..<(a + text.distance(from: r.lowerBound, to: r.upperBound)))
+      from = r.upperBound
+    }
+    return out
+  }
+
+  /// The text with the matches in semibold ink.
+  static func emphasised(_ text: String, _ query: String) -> AttributedString {
+    var s = AttributedString(text)
+    let chars = Array(s.characters.indices)
+    for r in ranges(text, query) where r.upperBound <= chars.count {
+      let range = chars[r.lowerBound]..<(r.upperBound < chars.count ? chars[r.upperBound] : s.endIndex)
+      s[range].inlinePresentationIntent = .stronglyEmphasized
+    }
+    return s
+  }
+}
+
+/// How a history row looks: the title alone, on one line. A dot before it only when the chat
+/// works, waits, needs you or failed; unread: a semibold title and a dot at the end.
+struct RowLook: Equatable {
+  enum Marker: Equatable { case working, waiting, needsYou, failed }
+  var marker: Marker?
+  var unread: Bool
+
+  static func of(status: ChatsModel.Status?, unread: Bool) -> RowLook {
+    let marker: Marker? = switch status {
+    case .working: .working
+    case .waiting: .waiting
+    case .needsYou: .needsYou
+    case .failed: .failed
+    case nil: nil
+    }
+    return RowLook(marker: marker, unread: unread)
+  }
+}

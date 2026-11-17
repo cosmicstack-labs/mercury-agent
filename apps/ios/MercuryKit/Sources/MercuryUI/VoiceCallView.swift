@@ -12,6 +12,9 @@ struct VoiceCallView: View {
   var body: some View {
     VStack(spacing: 0) {
       header
+      // Voice Isolation (the owner's Mic Mode): suggested once, quietly; a check when it's on.
+      VoiceIsolationHint(live: model.mode == .live && model.startedAt != nil && !model.isEnded)
+        .padding(.top, 8)
       if let n = model.notice {
         CallNotice(text: n).padding(.horizontal, 20).padding(.top, 14)
       }
@@ -29,7 +32,7 @@ struct VoiceCallView: View {
       VStack(spacing: 10) {
         Text(model.status)
           .font(.system(size: 14, weight: .medium))
-          .foregroundStyle(model.error != nil ? Theme.red : model.approval != nil ? Theme.amber : model.phase == .working ? Theme.accent : Theme.ink3)
+          .foregroundStyle(model.error != nil ? Theme.red : model.approval != nil ? Theme.amber : model.phase == .working ? Theme.green : Theme.ink3)
           .multilineTextAlignment(.center)
           .contentTransition(.opacity)
           .animation(.easeOut(duration: 0.2), value: model.status)
@@ -232,7 +235,7 @@ struct CallOrb: View {
   func draw(_ g: inout GraphicsContext, size: CGSize, t: Double, mic: Double, voice: Double) {
     let c = CGPoint(x: size.width / 2, y: size.height / 2)
     let dark = scheme == .dark
-    let green = Appearance.shared.accent(dark: dark)
+    let green = Color(hex: dark ? 0x34E1A1 : 0x1A9E6E)
     let grey = Color(hex: dark ? 0x545C63 : 0xA3A9AE)
     let tint: Color = state == .muted || state == .ended ? grey : green
     let base: Double = 64

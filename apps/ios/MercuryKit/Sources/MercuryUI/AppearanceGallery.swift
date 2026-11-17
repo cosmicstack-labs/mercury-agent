@@ -81,27 +81,12 @@ public enum AppearanceGallery {
       VStack(alignment: .leading, spacing: 18) {
         HStack(spacing: 4) {
           Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.accent)
-          Text("More").font(.system(size: 17)).foregroundStyle(Theme.accent)
+          Text("Settings").font(.system(size: 17)).foregroundStyle(Theme.accent)
           Spacer()
         }
         .overlay { Text("Appearance").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.ink) }
         section(nil) { AppearancePreview().padding(12) }
-        section("Tint", footer: "Buttons, links, switches, ticks and the call orb use it. A colour too light or too dark to read is adjusted, and text on it turns white or dark to stay readable.") {
-          TintSwatches(look: look).padding(.horizontal, 12).padding(.vertical, 14)
-          Divider().padding(.leading, 16)
-          HStack {
-            Label("Custom colour", systemImage: "eyedropper").foregroundStyle(Theme.ink)
-            Spacer()
-            Circle().fill(AngularGradient(colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red], center: .center))
-              .frame(width: 28, height: 28).overlay(Circle().fill(Theme.surface).padding(4)).overlay(Circle().fill(Theme.accent).padding(7))
-          }
-          .font(.system(size: 16)).padding(.horizontal, 16).frame(height: 46)
-        }
-        section("Theme") { ThemeModePicker(look: look).padding(12) }
-        section(nil, footer: "Kept on this phone only.") {
-          Text("Reset to default").font(.system(size: 16)).foregroundStyle(look.tintHex == nil ? Theme.ink4 : Theme.accent)
-            .padding(.horizontal, 16).frame(maxWidth: .infinity, alignment: .leading).frame(height: 46)
-        }
+        section("Theme", footer: "Black and white, like the Android app. Mercury's green only marks a chat that's working; amber needs you, red failed. Kept on this phone only.") { ThemeModePicker(look: look).padding(12) }
       }
       .padding(16)
     }
@@ -141,17 +126,8 @@ public enum AppearanceGallery {
     ]
   }
 
-  /// Screens to draw in a given tint ("#RRGGBB"; nil is Mercury's own). Each is built while its
-  /// tint is shown, since the views read the tint as they're made.
-  public static func tinted() -> [(name: String, tint: String?, view: () -> AnyView)] {
-    [
-      ("10a-appearance-mercury", nil, { settings }),
-      ("10b-appearance-violet", "#6D4CCC", { settings }),
-      ("10c-appearance-custom-yellow", "#FFE14D", { settings }),
-      ("10d-chat-tint-mercury", nil, { chat }),
-      ("10e-chat-tint-blue", "#1F6FD1", { chat }),
-      ("10f-chat-tint-amber", "#A0620A", { chat }),
-      ("10g-chat-tint-pink", "#C0367A", { chat }),
-    ]
+  /// Settings → Appearance and a chat in the monochrome theme.
+  public static func themed() -> [(name: String, view: AnyView)] {
+    [("10a-appearance", settings), ("10d-chat-monochrome", chat)]
   }
 }

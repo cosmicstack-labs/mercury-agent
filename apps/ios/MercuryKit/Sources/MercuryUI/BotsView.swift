@@ -100,7 +100,7 @@ struct BotsList: View {
   }
 
   static func lineColor(_ b: BotStatus) -> Color {
-    b.needsYou ? Theme.amber : b.isRunning ? Theme.accent : Theme.ink3
+    b.needsYou ? Theme.amber : b.isRunning ? Theme.green : Theme.ink3
   }
 }
 
@@ -135,7 +135,7 @@ struct BotRow: View {
 
   static func dot(_ b: BotStatus, needsYou: Bool) -> Color? {
     if needsYou { return Theme.amber }
-    if b.isRunning { return Theme.accent }
+    if b.isRunning { return Theme.green }
     return nil
   }
 }

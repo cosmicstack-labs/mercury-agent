@@ -8,13 +8,18 @@ import MercuryCore
 final class ChatsModel {
   enum Status: Equatable { case working, waiting, needsYou(String?), failed }
 
-  var threads: [ChatThread] = []
+  var threads: [ChatThread] = [] { didSet { revision &+= 1 } }
   var status: [String: Status] = [:]
   var loaded = false
   var error: String?
   var query = ""
-  /// Only saved chats, newest save first (the bookmark in the toolbar).
+  /// Only saved chats (the side panel's Saved row).
   var savedOnly = false
+  /// Chats deleted a moment ago that Undo can still bring back (newest last).
+  var deleted: [ChatThread] = []
+  @ObservationIgnored var pendingDeletes: [String: Task<Void, Never>] = [:]
+  @ObservationIgnored private var revision = 0
+  @ObservationIgnored private var memo: (key: String, history: ChatHistory)?
   /// The chat on screen now: never unread, whatever arrives in it.
   var open: String?
   let reads: ReadMarks
@@ -27,19 +32,16 @@ final class ChatsModel {
     reads = ReadMarks(scope: scope, defaults: defaults)
   }
 
-  var visible: [ChatThread] {
-    let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-    let list = savedOnly
-      ? threads.filter { $0.savedAt != nil }.sorted { $0.savedAt! > $1.savedAt! }
-      : threads.sorted { $0.lastActivity > $1.lastActivity }
-    return q.isEmpty ? list : list.filter { $0.displayTitle.lowercased().contains(q) || ($0.preview?.lowercased().contains(q) ?? false) }
-  }
-
-  /// What the list shows: one "Saved" section, or the chats by day.
-  var sections: [ChatSections.Section] {
-    let list = visible
-    if savedOnly { return list.isEmpty ? [] : [.init(title: "Saved", threads: list)] }
-    return ChatSections.byDay(list)
+  /// The history as the side panel shows it, grouped and filtered only when the chats, the search
+  /// or the Saved filter change (590 chats never sort on every redraw).
+  var history: ChatHistory {
+    // Read every input, so SwiftUI redraws when one changes, even when the memo answers.
+    let all = threads
+    let key = "\(revision)|\(savedOnly)|\(query)"
+    if let memo, memo.key == key { return memo.history }
+    let h = ChatHistory.build(all, query: query, savedOnly: savedOnly)
+    memo = (key, h)
+    return h
   }
 
   var hasSaved: Bool { threads.contains { $0.savedAt != nil } }
@@ -63,7 +65,6 @@ final class ChatsModel {
     let was = threads[i].savedAt
     let saving = was == nil
     threads[i].savedAt = saving ? .now : nil
-    if !hasSaved { savedOnly = false }
     do {
       let at = try await client.setThreadSaved(t.id, saved: saving)
       if let j = threads.firstIndex(where: { $0.id == t.id }) { threads[j].savedAt = saving ? (at ?? threads[j].savedAt) : nil }
@@ -76,10 +77,9 @@ final class ChatsModel {
 
   func load() async {
     do {
-      threads = try await client.threads()
+      threads = try await client.threads().filter { pendingDeletes[$0.id] == nil }
       error = nil
       reads.prune(keeping: Set(threads.map(\.id)))
-      if !hasSaved { savedOnly = false }
     } catch {
       self.error = error.localizedDescription
     }
@@ -141,8 +141,30 @@ final class ChatsModel {
     }
   }
 
-  func delete(_ t: ChatThread) async {
+  /// Gone from the list at once; deleted on Mercury after a few seconds unless Undo is pressed.
+  func delete(_ t: ChatThread) {
     threads.removeAll { $0.id == t.id }
-    try? await client.deleteThread(t.id)
+    deleted.removeAll { $0.id == t.id }
+    deleted.append(t)
+    pendingDeletes[t.id]?.cancel()
+    pendingDeletes[t.id] = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(Self.undoWindow))
+      guard !Task.isCancelled, let self else { return }
+      self.deleted.removeAll { $0.id == t.id }
+      self.pendingDeletes[t.id] = nil
+      do { try await self.client.deleteThread(t.id) } catch {
+        self.error = error.localizedDescription
+        await self.load()
+      }
+    }
   }
+
+  func undoDelete(_ t: ChatThread) {
+    guard let task = pendingDeletes.removeValue(forKey: t.id) else { return }
+    task.cancel()
+    deleted.removeAll { $0.id == t.id }
+    if !threads.contains(where: { $0.id == t.id }) { threads.append(t) }
+  }
+
+  nonisolated static let undoWindow: Double = 5
 }

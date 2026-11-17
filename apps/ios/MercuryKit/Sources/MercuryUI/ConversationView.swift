@@ -15,85 +15,132 @@ struct ConversationView: View {
   @State var welcome: WelcomeModel?
   /// The bottom of the conversation is on screen: the jump-to-latest button hides.
   @State var atEnd = true
+  @State var deleting = false
+  /// The side panel's button (nil: none, as when pushed).
+  var onMenu: (() -> Void)? = nil
+  var onNewChat: (() -> Void)? = nil
+  /// The chat was deleted from its title menu.
+  var onDeleted: () -> Void = {}
+
+  /// Nothing said yet: the mark and greeting in the middle, ideas above the composer.
+  var empty: Bool { model.loaded && model.messages.isEmpty && !model.busy }
+
+  func startCall() {
+    dismissKeyboard()
+    // The call takes the mic: dictation stops.
+    model.dictation.cancel()
+    call = VoiceCallModel(conversation: model)
+  }
 
   var body: some View {
-    VStack(spacing: 0) {
-      ScrollViewReader { proxy in
-        ScrollView {
-          LazyVStack(alignment: .leading, spacing: 18) {
-            if model.loaded && model.messages.isEmpty && !model.busy, let welcome {
-              WelcomeView(model: welcome) { prompt in
-                model.draft = prompt
-                composing = true
-              }
-            }
-            let days = DaySeparators.make(model.messages)
-            ForEach(model.messages) { m in
-              if let day = days[m.id] { DaySeparator(label: day) }
-              MessageView(message: m, client: model.client, trace: model.traces[m.id], open: { a in open(a) }, edit: { text in
-                model.draft = text
-                composing = true
-              })
-            }
-            if let live = model.live, model.busy {
-              LiveTurn(model: model, trace: live)
-            }
-            if !model.pendingMedia.isEmpty { PendingMediaList(jobs: model.pendingMedia) }
-            if let n = model.notice { NoticeRow(notice: n) }
-            if let e = model.error { ErrorText(text: e) }
-            // Whether this is on screen says whether the newest is (works on iOS 17, unlike
-            // onScrollGeometryChange). A lazy stack makes it a little before it scrolls in.
-            Color.clear.frame(height: 1).id("end")
-              .onAppear { atEnd = true }
-              .onDisappear { atEnd = false }
+    ScrollViewReader { proxy in
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 18) {
+          let days = DaySeparators.make(model.messages)
+          ForEach(model.messages) { m in
+            if let day = days[m.id] { DaySeparator(label: day) }
+            MessageView(message: m, client: model.client, trace: model.traces[m.id], open: { a in open(a) }, edit: { text in
+              model.draft = text
+              composing = true
+            })
           }
-          .padding(.horizontal, 16).padding(.vertical, 18)
+          if let live = model.live, model.busy {
+            LiveTurn(model: model, trace: live)
+          }
+          if !model.pendingMedia.isEmpty { PendingMediaList(jobs: model.pendingMedia) }
+          if let n = model.notice { NoticeRow(notice: n) }
+          if let e = model.error { ErrorText(text: e) }
+          // Whether this is on screen says whether the newest is (works on iOS 17, unlike
+          // onScrollGeometryChange). A lazy stack makes it a little before it scrolls in.
+          Color.clear.frame(height: 1).id("end")
+            .onAppear { atEnd = true }
+            .onDisappear { atEnd = false }
         }
-        .scrollDismissesKeyboard(.interactively)
-        .overlay(alignment: .bottomTrailing) {
-          if !atEnd && !model.messages.isEmpty {
-            JumpToLatest { withAnimation(.snappy) { proxy.scrollTo("end", anchor: .bottom) } }
-              .padding(.trailing, 16).padding(.bottom, 12)
-              .transition(.scale(scale: 0.6).combined(with: .opacity))
-          }
-        }
-        .animation(.snappy(duration: 0.2), value: atEnd)
-        .onChange(of: model.messages.count) { proxy.scrollTo("end", anchor: .bottom) }
-        .onChange(of: model.streaming) { proxy.scrollTo("end", anchor: .bottom) }
-        .onChange(of: model.live?.items.count) { withAnimation { proxy.scrollTo("end", anchor: .bottom) } }
-        .task {
-          if model.threadId == nil {
-            if welcome == nil { welcome = WelcomeModel(client: model.client) }
-            // A new chat: ready to type.
-            composing = true
-          }
-          await model.load()
-          proxy.scrollTo("end", anchor: .bottom)
+        .padding(.horizontal, 16).padding(.vertical, 18)
+      }
+      .scrollDismissesKeyboard(.immediately)
+      // A new chat: the mark and greeting, and the ideas just above the composer, in the room
+      // between the bar and the composer (both are safe-area bars, so this follows the keyboard).
+      .overlay {
+        if empty {
+          NewChatSpace(pick: welcome?.pick, ideas: Array((welcome?.pick?.items ?? []).prefix(2)), media: model.mediaAvailable,
+                       typing: composing,
+                       onMedia: { model.media = $0; composing = true },
+                       onPick: { s in welcome?.used(s); model.draft = s.prompt; composing = true })
+            .transition(.opacity)
+            .task { if let welcome, welcome.pick == nil { await welcome.load() } }
         }
       }
-      VStack(spacing: 8) {
-        if let plan = model.plan { PlanCard(plan: plan, busy: model.busy, threadId: model.threadId) }
-        if !model.prompts.isEmpty { NeedsYouCard(prompts: model.prompts) { p, v in await model.answer(p, v) } }
+      .overlay(alignment: .bottomTrailing) {
+        if !atEnd && !model.messages.isEmpty {
+          JumpToLatest { withAnimation(.snappy) { proxy.scrollTo("end", anchor: .bottom) } }
+            .padding(.trailing, 16).padding(.bottom, 12)
+            .transition(.scale(scale: 0.6).combined(with: .opacity))
+        }
       }
-      .padding(.horizontal, 16)
-      .padding(.top, model.plan != nil || !model.prompts.isEmpty ? 6 : 0)
-      .animation(.snappy, value: model.prompts.map(\.id))
-      Composer(model: model, focus: $composing)
+      .animation(.snappy(duration: 0.2), value: atEnd)
+      // The bar and the composer float over the chat on glass: the messages scroll under them.
+      // The top is fully clear (no fade, blur or edge effect): only its buttons and pill are glass.
+      .floatingBar(.top, edgeEffect: false) {
+        if onMenu != nil {
+          ConversationHeader(model: model, onMenu: { onMenu?() }, onNewChat: { dismissKeyboard(); onNewChat?() },
+                             onCall: startCall,
+                             rename: { newTitle = model.title == "New chat" ? "" : model.title; renaming = true },
+                             delete: { deleting = true })
+        }
+      }
+      .floatingBar(.bottom) {
+        VStack(spacing: 0) {
+          VStack(spacing: 8) {
+            if let plan = model.plan { PlanCard(plan: plan, busy: model.busy, threadId: model.threadId) }
+            if !model.prompts.isEmpty { NeedsYouCard(prompts: model.prompts) { p, v in await model.answer(p, v) } }
+          }
+          .padding(.horizontal, 16)
+          .padding(.top, model.plan != nil || !model.prompts.isEmpty ? 6 : 0)
+          .animation(.snappy, value: model.prompts.map(\.id))
+          Composer(model: model, focus: $composing, onCall: startCall)
+        }
+        .background(alignment: .bottom) { EdgeFade(edge: .bottom) }
+      }
+      // Call Mercury from the side panel or the Home Screen quick action.
+      .onChange(of: model.callRequested) { _, on in if on { model.callRequested = false; startCall() } }
+      .onAppear { if model.callRequested { model.callRequested = false; startCall() } }
+      .onChange(of: model.messages.count) { proxy.scrollTo("end", anchor: .bottom) }
+      .onChange(of: model.streaming) { proxy.scrollTo("end", anchor: .bottom) }
+      .onChange(of: model.live?.items.count) { withAnimation { proxy.scrollTo("end", anchor: .bottom) } }
+      .task {
+        if model.threadId == nil {
+          if welcome == nil { welcome = WelcomeModel(client: model.client) }
+          // A new chat opens with the keyboard down (as ChatGPT and Grok do), so the mark,
+          // greeting and quick actions are seen; tapping the box brings the keyboard.
+        }
+        await model.load()
+        proxy.scrollTo("end", anchor: .bottom)
+      }
     }
     .background(Theme.bg)
-    .navigationTitle(model.title)
+    .navigationTitle(model.threadId == nil ? "Mercury" : model.title)
     #if os(iOS)
+    // The chat draws its own bar (Grok's: round buttons floating over the chat, Ask | Code).
+    .toolbar(onMenu != nil ? .hidden : .visible, for: .navigationBar)
     .navigationBarTitleDisplayMode(.inline)
-    // The composer takes the bottom of the screen, as in other chat apps.
-    .toolbar(.hidden, for: .tabBar)
     #endif
     .toolbar {
-      ToolbarItem(placement: .principal) {
-        ConversationTitle(title: model.title, status: model.titleStatus, saved: model.savedAt != nil, canEdit: model.threadId != nil,
-                          rename: { newTitle = model.title == "New chat" ? "" : model.title; renaming = true },
-                          toggleSaved: { Task { await model.toggleSaved() } })
+      if onMenu == nil {
+        ToolbarItem(placement: .principal) {
+          ConversationTitle(title: model.title, status: model.titleStatus, saved: model.savedAt != nil, canEdit: model.threadId != nil,
+                            rename: { newTitle = model.title == "New chat" ? "" : model.title; renaming = true },
+                            toggleSaved: { Task { await model.toggleSaved() } }, delete: { deleting = true })
+        }
       }
     }
+    .confirmationDialog("Delete this chat?", isPresented: $deleting, titleVisibility: .visible) {
+      Button("Delete", role: .destructive) {
+        Task {
+          if await model.delete() { onDeleted() }
+        }
+      }
+    } message: { Text("It's deleted on your Mercury too, with its messages. This can't be undone.") }
     .alert("Rename chat", isPresented: $renaming) {
       TextField("Chat name", text: $newTitle)
       Button("Save") { Task { await model.rename(String(newTitle.trimmed.prefix(120))) } }
@@ -117,16 +164,6 @@ struct ConversationView: View {
       if let id { model.onSeen(id, true) }
     }
     .quickLookPreview($preview)
-    .toolbar {
-      ToolbarItem(placement: .primaryAction) {
-        Button {
-          // The call takes the mic: dictation stops.
-          model.dictation.cancel()
-          call = VoiceCallModel(conversation: model)
-        } label: { Image(systemName: "phone") }
-          .accessibilityLabel("Start a voice call")
-      }
-    }
     .callCover($call)
     .environment(\.mercuryClient, model.client)
   }
@@ -227,7 +264,7 @@ struct ReplyActions: View {
           Image(systemName: copied ? "checkmark" : "doc.on.doc")
           if copied { Text("Copied").font(.system(size: 12, weight: .medium)) }
         }
-        .foregroundStyle(copied ? Theme.accent : Theme.ink3)
+        .foregroundStyle(copied ? Theme.ink : Theme.ink3)
         .frame(minWidth: 32, minHeight: 30).contentShape(Rectangle())
       }
       .accessibilityLabel(copied ? "Copied" : "Copy")
@@ -280,11 +317,10 @@ struct JumpToLatest: View {
     Button(action: action) {
       Image(systemName: "chevron.down").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
         .frame(width: 40, height: 40)
-        .background(Theme.surface, in: Circle())
-        .overlay(Circle().stroke(Theme.line))
-        .shadow(color: .black.opacity(0.14), radius: 8, y: 3)
+        .contentShape(Circle())
     }
     .buttonStyle(.plain)
+    .glassSurface(in: Circle(), interactive: true)
     .accessibilityLabel("Jump to latest")
   }
 }
@@ -298,6 +334,9 @@ struct ConversationTitle: View {
   var canEdit = true
   var rename: () -> Void = {}
   var toggleSaved: () -> Void = {}
+  var delete: (() -> Void)? = nil
+  /// Under Ask | Code: a quieter name.
+  var small = false
 
   var body: some View {
     VStack(spacing: 1) {
@@ -305,16 +344,21 @@ struct ConversationTitle: View {
         Menu {
           Button(action: rename) { Label("Rename", systemImage: "pencil") }
           Button(action: toggleSaved) { Label(saved ? "Unsave" : "Save", systemImage: saved ? "bookmark.slash" : "bookmark") }
+          if let delete {
+            Divider()
+            Button(role: .destructive, action: delete) { Label("Delete", systemImage: "trash") }
+          }
         } label: { name }
         .menuStyle(.button).buttonStyle(.plain)
-        .accessibilityHint("Rename or save this chat")
+        .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })
+        .accessibilityHint("Rename, save or delete this chat")
       } else {
         name
       }
       if let status {
         Text(status == .working ? "Working…" : "Needs you")
           .font(.system(size: 12, weight: .medium))
-          .foregroundStyle(status == .working ? Theme.accent : Theme.amber)
+          .foregroundStyle(status == .working ? Theme.green : Theme.amber)
           .transition(.opacity)
       }
     }
@@ -325,8 +369,136 @@ struct ConversationTitle: View {
   var name: some View {
     HStack(spacing: 4) {
       if saved { Image(systemName: "bookmark.fill").font(.system(size: 11)).foregroundStyle(Theme.ink3) }
-      Text(title).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
+      Text(title).font(.system(size: small ? 13 : 16, weight: small ? .medium : .semibold)).foregroundStyle(small ? Theme.ink2 : Theme.ink).lineLimit(1)
       if canEdit { Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.ink3) }
+    }
+  }
+}
+
+/// The chat's bar, as in Grok: a round menu button, Ask | Code in the middle with the chat's
+/// name under it (tap: Rename, Save, Delete; with Working… or Needs you), and one capsule with
+/// Call Mercury and New chat. No background: it floats over the chat, its buttons and pill on
+/// glass. In Code, the project folder the turns work in shows under the pill, as Mercury
+/// Desktop's Code view shows it.
+struct ConversationHeader: View {
+  var model: ConversationModel
+  var onMenu: () -> Void
+  var onNewChat: () -> Void
+  var onCall: () -> Void = {}
+  var rename: () -> Void = {}
+  var delete: () -> Void = {}
+
+  var body: some View {
+    HStack(alignment: .top) {
+      RoundIconButton(icon: "equal", label: "Open chats and settings", action: onMenu)
+      Spacer(minLength: 8)
+      VStack(spacing: 4) {
+        AskCode(code: model.code) { on in dismissKeyboard(); withAnimation(.snappy(duration: 0.3)) { model.code = on } }
+        if model.threadId != nil {
+          ConversationTitle(title: model.title, status: model.titleStatus, saved: model.savedAt != nil, canEdit: true,
+                            rename: rename, toggleSaved: { Task { await model.toggleSaved() } }, delete: delete, small: true)
+        }
+        if model.code, let w = model.workspace {
+          Label(w.name, systemImage: "folder").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.ink3)
+            .lineLimit(1).frame(maxWidth: 220)
+            .accessibilityLabel("Code works in \(w.name)")
+            .transition(.opacity)
+        }
+      }
+      // The pill (32 tall) sits centred on the 48pt buttons.
+      .padding(.top, 8)
+      Spacer(minLength: 8)
+      CallNewChatButtons(onCall: onCall, onNewChat: onNewChat)
+    }
+    .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 6)
+  }
+}
+
+/// Call Mercury and New chat side by side in one glass capsule, as tall as the round buttons.
+struct CallNewChatButtons: View {
+  var onCall: () -> Void
+  var onNewChat: () -> Void
+  var body: some View {
+    GlassGroup {
+      HStack(spacing: 0) {
+        icon("phone", label: "Call Mercury", action: onCall)
+        icon("square.and.pencil", label: "New chat", action: onNewChat)
+      }
+      .padding(.horizontal, 4)
+      .glassSurface(in: Capsule(), interactive: true)
+    }
+  }
+
+  func icon(_ name: String, label: String, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      Image(systemName: name).font(.system(size: 18, weight: .medium)).foregroundStyle(Theme.ink)
+        .frame(width: 42, height: 48)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(PressButtonStyle())
+    .accessibilityLabel(label)
+  }
+}
+
+/// Ask | Code, Grok's segmented pill: a glass capsule, the chosen side a smaller glass capsule that
+/// morphs across (iOS 26; a sliding fill below). Code sends each message as a coding turn
+/// (`programming: "auto"` with Mercury's project folder as `cwd`); Ask is a chat.
+struct AskCode: View {
+  var code: Bool
+  var pick: (Bool) -> Void
+  @Namespace private var ns
+
+  static func label(_ code: Bool) -> String { code ? "Code" : "Ask" }
+
+  var body: some View {
+    GlassGroup(spacing: 0) {
+      HStack(spacing: 0) {
+        ForEach([false, true], id: \.self) { c in
+          let on = code == c
+          Button { pick(c) } label: {
+            Text(Self.label(c)).font(.system(size: 14, weight: .medium)).foregroundStyle(on ? Theme.ink : Theme.ink3)
+              .padding(.horizontal, 12).frame(height: 27)
+              .background {
+                if on && !LiquidGlass.available { Capsule().fill(Theme.surface3).matchedGeometryEffect(id: "on", in: ns) }
+              }
+              .contentShape(Capsule())
+          }
+          .buttonStyle(.plain)
+          .modifier(SelectedSegment(on: on && LiquidGlass.available, ns: ns))
+          .accessibilityLabel(c ? "Code mode" : "Ask mode")
+          .accessibilityHint(c ? "Messages become coding turns in Mercury's project folder" : "Messages are a normal chat")
+          .accessibilityAddTraits(on ? .isSelected : [])
+        }
+      }
+    }
+    .padding(2.5)
+    .glassSurface(in: Capsule())
+  }
+}
+
+/// The chosen segment's glass, with one identity so it morphs from one side to the other.
+private struct SelectedSegment: ViewModifier {
+  var on: Bool
+  var ns: Namespace.ID
+  func body(content: Content) -> some View {
+    if on {
+      content.glassSurface(in: Capsule(), interactive: true, tint: Theme.ink.opacity(0.08)).glassID("selected", in: ns)
+    } else {
+      content
+    }
+  }
+}
+
+/// Behind the composer below iOS 26: a short fade to the page, so text scrolling under the
+/// material buttons stays quiet (iOS 26's `safeAreaBar` draws its own scroll-edge effect). The
+/// top bar has none: the chat runs clear up under it.
+struct EdgeFade: View {
+  var edge: VerticalEdge
+  var body: some View {
+    if !LiquidGlass.available {
+      LinearGradient(colors: [Theme.bg, Theme.bg.opacity(0)], startPoint: edge == .top ? .top : .bottom, endPoint: edge == .top ? .bottom : .top)
+        .ignoresSafeArea(edges: edge == .top ? .top : .bottom)
+        .allowsHitTesting(false)
     }
   }
 }

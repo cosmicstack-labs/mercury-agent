@@ -13,9 +13,12 @@ struct Composer: View {
   var focus: FocusState<Bool>.Binding
   /// Snapshots: the text as plain text (the renderer can't draw text fields).
   var still = false
+  /// A voice call: the round button's job while the box is empty (nil: Send stays, greyed).
+  var onCall: (() -> Void)? = nil
   @State private var picking = false
   @State private var photos: [PhotosPickerItem] = []
   @State private var importing = false
+  @State private var choosingModel = false
 
   private var stopMode: Bool { model.busy && !model.canSend }
 
@@ -23,38 +26,33 @@ struct Composer: View {
     VStack(alignment: .leading, spacing: 0) {
       if let n = model.dictation.notice { DictationNotice(text: n) { model.dictation.notice = nil }.padding(.horizontal, 10).padding(.top, 10) }
       if hasChips { chips.padding(.horizontal, 10).padding(.top, 10) }
-      HStack(alignment: .bottom, spacing: 4) {
-        plusMenu
-        Group {
-          if still {
-            Text(model.draft.isEmpty ? placeholder : model.draft).foregroundStyle(model.draft.isEmpty ? Theme.ink4 : Theme.ink)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          } else {
-            TextField(placeholder, text: $model.draft, axis: .vertical)
-              .lineLimit(1...6).focused(focus)
-              .onSubmit { Task { await model.send() } }
-          }
+      // Row 1: the text.
+      Group {
+        if still {
+          Text(model.draft.isEmpty ? placeholder : model.draft).foregroundStyle(model.draft.isEmpty ? Theme.ink3 : Theme.ink)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+          TextField(placeholder, text: $model.draft, axis: .vertical)
+            .lineLimit(1...6).focused(focus)
         }
-        .font(.system(size: 16)).padding(.vertical, 12)
-        DictationButton(dictation: model.dictation).padding(.bottom, 8)
-        Button {
-          Task { if stopMode { await model.stop() } else { await model.send() } }
-        } label: {
-          Image(systemName: stopMode ? "stop.fill" : "arrow.up")
-            .font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.onAccent)
-            .frame(width: 36, height: 36)
-            .background(stopMode ? Theme.ink : Theme.accent, in: Circle())
-            .opacity(model.stopping ? 0.45 : model.busy || model.canSend ? 1 : 0.35)
-        }
-        .buttonStyle(PressButtonStyle())
-        .disabled((!model.busy && !model.canSend) || model.stopping)
-        .accessibilityLabel(stopMode ? (model.stopping ? "Stopping" : "Stop this chat") : "Send")
-        .padding(.vertical, 8).padding(.trailing, 8)
       }
+      .font(.system(size: 17)).padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 8)
+      // Row 2: + and the model on the left; the mic and the one round button on the right.
+      GlassGroup(spacing: 8) {
+        HStack(spacing: 8) {
+          plusMenu
+          ModelPill(name: model.catalog?.pill ?? "Auto", busy: model.switching) { dismissKeyboard(); choosingModel = true }
+          Spacer(minLength: 4)
+          DictationButton(dictation: model.dictation)
+          actionButton
+        }
+      }
+      .padding(.horizontal, 10).padding(.bottom, 10)
     }
-    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 24))
-    .overlay(RoundedRectangle(cornerRadius: 24).stroke(Theme.line))
-    .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 10)
+    // The card floats over the chat on glass (a thin material below iOS 26); the messages scroll under it.
+    .glassSurface(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+    .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 8)
+    .sheet(isPresented: $choosingModel) { ModelSheet(model: model) }
     .photosPicker(isPresented: $picking, selection: $photos, maxSelectionCount: max(1, OutgoingAttachment.maxFiles - model.attachments.count), matching: .images)
     .onChange(of: photos) { _, items in
       guard !items.isEmpty else { return }
@@ -66,6 +64,7 @@ struct Composer: View {
       for url in urls { addFile(url) }
     }
     .task { if model.model == nil { await model.loadComposerInfo() } }
+    .task { if model.catalog == nil { await model.loadModels() } }
     .task { await model.dictation.load() }
     .onDisappear { model.dictation.cancel() }
   }
@@ -76,8 +75,41 @@ struct Composer: View {
     case .image?: "Describe the image"
     case .video?: "Describe the video"
     case .music?: "Describe the music"
-    case nil: "Message Mercury"
+    case nil: model.code ? "Describe what to build" : "Ask anything"
     }
+  }
+
+  /// One round button, as on Android: Stop while this chat works, Send with something to send,
+  /// else a voice call.
+  private enum Action { case stop, send, call }
+  private var action: Action {
+    if stopMode { return .stop }
+    if model.canSend || onCall == nil { return .send }
+    return .call
+  }
+
+  private var actionButton: some View {
+    let a = action
+    return Button {
+      switch a {
+      case .stop: Task { await model.stop() }
+      case .send: Task { await model.send() }
+      case .call: onCall?()
+      }
+    } label: {
+      Image(systemName: a == .stop ? "stop.fill" : a == .send ? "arrow.up" : "waveform")
+        .font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.onAccent)
+        .frame(width: 44, height: 44)
+        .contentShape(Circle())
+        .contentTransition(.symbolEffect(.replace))
+    }
+    .buttonStyle(PressButtonStyle())
+    // Ink glass, as `.glassProminent` tints it: the one prominent action.
+    .glassSurface(in: Circle(), interactive: true, tint: Theme.accent)
+    .opacity(model.stopping ? 0.45 : a == .send && !model.canSend ? 0.35 : 1)
+    .disabled((a == .send && !model.canSend) || model.stopping)
+    .accessibilityLabel(a == .stop ? (model.stopping ? "Stopping" : "Stop this chat") : a == .send ? "Send" : "Voice call")
+    .animation(.snappy(duration: 0.2), value: a)
   }
 
   // MARK: Chips
@@ -96,7 +128,7 @@ struct Composer: View {
         FileChip(tag: a.tag, name: a.name) { model.attachments.removeAll { $0.id == a.id } }
       }
       if let m = model.media {
-        ModeChip(icon: Self.icon(m.kind), text: m.label, tint: Theme.accent) { model.media = nil }
+        ModeChip(icon: Self.icon(m.kind), text: m.label, tint: Theme.ink) { model.media = nil }
       }
       if let e = ownEffort {
         ModeChip(icon: "gauge.with.dots.needle.67percent", text: "Effort: \(ChatEffort.label(e))", tint: Theme.ink2) { Task { await model.setEffort(nil) } }
@@ -122,11 +154,13 @@ struct Composer: View {
         effortMenu(m, levels)
       }
     } label: {
-      Image(systemName: "plus").font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.ink2)
-        .frame(width: 36, height: 36).background(Theme.surface2, in: Circle())
+      Image(systemName: "plus").font(.system(size: 19, weight: .regular)).foregroundStyle(Theme.ink)
+        .frame(width: 40, height: 40).contentShape(Circle())
     }
     .menuIndicator(.hidden)
-    .padding(.leading, 8).padding(.bottom, 8)
+    .fixedSize()
+    .glassSurface(in: Circle(), interactive: true)
+    .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })
     .accessibilityLabel("Add a file, create media or set thinking effort")
   }
 
@@ -236,7 +270,7 @@ struct DictationButton: View {
           .font(.system(size: 16, weight: .medium))
           .foregroundStyle(on ? Theme.onAccent : Theme.ink2)
           .frame(width: 36, height: 36)
-          .background(on ? Theme.accent : Theme.surface2, in: Circle())
+          .glassSurface(in: Circle(), interactive: true, tint: on ? Theme.accent : nil)
           .opacity(dictation.phase == .stopping ? 0.6 : 1)
       }
       .opacity(on || dictation.available || dictation.capabilities == nil ? 1 : 0.35)
@@ -344,5 +378,90 @@ enum ImagePrep {
     guard let rep = NSBitmapImageRep(data: data) else { return nil }
     return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
     #endif
+  }
+}
+
+/// The model Mercury answers with ("Auto" on its configured default): tap to pick another.
+struct ModelPill: View {
+  var name: String
+  var busy = false
+  var action: () -> Void
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 6) {
+        if busy { ProgressView().controlSize(.mini) } else { Image(systemName: "sparkles").font(.system(size: 13)) }
+        Text(name).font(.system(size: 15, weight: .medium)).lineLimit(1).frame(maxWidth: 150, alignment: .leading).fixedSize(horizontal: true, vertical: false)
+        Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.ink3)
+      }
+      .foregroundStyle(Theme.ink)
+      .padding(.horizontal, 12).frame(height: 40)
+      .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .glassSurface(in: Capsule(), interactive: true)
+    .accessibilityLabel("Model: \(name). Change the model")
+  }
+}
+
+/// The model picker: Auto (Mercury's configured default) first, then every model by family, the
+/// current one ticked, a search when there are many. Mercury has one model for every chat, so the
+/// sheet says a pick changes it everywhere.
+struct ModelSheet: View {
+  var model: ConversationModel
+  @Environment(\.dismiss) private var dismiss
+  @State private var query = ""
+
+  var body: some View {
+    NavigationStack {
+      List {
+        if let c = model.catalog {
+          Section {
+            if query.trimmingCharacters(in: .whitespaces).isEmpty {
+              let d = c.defaultChoice
+              row("Auto", d.map { "Mercury's default · \($0.title)" } ?? "Mercury's default model", on: c.isAuto, enabled: d != nil) { pick(nil) }
+            }
+          } footer: { Text("Changes the model for Mercury, in every chat.") }
+          ForEach(c.notices, id: \.self) { Text($0).foregroundStyle(Theme.amber).font(.system(size: 13)) }
+          ForEach(ModelMenu.groups(c.models, query: query), id: \.title) { g in
+            Section(g.models.count > 1 ? "\(g.title) · \(g.models.count)" : g.title) {
+              ForEach(g.models) { m in
+                row(m.title, m.title != m.model ? m.model : ModelMenu.providerName(m.name), on: m.isCurrent && !c.isAuto, enabled: m.available) { pick(m) }
+              }
+            }
+          }
+        } else {
+          ProgressView().frame(maxWidth: .infinity)
+        }
+      }
+      .navigationTitle("Model")
+      #if os(iOS)
+      .navigationBarTitleDisplayMode(.inline)
+      #endif
+      .searchable(text: $query, prompt: "Search models")
+      .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+    }
+    .presentationDetents([.medium, .large])
+    .task { await model.loadModels() }
+  }
+
+  private func row(_ title: String, _ detail: String?, on: Bool, enabled: Bool, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      HStack {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title).foregroundStyle(Theme.ink).lineLimit(1)
+          if let detail { Text(detail).font(.system(size: 13)).foregroundStyle(Theme.ink3).lineLimit(1) }
+        }
+        Spacer()
+        if on { Image(systemName: "checkmark").foregroundStyle(Theme.ink) }
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(!enabled).opacity(enabled ? 1 : 0.4)
+  }
+
+  private func pick(_ m: ModelChoice?) {
+    dismiss()
+    Task { await model.pickModel(m) }
   }
 }

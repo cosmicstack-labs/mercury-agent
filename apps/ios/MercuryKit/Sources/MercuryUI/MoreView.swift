@@ -21,7 +21,7 @@ struct MoreView: View {
             Text(statusLine).font(.system(size: 13)).foregroundStyle(healthError == nil ? Theme.ink2 : Theme.red).lineLimit(2)
           }
           Spacer(minLength: 0)
-          Circle().fill(healthError == nil && health != nil ? Theme.accent : Theme.ink4).frame(width: 9, height: 9)
+          Circle().fill(healthError == nil && health != nil ? Theme.green : Theme.ink4).frame(width: 9, height: 9)
         }
         .accessibilityElement(children: .combine)
         LabeledContent("Address", value: connection.baseURL.absoluteString)
@@ -60,7 +60,7 @@ struct MoreView: View {
         Link("Source on GitHub", destination: URL(string: "https://github.com/cosmicstack-labs/mercury-agent")!)
       }
     }
-    .navigationTitle("More")
+    .navigationTitle("Settings")
     .task(id: connection.id) {
       do { health = try await store.client(for: connection).health(); healthError = nil }
       catch { healthError = error.localizedDescription }

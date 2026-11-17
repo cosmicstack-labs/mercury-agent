@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Settings → Appearance: the tint and light or dark, for this phone only (Mercury Desktop has
-/// its own, in Settings → General). Applied the moment they change.
+/// Settings → Appearance: light or dark, for this phone only (Mercury Desktop has its own, in
+/// Settings → General). Mercury on iPhone is monochrome, so there's no tint to pick.
 struct AppearanceSettings: View {
   @State private var look = Appearance.shared
 
@@ -11,64 +11,12 @@ struct AppearanceSettings: View {
         AppearancePreview().listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
       }
       Section {
-        TintSwatches(look: look).listRowInsets(EdgeInsets(top: 14, leading: 12, bottom: 14, trailing: 12))
-        ColorPicker(selection: Binding(get: { look.accent(dark: false) }, set: { look.setTint(Tint.hex($0)) }), supportsOpacity: false) {
-          Label("Custom colour", systemImage: "eyedropper")
-        }
-      } header: { Text("Tint") } footer: {
-        Text("Buttons, links, switches, ticks and the call orb use it. A colour too light or too dark to read is adjusted, and text on it turns white or dark to stay readable.")
-      }
-      Section("Theme") {
         ThemeModePicker(look: look).listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
+      } header: { Text("Theme") } footer: {
+        Text("Black and white, like the Android app. Mercury's green only marks a chat that's working; amber needs you, red failed. Kept on this phone only.")
       }
-      Section {
-        Button("Reset to default") {
-          withAnimation(.snappy) { look.setTint(nil); look.mode = .system }
-        }
-        .disabled(look.tintHex == nil && look.mode == .system)
-      } footer: { Text("Kept on this phone only.") }
     }
     .navigationTitle("Appearance")
-  }
-}
-
-/// The preset tints, Mercury's green first; the chosen one ringed and ticked.
-struct TintSwatches: View {
-  var look: Appearance
-  @Environment(\.colorScheme) private var scheme
-
-  var body: some View {
-    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 14) {
-      ForEach(Tint.presets) { p in
-        let on = look.preset?.id == p.id
-        let shade = scheme == .dark ? p.dark : p.light
-        Button { withAnimation(.snappy) { look.setTint(p.id == Tint.mercury.id ? nil : p.hex) } } label: {
-          ZStack {
-            Circle().fill(Color(hex: shade)).frame(width: 34, height: 34)
-            if on {
-              Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(Color(hex: Tint.on(shade)))
-            }
-          }
-          .frame(width: 44, height: 44)
-          .overlay(Circle().stroke(Color(hex: shade), lineWidth: 2).opacity(on ? 1 : 0))
-          .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(p.name)
-        .accessibilityAddTraits(on ? .isSelected : [])
-      }
-      if look.preset == nil {
-        // A custom colour: shown in the row so the choice is visible.
-        let shade = scheme == .dark ? look.pair.dark : look.pair.light
-        ZStack {
-          Circle().fill(Color(hex: shade)).frame(width: 34, height: 34)
-          Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(Color(hex: Tint.on(shade)))
-        }
-        .frame(width: 44, height: 44)
-        .overlay(Circle().stroke(Color(hex: shade), lineWidth: 2))
-        .accessibilityElement().accessibilityLabel("Custom colour").accessibilityAddTraits(.isSelected)
-      }
-    }
   }
 }
 
@@ -100,7 +48,7 @@ struct ThemeModePicker: View {
   }
 }
 
-/// A little of a chat in the chosen tint: what changes when it does.
+/// A little of a chat in the chosen theme.
 struct AppearancePreview: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -127,6 +75,6 @@ struct AppearancePreview: View {
       }
     }
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel("Preview of a chat in this tint")
+    .accessibilityLabel("Preview of a chat in this theme")
   }
 }

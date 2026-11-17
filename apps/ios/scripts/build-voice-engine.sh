@@ -19,6 +19,8 @@ repo="$(cd "$here/../../.." && pwd)"
 crate="$repo/crates/mercury-voice-mobile"
 pkg="$repo/apps/ios/MercuryVoice"
 lib="libmercury_voice_mobile.a"
+# Cargo's target directory (CARGO_TARGET_DIR moves it, e.g. to an external disk).
+target="${CARGO_TARGET_DIR:-$crate/target}"
 
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
 if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
@@ -37,13 +39,13 @@ for t in "${targets[@]}"; do
 done
 
 # Swift bindings from the built library, with the bindgen pinned in Cargo.lock.
-gen="$crate/target/uniffi-swift"
+gen="$target/uniffi-swift"
 rm -rf "$gen" && mkdir -p "$gen"
 echo "==> uniffi-bindgen generate (swift)"
 cargo run --quiet --release --locked --features cli --bin uniffi-bindgen -- \
-  generate --library "target/aarch64-apple-ios/release/$lib" --language swift --out-dir "$gen"
+  generate --library "$target/aarch64-apple-ios/release/$lib" --language swift --out-dir "$gen"
 
-headers="$crate/target/uniffi-headers"
+headers="$target/uniffi-headers"
 rm -rf "$headers" && mkdir -p "$headers"
 cp "$gen/MercuryVoiceFFI.h" "$headers/"
 cp "$gen/MercuryVoiceFFI.modulemap" "$headers/module.modulemap"
@@ -52,9 +54,9 @@ cp "$gen/MercuryVoiceFFI.modulemap" "$headers/module.modulemap"
 # local symbols here (the app's linker dead-strips the rest).
 args=()
 for t in "${targets[@]}"; do
-  mkdir -p "$crate/target/$t/release/xcf"
-  strip -S -x -o "$crate/target/$t/release/xcf/$lib" "$crate/target/$t/release/$lib"
-  args+=(-library "$crate/target/$t/release/xcf/$lib" -headers "$headers")
+  mkdir -p "$target/$t/release/xcf"
+  strip -S -x -o "$target/$t/release/xcf/$lib" "$target/$t/release/$lib"
+  args+=(-library "$target/$t/release/xcf/$lib" -headers "$headers")
 done
 
 rm -rf "$pkg/MercuryVoiceFFI.xcframework"
@@ -64,5 +66,5 @@ cp "$gen/MercuryVoice.swift" "$pkg/Sources/MercuryVoice/MercuryVoice.swift"
 
 echo "==> $pkg"
 for t in "${targets[@]}"; do
-  printf '   %-22s %s\n' "$t" "$(du -h "$crate/target/$t/release/xcf/$lib" | cut -f1)"
+  printf '   %-22s %s\n' "$t" "$(du -h "$target/$t/release/xcf/$lib" | cut -f1)"
 done

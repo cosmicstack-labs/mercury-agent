@@ -94,6 +94,8 @@ final class CallBrain {
   @ObservationIgnored var now: () -> Date
   /// The call is over (the model hangs up CallKit and the audio).
   @ObservationIgnored var onEnd: (End) -> Void = { _ in }
+  /// Judges barge-ins while Mercury speaks (is it the owner, or someone nearby?). None: every one counts.
+  @ObservationIgnored var bargeIn: BargeInJudge?
   /// Mute changed (from the screen or by voice): the model syncs CallKit and the meter.
   @ObservationIgnored var onMuted: (Bool) -> Void = { _ in }
 
@@ -145,11 +147,17 @@ final class CallBrain {
       lastActivity = t
       ownerSpeaking = true
       ownerSpeakingSince = t
-      // Barge-in: the owner talks over Mercury, so its voice stops now.
+      bargeIn?.setOwnerTalking(true)
+      // Barge-in: the owner talks over Mercury, so its voice stops now. While Mercury is audible
+      // the gate checks it's the owner close to the phone, not someone nearby; if not yet, it
+      // keeps listening for a moment (bargeInDue). When Mercury isn't audible nothing is judged.
       if mercuryAudible || playback.isPlaying || responding {
-        if mercuryAudible || playback.isPlaying { haptic(.bargeIn) }
-        playback.flush()
-        link.interrupt()
+        let audible = mercuryAudible || playback.isPlaying
+        if audible, let gate = bargeIn, !gate.admits() {
+          gate.hold()
+          return
+        }
+        cutIn(audible: audible)
       }
     case .userText(let text):
       heard(text.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -161,6 +169,7 @@ final class CallBrain {
     case .toolCall(let id, let name, let argsJson):
       toolCall(id: id, name: name, args: (argsJson.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]) ?? [:])
     case .responseStarted:
+      bargeIn?.setOwnerTalking(false)
       setResponding(true)
       spokeThisResponse = false
     case .responseDone:
@@ -171,10 +180,24 @@ final class CallBrain {
     }
   }
 
+  /// A held barge-in turned out to be the owner (the gate heard the near voice): Mercury stops.
+  func bargeInDue() {
+    guard ended == nil, mercuryAudible || playback.isPlaying else { return }
+    cutIn(audible: true)
+  }
+
+  private func cutIn(audible: Bool) {
+    bargeIn?.release()
+    if audible { haptic(.bargeIn) }
+    playback.flush()
+    link.interrupt()
+  }
+
   /// Mercury's voice started (true) or stopped (false) playing on the phone.
   func playbackChanged(_ on: Bool) {
     guard ended == nil, on != mercuryAudible else { return }
     mercuryAudible = on
+    if !on { bargeIn?.release() }
     if on {
       lastActivity = now()
       if !spokeThisResponse { spokeThisResponse = true; haptic(.mercurySpeaks) }
@@ -186,6 +209,7 @@ final class CallBrain {
     let at = now()
     lastActivity = at
     ownerSpeaking = false
+    bargeIn?.setOwnerTalking(false)
     ownerLine = t
     transcript.append(Line(id: transcript.count, role: "owner", text: t))
     userSaid.append((at, t))
@@ -383,7 +407,7 @@ final class CallBrain {
     }
     // A response that never started (or never said it was done) doesn't hold the call up for ever.
     if responding, !playback.isPlaying, let s = respondingSince, t.timeIntervalSince(s) > 20 { setResponding(false) }
-    if ownerSpeaking, let s = ownerSpeakingSince, t.timeIntervalSince(s) > 15 { ownerSpeaking = false }
+    if ownerSpeaking, let s = ownerSpeakingSince, t.timeIntervalSince(s) > 15 { ownerSpeaking = false; bargeIn?.setOwnerTalking(false) }
     if !responding && !ready.isEmpty { deliver(); return }
     if responding || playback.isPlaying { lastActivity = t; return }
     if muted { lastActivity = t }

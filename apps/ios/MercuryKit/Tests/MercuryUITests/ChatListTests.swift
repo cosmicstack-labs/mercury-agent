@@ -114,7 +114,19 @@ struct ChatListTests {
 
   // MARK: Saved and search
 
-  @Test func savedOnlyIsNewestSaveFirstAndSearchReadsPreviews() {
+  @Test func oneFlatListNewestFirstAndSavedNewestSaveFirst() {
+    let list = [
+      thread("a", ago()), thread("b", ago(hours: 2)), thread("c", ago(days: 3)),
+      thread("s1", ago(days: 9), saved: ago(days: 4)), thread("s2", ago(hours: 1), saved: ago(days: 1)),
+    ]
+    let h = ChatHistory.build(list, query: "", savedOnly: false)
+    #expect(h.threads.map(\.id) == ["a", "s2", "b", "c", "s1"])
+    #expect(h.label == "Conversations")
+    let saved = ChatHistory.build(list, query: "", savedOnly: true)
+    #expect(saved.threads.map(\.id) == ["s2", "s1"] && saved.label == "Saved")
+  }
+
+  @Test func searchFiltersTitlesAndPreviewsLive() {
     let m = ChatsModel(client: MercuryClient(baseURL: URL(string: "http://localhost")!), scope: "m1", defaults: defaults())
     m.threads = [
       thread("old-save", ago(), saved: ago(days: 3), preview: "Gondola tickets"),
@@ -122,15 +134,37 @@ struct ChatListTests {
       thread("plain", ago(hours: 2), preview: "The deploy is ready"),
     ]
     #expect(m.hasSaved)
-    #expect(m.visible.map(\.id) == ["old-save", "plain", "new-save"])
-    m.savedOnly = true
-    #expect(m.visible.map(\.id) == ["new-save", "old-save"])
-    #expect(m.sections.map(\.title) == ["Saved"])
-    m.savedOnly = false
+    #expect(m.history.threads.map(\.id) == ["old-save", "plain", "new-save"])
     m.query = "DEPLOY"
-    #expect(m.visible.map(\.id) == ["plain"])
+    #expect(m.history.threads.map(\.id) == ["plain"] && m.history.label == "Results")
     m.query = "gondola"
-    #expect(m.visible.map(\.id) == ["old-save"])
+    #expect(m.history.threads.map(\.id) == ["old-save"])
+    m.query = "zzz"
+    #expect(m.history.isEmpty)
+    // The memo follows the list and the Saved filter.
+    m.query = ""
+    m.savedOnly = true
+    #expect(m.history.threads.map(\.id) == ["new-save", "old-save"])
+    m.savedOnly = false
+    m.threads.append(thread("new", ago().addingTimeInterval(60)))
+    #expect(m.history.threads.first?.id == "new")
+  }
+
+  @Test func matchesAreEmphasisedCaseInsensitively() {
+    #expect(ChatSearch.ranges("Car and car", "CAR") == [0..<3, 8..<11])
+    #expect(ChatSearch.ranges("anything", " ").isEmpty)
+    let e = ChatSearch.emphasised("Trip to Gulmarg", "gul")
+    #expect(e.runs.contains { $0.inlinePresentationIntent == .stronglyEmphasized && String(e[$0.range].characters) == "Gul" })
+  }
+
+  @Test func deleteWaitsForUndo() {
+    let m = ChatsModel(client: MercuryClient(baseURL: URL(string: "http://localhost")!), scope: "m1", defaults: defaults())
+    let t = thread("a", ago())
+    m.threads = [t, thread("b", ago())]
+    m.delete(t)
+    #expect(m.threads.map(\.id) == ["b"] && m.deleted.map(\.id) == ["a"])
+    m.undoDelete(t)
+    #expect(Set(m.threads.map(\.id)) == ["a", "b"] && m.deleted.isEmpty)
   }
 
   // MARK: The second line
@@ -142,15 +176,47 @@ struct ChatListTests {
     #expect(thread("a", now).previewLine == nil)
   }
 
-  @Test func statusBeatsThePreview() {
-    let t = thread("a", now, preview: "Deploy it", role: "user")
-    #expect(ThreadRow(thread: t, status: .working).subtitle?.text == "Working…")
-    #expect(ThreadRow(thread: t, status: nil).subtitle?.text == "You: Deploy it")
-    #expect(ThreadRow(thread: t, status: nil).subtitle?.lines == 2)
-    var call = thread("c", now)
-    call.voiceCall = true
-    #expect(ThreadRow(thread: call, status: nil).subtitle?.text == "Voice call")
-    #expect(ThreadRow(thread: thread("b", now), status: nil).subtitle == nil)
+  @Test func rowsAreOneLineWithMarkersOnlyWhenRelevant() {
+    #expect(RowLook.of(status: nil, unread: false) == RowLook(marker: nil, unread: false))
+    #expect(RowLook.of(status: nil, unread: true) == RowLook(marker: nil, unread: true))
+    #expect(RowLook.of(status: .working, unread: false).marker == .working)
+    #expect(RowLook.of(status: .failed, unread: false).marker == .failed)
+    #expect(RowLook.of(status: .waiting, unread: false).marker == .waiting)
+    #expect(RowLook.of(status: .needsYou("Run command: npm run deploy"), unread: true) == RowLook(marker: .needsYou, unread: true))
+  }
+
+  // MARK: The model picker
+
+  let models = [
+    ModelChoice(name: "anthropic", model: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", group: "Claude", isCurrent: true),
+    ModelChoice(name: "anthropic", model: "claude-haiku-4-5", label: "Claude Haiku 4.5", group: "Claude"),
+    ModelChoice(name: "openrouter", model: "openai/gpt-5", label: "GPT-5", group: "GPT"),
+    ModelChoice(name: "ollama", model: "llama3"),
+  ]
+
+  @Test func modelsGroupInOrderAndFilterAsYouType() {
+    #expect(ModelMenu.groups(models).map(\.title) == ["Claude", "GPT", "Ollama"])
+    #expect(ModelMenu.groups(models).last?.models.map(\.title) == ["llama3"])
+    #expect(ModelMenu.groups(models, query: "gpt").flatMap(\.models).map(\.title) == ["GPT-5"])
+    #expect(ModelMenu.groups(models, query: "anthropic").first?.models.count == 2)
+    #expect(ModelMenu.groups(models, query: "zzz").isEmpty)
+    #expect(ModelMenu.providerName("mercuryCloud") == "Mercury Cloud")
+    #expect(ModelMenu.providerName("lmstudio") == "LM Studio")
+  }
+
+  @Test func thePillSaysAutoOnTheConfiguredDefault() throws {
+    let auto = ModelCatalog(models: models, current: models[0], defaultProvider: "anthropic", defaultModel: "claude-sonnet-4-5")
+    #expect(auto.isAuto && auto.pill == "Auto")
+    var other = auto
+    other.current = models[2]
+    #expect(other.pill == "GPT-5")
+    #expect(ModelMenu.target(other, nil).map { "\($0.provider)/\($0.model)" } == "anthropic/claude-sonnet-4-5")
+    #expect(ModelMenu.target(auto, models[2]).map { "\($0.provider)/\($0.model)" } == "openrouter/openai/gpt-5")
+    #expect(ModelCatalog(models: models, current: models[0]).pill == "Claude Sonnet 4.5")
+    // The list as Mercury sends it.
+    let json = #"{"name":"openrouter","model":"openai/gpt-5","available":true,"isCurrent":false,"label":"GPT-5","group":"GPT","reasoning":"auto"}"#
+    let m = try JSONDecoder().decode(ModelChoice.self, from: Data(json.utf8))
+    #expect(m.title == "GPT-5" && m.group == "GPT" && !m.isCurrent)
   }
 
   @Test func theListDecodesPreviewsAndOlderListsWithoutThem() throws {

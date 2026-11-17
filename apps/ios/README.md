@@ -32,6 +32,21 @@ API keys never leave the computer), starts a `VoiceCall` with it, pushes
 (`ask_mercury`, `answer_approval`, `end_conversation`) come to the app, which
 answers them through Mercury's chat routes and `toolResult(id:output:)`.
 
+Noise and other people nearby, in layers (all phone-only; Optimus's calls are unchanged):
+
+- The engine (`phoneCall`, set by mercury-voice-mobile): OpenAI Realtime gets `near_field` input
+  noise reduction, then `semantic_vad` (eagerness `low`, `interrupt_response: false`), each as its
+  own `session.update` after the main one so a rejected field never costs the call; a turn spoken
+  over a reply the phone didn't cut is answered after it (when its transcript has words). Gemini
+  Live gets `START_SENSITIVITY_LOW`, `END_SENSITIVITY_HIGH`, `prefixPaddingMs` 100, `silenceDurationMs` 700.
+- The phone: voice processing (echo cancellation, noise suppression, AGC on), other audio ducked
+  fully while anyone talks; Voice Isolation suggested once per call on the call screen (only the
+  owner can turn it on: it opens Control Center's Mic Mode; "Don't show again" is remembered).
+- Barge-in (`BargeInGate`, OpenAI only, since Gemini cuts in server-side): while Mercury is audible,
+  a `speechStarted` stops it only if the last ~300 ms on the phone's own mic are 9 dB over the noise
+  floor and within 12 dB of the owner's learned level; otherwise it waits 1.5 s for that voice.
+  Unsure (first 1.5 s, no audio) means it stops. The owner's audio is never gated.
+
 `apps/ios/MercuryVoice` is a Swift package: `Sources/MercuryVoice/MercuryVoice.swift`
 (generated, committed) over `MercuryVoiceFFI.xcframework` (built, not committed).
 Build the framework once, and again whenever the Rust crates change:
@@ -85,12 +100,29 @@ The Snapshots renderer can't draw native text fields, plain buttons or spinners
 ## Screens
 
 1. Connect: sign in to your Mercury, then approve the phone with a 5-character code (ADR-035).
-2. Chats · 3. Conversation · 4. Approval · 6. Artifacts.
-7. More: the connection, other Mercurys, and settings: Models, Voice, Channels,
+The app is chat-first, like the Android app and the ChatGPT and Grok apps (no tab bar): the
+conversation fills the screen, and the round menu button or a swipe from the leading edge opens the
+side panel (`ChatsView.swift`: the connected Mercury, Bots, Artifacts, Saved, one flat list of
+chats, and Settings, Search and New chat at the bottom). It is monochrome: Mercury's green only in
+the mark and the "working" dot, amber for needs you, red for failed. The chat's bar has Ask | Code
+(Code sends coding turns, `programming: "auto"` with `cwd`, Mercury's project folder from GET
+/api/workspace/info, as Mercury Desktop's Code view does; the folder's name shows under the pill); the
+composer has the model pill (GET /api/chat/models, POST /api/chat/models/switch: Mercury's model for
+every chat; Auto is the configured default). A new chat is keyboard-aware (`NewChatSpace`): while
+you type the mark and greeting fade out and the chips stay just above the composer, as many as fit.
+
+On iOS 26 and later the chrome floating over the chat is Liquid Glass (`Glass.swift`): the round
+buttons, Ask | Code (the chosen side morphs across), the composer card and its buttons, the chips,
+jump to latest, and the side panel's buttons and search. The chat scrolls under the bar and the
+composer (`safeAreaBar`). Below iOS 26, and in builds with an SDK older than 26 (`swift build` with
+the command-line tools), the same shapes are a thin material.
+
+2. Side panel · 3. Conversation · 4. Approval · 6. Artifacts.
+7. Settings (the panel's gear): the connection, other Mercurys, and settings: Models, Voice, Channels,
    Notifications, Budgets, Activity, Paired devices. Changes a remote device may only
    make with the owner's go-ahead (428 from the owner gate) show the code to approve,
    wait for it, then go through.
-5. Voice call: from Chats (a new call) or a conversation (a call in it). The phone hears one
+5. Voice call: the composer's round button when the box is empty (a new chat or the one on screen). The phone hears one
    thing at a time and stops when you go quiet; Mercury transcribes it (`/api/transcribe`),
    answers in the thread (`/api/chat/send` with `voiceCall`, so the answer is written for the
    ear), and the phone reads it aloud (`/api/speak`), then listens again. Needs a speech

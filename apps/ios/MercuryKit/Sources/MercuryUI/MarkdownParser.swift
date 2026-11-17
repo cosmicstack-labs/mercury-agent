@@ -38,10 +38,10 @@ enum MarkdownParser {
   final class Parsed { let blocks: [MDBlock]; init(_ b: [MDBlock]) { blocks = b } }
   nonisolated(unsafe) static let cache: NSCache<NSString, Parsed> = { let c = NSCache<NSString, Parsed>(); c.countLimit = 200; return c }()
 
-  /// Parsed once per text (and tint, which links are drawn in): a list of replies redraws often,
+  /// Parsed once per text: a list of replies redraws often,
   /// and a streaming reply only grows.
   static func cached(_ markdown: String) -> [MDBlock] {
-    let key = "\(Appearance.shared.pair.light)\u{1}\(markdown)" as NSString
+    let key = markdown as NSString
     if let hit = cache.object(forKey: key) { return hit.blocks }
     let blocks = parse(markdown)
     cache.setObject(Parsed(blocks), forKey: key)

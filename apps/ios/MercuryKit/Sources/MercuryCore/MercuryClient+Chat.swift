@@ -18,12 +18,29 @@ extension MercuryClient {
   // MARK: Sending and stopping
 
   /// POST /api/chat/send with files and the Create switch. The reply streams on /api/chat/events.
-  public func sendMessage(_ content: String, sessionId: String, attachments: [OutgoingAttachment] = [], media: MediaIntent? = nil, voiceCall: String? = nil) async throws {
+  /// `programming`: Mercury's coding mode for this turn only ("auto", "plan", "execute"), the Code switch.
+  /// `cwd`: the project folder the coding turn works in, as Mercury Desktop's Code view sends it
+  /// (the server checks it's a folder, points the turn there and lets it write there). Sent only
+  /// with `programming`: the server ignores it otherwise.
+  public func sendMessage(_ content: String, sessionId: String, attachments: [OutgoingAttachment] = [], media: MediaIntent? = nil, voiceCall: String? = nil, programming: String? = nil, cwd: String? = nil) async throws {
     var body: [String: Any] = ["content": content, "sessionId": sessionId]
+    if let programming {
+      body["programming"] = programming
+      if let cwd, !cwd.isEmpty { body["cwd"] = cwd }
+    }
     if !attachments.isEmpty { body["attachments"] = attachments.map(\.json) }
     if let media { body["media"] = media.json }
     if let voiceCall { body["voiceCall"] = voiceCall }
     _ = try await json(request("POST", "/api/chat/send", body: body, timeout: attachments.isEmpty ? 15 : 90))
+  }
+
+  /// GET /api/workspace/info: Mercury's project folder (the workspace set in Settings, else the
+  /// folder Mercury runs in) and its name. Code mode works there.
+  public func workspaceInfo() async throws -> WorkspaceInfo {
+    let j = try await json(request("GET", "/api/workspace/info"))
+    guard let cwd = j["cwd"] as? String, !cwd.isEmpty else { throw MercuryError.server(200, "No workspace folder") }
+    let name = (j["projectName"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (cwd as NSString).lastPathComponent
+    return WorkspaceInfo(cwd: cwd, name: name)
   }
 
   /// Stops this chat's turn only (other chats keep running, ADR-037), and drops its waiting
@@ -134,4 +151,11 @@ extension MercuryClient {
     guard path.hasPrefix("/api/") else { return nil }
     return URL(string: path, relativeTo: baseURL)?.absoluteURL
   }
+}
+
+/// The folder a Code turn works in (GET /api/workspace/info).
+public struct WorkspaceInfo: Sendable, Equatable {
+  public var cwd: String
+  public var name: String
+  public init(cwd: String, name: String) { self.cwd = cwd; self.name = name }
 }

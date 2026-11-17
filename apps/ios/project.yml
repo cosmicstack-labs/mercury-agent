@@ -32,6 +32,11 @@ targets:
         # only takes calls from an app with the voip mode (no PushKit: Mercury never rings).
         UIBackgroundModes: [audio, voip]
         NSLocalNetworkUsageDescription: Mercury connects to the Mercury running on your computer.
+        # Home Screen quick action (long-press the icon): App/MercuryApp.swift hands it to HomeScreenActions.
+        UIApplicationShortcutItems:
+          - UIApplicationShortcutItemType: sh.mercuryagent.call
+            UIApplicationShortcutItemTitle: Call Mercury
+            UIApplicationShortcutItemIconSymbolName: phone.fill
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     settings:

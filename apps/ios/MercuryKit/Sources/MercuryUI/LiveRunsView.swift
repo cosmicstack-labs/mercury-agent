@@ -224,7 +224,7 @@ struct RunCard: View {
 
   static func tone(_ s: RunState) -> Color {
     switch s {
-    case .working: Theme.accent
+    case .working: Theme.green
     case .waiting, .paused: Theme.amber
     case .failed: Theme.red
     default: Theme.ink3

@@ -4,7 +4,7 @@ import SwiftUI
 /// Drawn in the mark's own 338 x 443 viewBox and scaled to fit.
 public struct MercuryMark: View {
   var color: Color
-  public init(color: Color = Theme.accent) { self.color = color }
+  public init(color: Color = Theme.green) { self.color = color }
 
   public var body: some View {
     Canvas { ctx, size in

@@ -19,7 +19,7 @@ public struct RootView: View {
 }
 
 extension View {
-  /// The person's tint and light or dark (Settings → Appearance), on everything under it and on
+  /// Ink as the tint and the person's light or dark (Settings → Appearance), on everything under it and on
   /// UIKit's own pieces (alerts, menus), the moment they change.
   public func appearance() -> some View { modifier(AppearanceModifier()) }
 }
@@ -28,11 +28,10 @@ struct AppearanceModifier: ViewModifier {
   @State private var look = Appearance.shared
   func body(content: Content) -> some View {
     content
-      .tint(look.accent)
+      .tint(Theme.accent)
       #if canImport(UIKit)
       .onAppear { look.applyToWindows() }
       .onChange(of: look.mode) { look.applyToWindows() }
-      .onChange(of: look.tintHex) { look.applyToWindows() }
       #else
       .preferredColorScheme(look.mode.scheme)
       #endif

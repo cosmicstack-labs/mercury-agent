@@ -49,6 +49,20 @@ final class ConversationModel {
   var mediaAvailable: MediaAvailability?
   /// An effort picked before the chat existed: applied when it's created.
   var pendingEffort: String?
+  /// Code (the top bar's Ask | Code): each message is a coding turn (POST /api/chat/send
+  /// `programming: "auto"`: Mercury plans or executes, works with files and commands, verifies),
+  /// in Mercury's project folder (`cwd`, from GET /api/workspace/info), as Mercury Desktop's Code
+  /// view sends it. Ask is a normal chat.
+  var code = false {
+    didSet { if code && workspace == nil { Task { await loadWorkspace() } } }
+  }
+  /// The folder Code works in (nil until loaded, or on an older runtime: the turn then runs in
+  /// whatever folder Mercury is in).
+  var workspace: WorkspaceInfo?
+  /// The models Mercury offers and which runs (the composer's model pill).
+  var catalog: ModelCatalog?
+  /// A model switch is on its way.
+  var switching = false
   /// Live dictation into `draft` (the composer's mic).
   let dictation = DictationModel()
 
@@ -57,6 +71,9 @@ final class ConversationModel {
   var onChange: () -> Void = {}
   /// Set while a voice call runs in this conversation: what's sent is said on that call.
   var callId: String?
+  /// A call was asked for from outside the chat (the side panel, a Home Screen quick action):
+  /// the chat's screen starts it and clears this.
+  var callRequested = false
   var titleCheck: Task<Void, Never>?
   var stopFallback: Task<Void, Never>?
   /// A turn ended, with Mercury's reply when it gave one (a voice call reads it aloud).
@@ -155,6 +172,9 @@ final class ConversationModel {
     let text = draft.trimmed
     let files = attachments
     guard !text.isEmpty || !files.isEmpty else { return }
+    // One tap is one message: the same words again while the first is still on its way (a second
+    // tap, an idea picked again while a slow new chat is created) are dropped, not sent twice.
+    if files.isEmpty && inFlight.contains(text) { draft = ""; return }
     // The Create switch is for a real ask: never a command or a voice call.
     let intent = callId == nil && !text.isEmpty && !text.hasPrefix("/") && !text.hasPrefix("#") ? media : nil
     let keptMedia = media
@@ -163,30 +183,97 @@ final class ConversationModel {
     let shown = text.isEmpty ? "(Attached: \(files.map(\.name).joined(separator: ", ")))" : text
     var optimistic = ChatMessage(role: "user", content: shown)
     if !files.isEmpty { optimistic.attachments = files.map { SentAttachment(name: $0.name, kind: $0.isImage ? "image" : "document", mime: $0.mime) } }
+    // Shown at once, before the chat exists: the welcome and its ideas go away, so nothing invites
+    // a second tap while a slow POST /api/chat/threads runs.
+    messages.append(optimistic)
+    agent = .thinking
+    live = TurnTrace()
+    stopping = false
+    notice = nil
+    if files.isEmpty { inFlight.insert(text) }
+    defer { if files.isEmpty { inFlight.remove(text) } }
     do {
-      if threadId == nil {
-        let t = try await client.createThread()
-        threadId = t.id
-        // A chat you start yourself is never "new" in the list.
-        onSeen(t.id, nil)
-        listen()
-        if let e = pendingEffort {
-          pendingEffort = nil
-          _ = try? await client.setEffort(sessionId: t.id, level: e)
-        }
-      }
-      messages.append(optimistic)
-      agent = .thinking
-      live = TurnTrace()
-      stopping = false
-      notice = nil
-      try await client.sendMessage(text, sessionId: threadId!, attachments: files, media: intent, voiceCall: callId)
+      let id = try await ensureThread()
+      let coding = code && callId == nil
+      if coding && workspace == nil { await loadWorkspace() }
+      try await client.sendMessage(text, sessionId: id, attachments: files, media: intent, voiceCall: callId,
+                                   programming: coding ? "auto" : nil, cwd: coding ? workspace?.cwd : nil)
       onChange()
     } catch {
       self.error = error.localizedDescription
       messages.removeAll { $0.id == optimistic.id }
       if live?.hasProcess != true { live = nil; agent = .idle }
       draft = text; attachments = files; media = keptMedia
+    }
+  }
+
+  /// Mercury's project folder, for Code (quietly nothing on an older runtime).
+  func loadWorkspace() async {
+    if let w = try? await client.workspaceInfo() { workspace = w }
+  }
+
+  /// Messages on their way (text as typed): the same one again before it lands is a double send.
+  @ObservationIgnored var inFlight: Set<String> = []
+  /// The one POST /api/chat/threads for a new chat: sends racing here all wait for it.
+  @ObservationIgnored var creating: Task<String, Error>?
+
+  /// This chat's id, creating it on Mercury first when it's new: once, however many sends race here.
+  func ensureThread() async throws -> String {
+    if let threadId { return threadId }
+    if let creating { return try await creating.value }
+    let task = Task { @MainActor [client] in try await client.createThread().id }
+    creating = task
+    do {
+      let id = try await task.value
+      creating = nil
+      if threadId == nil {
+        threadId = id
+        // A chat you start yourself is never "new" in the list.
+        onSeen(id, nil)
+        listen()
+        if let e = pendingEffort {
+          pendingEffort = nil
+          _ = try? await client.setEffort(sessionId: id, level: e)
+        }
+      }
+      return threadId ?? id
+    } catch {
+      creating = nil
+      throw error
+    }
+  }
+
+  /// The model pill's list: every model Mercury offers, the current one, the default ("Auto").
+  func loadModels() async {
+    if let c = try? await client.modelCatalog(sessionId: threadId) { catalog = c }
+  }
+
+  /// Switches Mercury's model (`pick` nil: back to the configured default, "Auto"). Mercury has
+  /// one model for every chat, so this changes it everywhere; the sheet says so.
+  func pickModel(_ pick: ModelChoice?) async {
+    guard let c = catalog, let t = ModelMenu.target(c, pick) else { return }
+    switching = true
+    defer { switching = false }
+    do {
+      try await client.switchModel(provider: t.provider, model: t.model)
+      await loadModels()
+      await loadComposerInfo()
+    } catch {
+      self.error = error.localizedDescription
+    }
+  }
+
+  /// Deletes this chat on Mercury. True once it's gone.
+  func delete() async -> Bool {
+    guard let id = threadId else { return false }
+    do {
+      try await client.deleteThread(id)
+      listener?.cancel()
+      onChange()
+      return true
+    } catch {
+      self.error = error.localizedDescription
+      return false
     }
   }
 
