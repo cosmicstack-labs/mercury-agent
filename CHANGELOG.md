@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.5.3 — phone apps, Google Workspace, bots that can't be steered
+
+### Mercury on your phone
+The native iPhone and Android apps (in `apps/ios` and `apps/android`, not yet in the app stores) connect to this release. It adds what they need:
+- **Real-time voice calls run on the phone.** Mercury hands the phone a short-lived token for OpenAI Realtime or Gemini Live (`POST /api/mobile/voice/session`); your API keys never leave the computer. The phone runs Mercury's own voice engine, the same one Optimus uses, so a call answers in about two seconds instead of turn by turn.
+- **Live dictation in the message box** (`POST /api/mobile/voice/dictation`): OpenAI, Deepgram or ElevenLabs, whichever you have a key for. `GET /api/mobile/voice/capabilities` tells the apps what this Mercury can do, so the mic is greyed out with a reason when it can't.
+- **Calls hear you, not the room.** Phone calls ask the voice service for near-field noise reduction and a less jumpy turn detector, so background talk and noise don't count as you speaking. Optimus on the desktop is unchanged.
+- **Chat lists show a preview** of each chat's last message (`preview`, `lastRole` on `GET /api/chat/threads`).
+
+### Terminal
+- **A new device token is shown whole.** In the attached terminal, `/server token` cut the token at the edge of the window. It now wraps, and every token prompt has **Copy to clipboard**, so you never copy line breaks or box borders with it.
+
+### Mercury Desktop
+- **Bot faces are drawn properly again.** Some bot names gave a face with no shape (just white eyes).
+
+
 ### Security: bots can't be steered by what they read
 - **Bots are never relaxed.** 1.5.2 stopped asking about planted instructions when a strong model was in use, because large models resist them. That also applied to bots, which have nobody watching. A bot on a strong model that read a poisoned file or page could schedule runs, save memory or message the fleet. Bots and scheduled runs now keep the full protection, whatever the model; it's relaxed only in a chat you're in.
 - **A bot's own tools are guarded too.** They were added after the protection and were never checked.
