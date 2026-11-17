@@ -50,6 +50,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.outlined.PanTool
+import androidx.compose.ui.semantics.selected
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
@@ -136,6 +139,9 @@ fun Composer(
   val draft = vm.draft
   val attachments by vm.attachments.collectAsStateWithLifecycle()
   val composer by vm.composer.collectAsStateWithLifecycle()
+  val permission by vm.permissions.state.collectAsStateWithLifecycle()
+  // Ask Me / Allow All: read when the composer appears and whenever the app comes back.
+  androidx.lifecycle.compose.LifecycleResumeEffect(vm) { vm.refreshPermissions(); onPauseOrDispose {} }
   val canSend = draft.text.isNotBlank() || attachments.isNotEmpty()
   var sheet by remember { mutableStateOf(false) }
   val dismissKeyboard = sh.mercuryagent.ui.rememberDismissKeyboard()
@@ -193,8 +199,14 @@ fun Composer(
       Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         CircleIcon(Icons.Outlined.Add, "Add a file, create media or set thinking effort") { dismissKeyboard(); sheet = true }
         Spacer(Modifier.width(8.dp))
-        ModelPill(composer.catalog?.pill ?: "Auto", composer.switching) { dismissKeyboard(); models = true }
-        Spacer(Modifier.weight(1f))
+        // Allow All beside it: the name gives way (…) so the row still fits a small phone.
+        Row(Modifier.weight(1f).padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+          ModelPill(composer.catalog?.pill ?: "Auto", composer.switching, Modifier.weight(1f, fill = false)) { dismissKeyboard(); models = true }
+          if (permission.allowAll) {
+            Spacer(Modifier.width(6.dp))
+            AllowAllBadge { dismissKeyboard(); models = true }
+          }
+        }
         DictationButton(dictation, onDictate)
         Spacer(Modifier.width(6.dp))
         val mode = when { busy && !canSend -> 2; canSend -> 1; else -> 0 }
@@ -210,10 +222,12 @@ fun Composer(
   }
 
   if (models) ModelSheet(
-    vm, composer, onDismiss = { models = false },
+    vm, composer, permission, onDismiss = { models = false },
     voice = if (voiceKeys) VoiceLine(dictation.capabilities) else null,
     onVoiceSettings = { models = false; onVoiceSettings() },
   )
+  // An older Mercury wants the owner's go-ahead for Allow All: the code to approve.
+  sh.mercuryagent.ui.more.OwnerGateSheet(vm.gate)
   if (sheet) ComposerSheet(
     vm, composer, attachments.size,
     onDismiss = { sheet = false },
@@ -449,10 +463,10 @@ private fun CircleIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, la
 
 /** The model Mercury answers with ("Auto" on its configured default): tap to pick another. */
 @Composable
-private fun ModelPill(name: String, busy: Boolean, onClick: () -> Unit) {
+private fun ModelPill(name: String, busy: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
   Surface(
     onClick = onClick, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest,
-    modifier = Modifier.height(40.dp).semantics { contentDescription = "Model: $name. Change the model" },
+    modifier = modifier.height(40.dp).semantics { contentDescription = "Model: $name. Change the model" },
   ) {
     Row(Modifier.padding(start = 12.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
       if (busy) androidx.compose.material3.CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
@@ -460,6 +474,20 @@ private fun ModelPill(name: String, busy: Boolean, onClick: () -> Unit) {
       Text(name, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         modifier = Modifier.widthIn(max = 150.dp))
       Icon(Icons.Outlined.KeyboardArrowDown, null, Modifier.size(16.dp), tint = Mercury.colors.ink3)
+    }
+  }
+}
+
+/** Allow All is on: Mercury acts without asking. Always in sight next to the model pill; tap to change it. */
+@Composable
+private fun AllowAllBadge(onClick: () -> Unit) {
+  Surface(
+    onClick = onClick, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest,
+    modifier = Modifier.height(40.dp).semantics { contentDescription = "Allow All is on: Mercury acts without asking. Change it" },
+  ) {
+    Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+      Icon(Icons.Filled.Bolt, null, Modifier.size(16.dp))
+      Text("Allow All", style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false)
     }
   }
 }
@@ -474,6 +502,7 @@ private fun ModelPill(name: String, busy: Boolean, onClick: () -> Unit) {
 private fun ModelSheet(
   vm: ConversationViewModel,
   c: ComposerState,
+  permission: sh.mercuryagent.core.PermissionState,
   onDismiss: () -> Unit,
   voice: VoiceLine? = null,
   onVoiceSettings: () -> Unit = {},
@@ -530,9 +559,36 @@ private fun ModelSheet(
             }
           }
           if (groups.isEmpty()) item { Text(if (query.isBlank()) "No providers configured." else "No model matches “$query”.", color = Mercury.colors.ink3, modifier = Modifier.padding(20.dp)) }
+          if (query.isBlank()) permissionItems(permission, vm::setPermission)
         }
       }
     }
+  }
+}
+
+/** The model sheet's Permissions, under the models: Ask Me / Allow All, applied at once. */
+private fun androidx.compose.foundation.lazy.LazyListScope.permissionItems(p: sh.mercuryagent.core.PermissionState, onPick: (sh.mercuryagent.core.PermissionMode) -> Unit) {
+  item(key = "permissions") { SheetHeader("Permissions") }
+  items(sh.mercuryagent.core.PermissionMode.entries, key = { "perm:${it.wire}" }) { m ->
+    val on = p.mode == m
+    ListItem(
+      headlineContent = { Text(m.title, maxLines = 1) },
+      supportingContent = { Text(m.detail, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+      leadingContent = { Icon(if (m.allowAll) Icons.Filled.Bolt else Icons.Outlined.PanTool, null, Modifier.size(20.dp)) },
+      trailingContent = {
+        if (on && p.saving) androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+        else if (on) Icon(Icons.Outlined.Check, "Current")
+      },
+      colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
+      modifier = Modifier.semantics { selected = on }.clickable(onClick = { onPick(m) }),
+    )
+  }
+  item(key = "perm:footer") {
+    Text(
+      p.error ?: "For Mercury, in every chat.", style = MaterialTheme.typography.bodySmall,
+      color = if (p.error != null) Mercury.colors.amber else Mercury.colors.ink3,
+      modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 12.dp),
+    )
   }
 }
 
