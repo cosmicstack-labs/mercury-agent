@@ -9,7 +9,7 @@ import { audit } from '../security/audit.js';
 import { loadConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
-const PUBLIC_PATHS = new Set(['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/token', '/api/auth/token/pending', '/api/health']);
+const PUBLIC_PATHS = new Set(['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/token', '/api/auth/token/pending', '/api/auth/pair', '/api/health']);
 
 export type Principal =
   | { kind: 'session'; key: string; via: 'cookie' | 'bearer' }

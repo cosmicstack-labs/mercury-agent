@@ -87,6 +87,7 @@ export function auditText(entries: AuditEntry[]): string {
   if (!entries.length) return 'Nothing in the security log yet.';
   const label: Record<string, string> = {
     'pair.requested': 'asked to pair', 'pair.approved': 'paired (approved)', 'pair.denied': 'pairing denied', 'pair.expired': 'pairing expired', 'pair.local': 'paired on this computer',
+    'pair.code.created': 'pairing code made', 'pair.code.redeemed': 'paired with a code', 'pair.code.expired': 'pairing code ended',
     'device.revoked': 'signed out', 'device.expired': 'expired (unused)', 'device.new-location': 'connected from a new address', 'device.blocked': 'refused',
     'action.requested': 'asked to', 'action.allowed': 'allowed', 'action.denied': 'denied',
     'remote.changed': 'remote access changed', 'login.failed': 'wrong password', 'login.locked': 'sign-in locked (too many tries)', 'password.changed': 'password changed',

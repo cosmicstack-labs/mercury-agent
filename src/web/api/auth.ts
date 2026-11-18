@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import process from 'node:process';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { authenticateAsync, createSession, destroySession, destroyAllSessions, changePassword, changeUsername, getSessionCookieName, getSessionMaxAge, sessionKey } from '../auth.js';
-import { createDevice, getDevice, listDevices, revokeAllDevices, revokeDevice } from '../devices.js';
+import { createDevice, getDevice, listDevices, normalizeDeviceName, revokeAllDevices, revokeDevice } from '../devices.js';
 import { authenticateRequest, bearerToken, isThisComputer, originOf, principalLabel } from '../middleware.js';
 import { apiContract } from '../api-contract.js';
 import { createLoginLimiter } from '../login-limiter.js';
@@ -15,6 +15,7 @@ import { requireOwner, whereToApprove } from '../owner-gate.js';
 import { ownerApprovals } from '../../security/owner-approvals.js';
 import { audit } from '../../security/audit.js';
 import { closeStreams } from '../../security/live-streams.js';
+import { pairCodes } from '../../security/pair-codes.js';
 
 function resolveWebDir(...segments: string[]): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -275,6 +276,43 @@ auth.post('/api/auth/token/pending', async (c) => {
     return c.json({ status: 'approved', token: created.token, device: created.device, ...apiContract() });
   } catch (err) {
     return c.json({ status: 'error', error: err instanceof Error ? err.message : 'Could not create device' }, 409);
+  }
+});
+
+const pairLimiter = createLoginLimiter();
+const PAIR_CODE_REFUSED = "This pairing code isn't valid. Make a new one on the computer Mercury runs on.";
+
+auth.post('/api/auth/pair', async (c) => {
+  const key = limiterKey(c);
+  const wait = pairLimiter.retryAfterSeconds(key);
+  if (wait > 0) {
+    c.header('Retry-After', String(wait));
+    return c.json({ error: 'Too many wrong pairing codes; try again later' }, 429);
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Expected a JSON body' }, 400);
+  }
+  const code = typeof body.code === 'string' ? body.code : '';
+  if (!code) return c.json({ error: 'A pairing code is required' }, 400);
+  const origin = originOf(c);
+  const codes = pairCodes();
+  const found = codes.match(code);
+  if (!found) {
+    pairLimiter.recordFailure(key);
+    audit('login.failed', { who: normalizeDeviceName(body.deviceName), ip: origin.clientIp, detail: 'wrong pairing code' });
+    if (pairLimiter.retryAfterSeconds(key) > 0) audit('login.locked', { ip: origin.clientIp });
+    return c.json({ error: PAIR_CODE_REFUSED }, 401);
+  }
+  pairLimiter.reset(key);
+  try {
+    const created = createDevice(body.deviceName, body.platform, found.by);
+    codes.redeemed(found.id, { name: created.device.name, platform: created.device.platform }, origin.clientIpKnown ? origin.clientIp : undefined);
+    return c.json({ token: created.token, device: created.device, ...apiContract() });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'Could not create device' }, 409);
   }
 });
 
