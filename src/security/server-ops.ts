@@ -7,13 +7,27 @@ import { readRemoteSettings, writeRemoteSettings, type RemoteSettings } from './
 import { audit, readAudit } from './audit.js';
 import { closeStreams } from './live-streams.js';
 import { securityCheck, summarizeFindings } from './check.js';
-import type { ServerOps, ServerStatus } from './server-menu.js';
+import { pairCodes, type PairOutcome } from './pair-codes.js';
+import { choosePairAddress } from './tunnel.js';
+import type { PairStart, ServerOps, ServerStatus } from './server-menu.js';
+
+export function startPairing(address: string | undefined, by: string): PairStart {
+  const remote = readRemoteSettings();
+  if (!remote.enabled) return { ok: false, reason: 'remote-off', message: "Remote access is off, so a phone can't connect. Turn it on first." };
+  const count = listDevices().length;
+  if (count >= remote.maxDevices) {
+    return { ok: false, reason: 'limit', message: `This Mercury already has ${count} devices (the limit is ${remote.maxDevices}). Revoke one, or raise the limit with /server limit <n>.` };
+  }
+  const chosen = choosePairAddress(address);
+  if (!chosen.ok) return chosen;
+  return { ok: true, ...pairCodes().create(chosen.address, by) };
+}
 
 /**
  * The /server operations inside the running Mercury (the chat command and
  * the /api/security routes): its own state, directly.
  */
-export function localServerOps(opts: { cloudConnected?: () => boolean; by?: string } = {}): ServerOps {
+export function localServerOps(opts: { cloudConnected?: () => boolean; by?: string; offline?: boolean } = {}): ServerOps {
   const by = opts.by ?? 'this computer';
   return {
     async status(): Promise<ServerStatus> {
@@ -61,6 +75,16 @@ export function localServerOps(opts: { cloudConnected?: () => boolean; by?: stri
     async audit(limit) {
       return readAudit(limit);
     },
+    async pair(address) {
+      if (opts.offline) {
+        return { ok: false, reason: 'not-running', message: "Mercury isn't running, and a phone pairs with the running Mercury. Start it with mercury start, then run mercury server pair again." };
+      }
+      return startPairing(address, by);
+    },
+    waitPair: (id) => pairCodes().wait(id),
+    async cancelPair() {
+      pairCodes().cancel();
+    },
   };
 }
 
@@ -69,10 +93,10 @@ export function localServerOps(opts: { cloudConnected?: () => boolean; by?: stri
  * server` while Mercury runs): through its API, with the local attach token.
  */
 export function httpServerOps(base: string, token: string): ServerOps {
-  const call = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
+  const call = async <T>(path: string, init: RequestInit = {}, accept: number[] = [410]): Promise<T> => {
     const res = await fetch(`${base}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
     const body = await res.json().catch(() => ({})) as T & { error?: string };
-    if (!res.ok && res.status !== 410) throw new Error(body.error ?? `Mercury answered ${res.status}`);
+    if (!res.ok && !accept.includes(res.status)) throw new Error(body.error ?? `Mercury answered ${res.status}`);
     return body;
   };
   return {
@@ -86,5 +110,13 @@ export function httpServerOps(base: string, token: string): ServerOps {
     async revoke(id) { await call(`/api/security/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }); return true; },
     async revokeAll() { return (await call<{ revoked: number }>('/api/security/devices', { method: 'DELETE' })).revoked; },
     async audit(limit) { return (await call<{ entries: import('./audit.js').AuditEntry[] }>(`/api/security/audit?limit=${limit}`)).entries; },
+    pair: (address) => call<PairStart>('/api/security/pair', { method: 'POST', body: JSON.stringify({ address, by: 'cli' }) }, [409]),
+    async waitPair(id) {
+      for (;;) {
+        const r = await call<PairOutcome | { status: 'waiting' }>(`/api/security/pair/${encodeURIComponent(id)}`);
+        if (r.status !== 'waiting') return r;
+      }
+    },
+    async cancelPair() { await call('/api/security/pair', { method: 'DELETE' }); },
   };
 }

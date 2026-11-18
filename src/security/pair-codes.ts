@@ -43,7 +43,7 @@ export function groupPairCode(code: string): string {
 }
 
 export function pairLink(address: string, code: string): string {
-  return `mercury://pair?u=${encodeURIComponent(address)}&c=${code}`;
+  return `mercury://pair?u=${encodeURIComponent(address).replace(/%3A/gi, ':').replace(/%2F/gi, '/')}&c=${code}`;
 }
 
 export class PairCodes {

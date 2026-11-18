@@ -3,7 +3,9 @@ import type { OwnerApproval } from './owner-approvals.js';
 import type { RemoteSettings } from './remote-settings.js';
 import type { AuditEntry } from './audit.js';
 import type { SecurityFinding } from './check.js';
+import type { PairCodeShown, PairOutcome } from './pair-codes.js';
 import { parseIpRule } from './ip-match.js';
+import { qrBlocks } from '../plugins/qr-svg.js';
 
 /**
  * The owner's remote-access screen: `/server` in the terminal (and in
@@ -30,13 +32,42 @@ export interface ServerOps {
   revoke(id: string): Promise<boolean>;
   revokeAll(): Promise<number>;
   audit(limit: number): Promise<AuditEntry[]>;
+  pair(address?: string): Promise<PairStart>;
+  waitPair(id: string): Promise<PairOutcome>;
+  cancelPair(): Promise<void>;
 }
+
+export type PairRefusal = 'remote-off' | 'limit' | 'not-running' | 'none' | 'insecure' | 'loopback' | 'invalid';
+
+export type PairStart = ({ ok: true } & PairCodeShown) | { ok: false; reason: PairRefusal; message: string };
 
 export interface ServerUi {
   choose(title: string, options: Array<{ value: string; label: string }>): Promise<string | null>;
   say(text: string): Promise<void>;
   /** Something that must not stay in a transcript (a new token): shown until acknowledged. */
   secret(text: string, copy?: string): Promise<void>;
+  terminal?: boolean;
+  waitFor?<T>(text: string, until: Promise<T>): Promise<T | null>;
+}
+
+export function pairScreenText(p: PairCodeShown, terminal: boolean, now = Date.now()): string {
+  const minutes = Math.max(1, Math.round((p.expiresAt - now) / 60_000));
+  const qr = qrBlocks(p.url, { ansi: terminal });
+  return [
+    'Scan with the Mercury app (Connect → Scan to connect), or type in:',
+    `  Address  ${p.address}`,
+    `  Code     ${p.display}  (works once, for ${minutes} minutes)`,
+    '',
+    terminal ? qr : `\`\`\`text\n${qr}\n\`\`\``,
+    ...(terminal ? [] : ['', 'Clearer in Mercury Desktop: Settings → Connections → Paired devices → Pair a phone.']),
+  ].join('\n');
+}
+
+export function pairOutcomeText(o: PairOutcome): string {
+  if (o.status === 'paired') return `✓ Paired with ${o.device.name}${o.device.platform && o.device.platform !== 'unknown' ? ` (${o.device.platform})` : ''}.`;
+  if (o.status === 'expired') return 'The pairing code expired before a phone used it. Run /server pair for a new one.';
+  if (o.status === 'replaced') return 'A newer pairing code replaced this one.';
+  return 'Cancelled: that pairing code no longer works.';
 }
 
 const ago = (iso: string | null | undefined, now = Date.now()): string => {
@@ -145,6 +176,31 @@ export async function runServerCommand(args: string, ops: ServerOps, ui: ServerU
       await ui.secret(`Token for “${created.device.name}” (shown only now):\n\n${created.token}\n\nPaste it into the device (Mercury Desktop → Add a remote → Token).`, created.token);
       return true;
     }
+    case 'pair': {
+      let started = await ops.pair(arg || undefined);
+      if (!started.ok && started.reason === 'remote-off') {
+        const on = await ui.choose("Remote access is off, so a phone can't connect. Turn it on?", [{ value: 'on', label: 'Turn remote access on' }, { value: 'off', label: 'Leave it off' }]);
+        if (on !== 'on') { await ui.say('Remote access stays off. Turn it on with /server on, then pair again.'); return true; }
+        await ops.setRemote({ enabled: true });
+        started = await ops.pair(arg || undefined);
+      }
+      if (!started.ok) { await ui.say(started.message); return true; }
+      const screen = pairScreenText(started, ui.terminal === true);
+      const until = ops.waitPair(started.id);
+      if (!ui.waitFor) {
+        await ui.say(screen);
+        void until.then((o) => ui.say(pairOutcomeText(o)), () => {});
+        return true;
+      }
+      const outcome = await ui.waitFor(screen, until);
+      if (outcome === null) {
+        await ops.cancelPair();
+        await ui.say(pairOutcomeText({ status: 'cancelled' }));
+        return true;
+      }
+      await ui.say(pairOutcomeText(outcome));
+      return true;
+    }
     case 'allow-ip': {
       const rule = parseIpRule(arg);
       if (!rule) { await ui.say('Give an address or range, e.g. /server allow-ip 203.0.113.7 or /server allow-ip 100.64.0.0/10 (a Tailscale network).'); return true; }
@@ -203,6 +259,7 @@ export const SERVER_HELP = [
   '  /server on | off        allow or refuse other devices',
   '  /server approve <code>  let a waiting device or action through (deny <code> to refuse)',
   '  /server devices         paired devices · /server revoke <id|name> · /server revoke-all',
+  '  /server pair [address]  show a QR code to pair a phone (a one-time code, 5 minutes)',
   '  /server token <name>    make a token for a device by hand (shown once)',
   '  /server allow-ip <ip|range> · remove-ip <ip|range> · allow-any',
   '  /server shell on|off    the terminal for remote devices (each command still asks you)',
@@ -218,6 +275,7 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
     const pick = await ui.choose(statusLine(s), [
       ...(s.pending.length ? [{ value: 'pending', label: `Waiting for you (${s.pending.length})` }] : []),
       { value: 'devices', label: `Devices (${s.devices.length})` },
+      { value: 'pair', label: 'Pair a phone (QR code)' },
       { value: 'toggle', label: r.enabled ? 'Turn remote access off' : 'Turn remote access on' },
       { value: 'ips', label: `Allowed addresses: ${r.allowIps.length ? r.allowIps.join(', ') : 'any'}` },
       { value: 'shell', label: `Terminal for remote devices: ${r.allowShell ? 'on' : 'off'}` },
@@ -228,6 +286,7 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
     ]);
     if (!pick || pick === 'done') return;
     if (pick === 'status') await ui.say(statusText(s));
+    if (pick === 'pair') await runServerCommand('pair', ops, ui);
     if (pick === 'toggle') await runServerCommand(r.enabled ? 'off' : 'on', ops, ui);
     if (pick === 'check') await ui.say(findingsText(s.check.findings));
     if (pick === 'log') await ui.say(auditText(await ops.audit(20)));

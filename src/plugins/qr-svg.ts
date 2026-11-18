@@ -15,11 +15,16 @@ interface QRCodeInstance {
   isDark(row: number, col: number): boolean;
 }
 
-export function qrSvg(text: string, scale = 6): string {
+function encode(text: string): QRCodeInstance {
   const Ctor = QRCode as unknown as new (type: number, level: number) => QRCodeInstance;
   const qr = new Ctor(-1, (QRErrorCorrectLevel as { L: number }).L);
   qr.addData(text);
   qr.make();
+  return qr;
+}
+
+export function qrSvg(text: string, scale = 6): string {
+  const qr = encode(text);
   const n = qr.getModuleCount();
   const quiet = 4;
   const size = (n + quiet * 2) * scale;
@@ -30,4 +35,23 @@ export function qrSvg(text: string, scale = 6): string {
     }
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
+}
+
+export function qrBlocks(text: string, opts: { ansi?: boolean } = {}): string {
+  const qr = encode(text);
+  const n = qr.getModuleCount();
+  const quiet = 2;
+  const size = n + quiet * 2;
+  const dark = (r: number, c: number): boolean => r >= size || (r >= quiet && c >= quiet && r < n + quiet && c < n + quiet && qr.isDark(r - quiet, c - quiet));
+  const lines: string[] = [];
+  for (let r = 0; r < size; r += 2) {
+    let line = '';
+    for (let c = 0; c < size; c++) {
+      const top = dark(r, c);
+      const bottom = dark(r + 1, c);
+      line += top ? (bottom ? ' ' : '▄') : (bottom ? '▀' : '█');
+    }
+    lines.push(opts.ansi ? `\x1b[97;40m${line}\x1b[39;49m` : line);
+  }
+  return lines.join('\n');
 }

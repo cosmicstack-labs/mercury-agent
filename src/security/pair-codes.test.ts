@@ -30,7 +30,9 @@ describe('pairing codes', () => {
     expect(shown.code).toMatch(/^[0-9A-HJKMNP-TV-Z]{25}$/);
     expect(shown.display).toMatch(/^([0-9A-Z]{5}-){4}[0-9A-Z]{5}$/);
     expect(shown.display.replace(/-/g, '')).toBe(shown.code);
-    expect(shown.url).toBe(`mercury://pair?u=https%3A%2F%2Fmercury.tail1234.ts.net&c=${shown.code}`);
+    expect(shown.url).toBe(`mercury://pair?u=https://mercury.tail1234.ts.net&c=${shown.code}`);
+    expect(new URL(shown.url).searchParams.get('u')).toBe(ADDRESS);
+    expect(new URL(shown.url).searchParams.get('c')).toBe(shown.code);
     expect(shown.expiresAt).toBe(t + PAIR_CODE_TTL_MS);
     expect(shown.address).toBe(ADDRESS);
   });
@@ -38,7 +40,8 @@ describe('pairing codes', () => {
   it('reads a typed code the way people type it', () => {
     expect(normalizePairCode('abcde-0o1il xyz')).toBe('ABCDE00111XYZ');
     expect(groupPairCode('ABCDEFGHJK')).toBe('ABCDE-FGHJK');
-    expect(pairLink('http://192.168.1.5:6174', 'X')).toBe('mercury://pair?u=http%3A%2F%2F192.168.1.5%3A6174&c=X');
+    expect(pairLink('http://192.168.1.5:6174', 'X')).toBe('mercury://pair?u=http://192.168.1.5:6174&c=X');
+    expect(new URL(pairLink('http://[fd12::1]:6174', 'X')).searchParams.get('u')).toBe('http://[fd12::1]:6174');
   });
 
   it('accepts the code lower-case, with dashes and spaces', () => {

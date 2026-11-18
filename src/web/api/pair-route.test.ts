@@ -146,3 +146,84 @@ describe('POST /api/auth/pair', () => {
     expect(notJson.status).toBe(400);
   });
 });
+
+describe('/api/security/pair (the owner, on this computer)', () => {
+  async function ownerApp() {
+    const { authGuard } = await import('../middleware.js');
+    const { default: auth } = await import('./auth.js');
+    const { default: security } = await import('./security.js');
+    const a = new Hono();
+    a.use('*', authGuard);
+    a.route('/', auth);
+    a.route('/', security);
+    return a;
+  }
+
+  async function owner() {
+    const { writeAttachToken, readAttachToken } = await import('../auth.js');
+    writeAttachToken();
+    return { Authorization: `Bearer ${readAttachToken()}`, 'Content-Type': 'application/json' };
+  }
+
+  const start = async (a: Hono, body: Record<string, unknown>) => a.request('http://127.0.0.1:6174/api/security/pair', { method: 'POST', headers: await owner(), body: JSON.stringify(body) }, LOCAL);
+  const status = async (a: Hono, id: string, waitMs = 20) => (await a.request(`http://127.0.0.1:6174/api/security/pair/${id}?waitMs=${waitMs}`, { headers: await owner() }, LOCAL)).json();
+
+  it('makes a code with its link and QR image', async () => {
+    const a = await ownerApp();
+    const res = await start(a, { address: 'https://phone.example.com/', by: 'desktop' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; id: string; code: string; display: string; address: string; url: string; expiresAt: number; qrImage: string };
+    expect(body).toMatchObject({ ok: true, address: 'https://phone.example.com' });
+    expect(body.url).toBe(`mercury://pair?u=https://phone.example.com&c=${body.code}`);
+    expect(body.qrImage.startsWith('data:image/svg+xml;base64,')).toBe(true);
+    expect(Buffer.from(body.qrImage.split(',')[1], 'base64').toString()).toMatch(/^<svg/);
+    expect(readAudit(5).map((e) => [e.kind, e.by])).toContainEqual(['pair.code.created', 'desktop']);
+  });
+
+  it('works only on this computer', async () => {
+    const a = await ownerApp();
+    const { createDevice } = await import('../devices.js');
+    const { token } = createDevice('Laptop', 'macos');
+    const res = await a.request('http://127.0.0.1:6174/api/security/pair', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Forwarded-For': '100.101.104.1', Host: 'mercury.tail1234.ts.net' },
+      body: JSON.stringify({ address: 'https://phone.example.com' }),
+    }, LOCAL);
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { thisComputerOnly?: boolean }).thisComputerOnly).toBe(true);
+  });
+
+  it('waits for the phone, then says who paired', async () => {
+    const a = await ownerApp();
+    const body = await (await start(a, { address: 'https://phone.example.com', by: 'desktop' })).json() as { id: string; code: string };
+    expect(await status(a, body.id)).toEqual({ status: 'waiting' });
+    const later = status(a, body.id, 5_000);
+    const paired = await newPhone()(a, { code: body.code, deviceName: 'Pixel 9', platform: 'android' });
+    expect(((await paired.json()) as { device: { approvedBy?: string } }).device.approvedBy).toBe('desktop');
+    expect(await later).toEqual({ status: 'paired', device: { name: 'Pixel 9', platform: 'android' } });
+    expect(await status(a, body.id)).toEqual({ status: 'paired', device: { name: 'Pixel 9', platform: 'android' } });
+    expect(await status(a, 'unknown-id')).toEqual({ status: 'expired' });
+  });
+
+  it('cancels the code', async () => {
+    const a = await ownerApp();
+    const body = await (await start(a, { address: 'https://phone.example.com' })).json() as { id: string; code: string };
+    const cancel = await a.request('http://127.0.0.1:6174/api/security/pair', { method: 'DELETE', headers: await owner() }, LOCAL);
+    expect(await cancel.json()).toEqual({ cancelled: true });
+    expect(await status(a, body.id)).toEqual({ status: 'cancelled' });
+    expect((await newPhone()(a, { code: body.code, deviceName: 'Pixel 9' })).status).toBe(401);
+  });
+
+  it('says why it makes no code', async () => {
+    const a = await ownerApp();
+    const insecure = await start(a, { address: 'http://203.0.113.7' });
+    expect(insecure.status).toBe(409);
+    expect(await insecure.json()).toMatchObject({ ok: false, reason: 'insecure' });
+    writeRemoteSettings({ maxDevices: 1 });
+    const { createDevice } = await import('../devices.js');
+    createDevice('Old phone', 'ios');
+    expect(await (await start(a, { address: 'https://phone.example.com' })).json()).toMatchObject({ ok: false, reason: 'limit' });
+    writeRemoteSettings({ enabled: false });
+    expect(await (await start(a, { address: 'https://phone.example.com' })).json()).toMatchObject({ ok: false, reason: 'remote-off' });
+  });
+});

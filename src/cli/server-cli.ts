@@ -26,7 +26,7 @@ async function opsForThisComputer(): Promise<{ ops: ServerOps; live: boolean }> 
       if (res.ok) return { ops: httpServerOps(base, token), live: true };
     } catch { /* not running */ }
   }
-  return { ops: localServerOps({ by: 'cli' }), live: false };
+  return { ops: localServerOps({ by: 'cli', offline: true }), live: false };
 }
 
 export function registerServerCli(program: Command): void {
@@ -46,6 +46,16 @@ export function registerServerCli(program: Command): void {
           secret: async (text, copy) => {
             console.log(`\n${text}\n`);
             if (tty) await acknowledgeSecret((t, o) => selectWithArrowKeys(t, o).catch(() => ''), 'Copy the token now: it is not shown again.', copy);
+          },
+          terminal: true,
+          waitFor: (text, until) => {
+            console.log(`\n${text}\n`);
+            console.log(chalk.dim('  Waiting for your phone… Ctrl+C cancels the code.'));
+            return new Promise((resolve, reject) => {
+              const stop = () => { process.off('SIGINT', stop); resolve(null); };
+              process.on('SIGINT', stop);
+              until.then((v) => { process.off('SIGINT', stop); resolve(v); }, (e: unknown) => { process.off('SIGINT', stop); reject(e); });
+            });
           },
         });
       } catch (err) {

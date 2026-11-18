@@ -1274,6 +1274,21 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
           say,
           // Shown in the menu, not the transcript.
           secret: async (text, copy) => { await acknowledgeSecret(select, text, copy); },
+          terminal: true,
+          waitFor: async (text, until) => {
+            const done = new AbortController();
+            let settled = false;
+            const finish = () => { settled = true; done.abort(); };
+            void until.then(finish, finish);
+            try {
+              await select(text, [{ value: 'cancel', label: 'Cancel this code' }], done.signal);
+              return null;
+            } catch (err) {
+              if (settled) return await until;
+              await ops.cancelPair();
+              throw err;
+            }
+          },
         });
       });
       return true;

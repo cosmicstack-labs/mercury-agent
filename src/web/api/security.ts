@@ -9,6 +9,9 @@ import { audit, readAudit } from '../../security/audit.js';
 import { closeStreams } from '../../security/live-streams.js';
 import { securityCheck, summarizeFindings } from '../../security/check.js';
 import { sessionCount } from '../auth.js';
+import { startPairing } from '../../security/server-ops.js';
+import { pairCodes, type PairOutcome } from '../../security/pair-codes.js';
+import { qrSvg } from '../../plugins/qr-svg.js';
 
 /**
  * Remote access and its security, for the owner on this computer (`/server`,
@@ -119,6 +122,30 @@ security.delete('/api/security/devices', (c) => {
   if (ids.length) audit('device.revoked', { who: `${ids.length} devices (all)`, by: 'this computer' });
   return c.json({ revoked: ids.length });
 });
+
+security.post('/api/security/pair', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { address?: unknown; by?: unknown };
+  const by = typeof body.by === 'string' && /^[a-z -]{2,20}$/i.test(body.by) ? body.by : 'this computer';
+  const started = startPairing(typeof body.address === 'string' ? body.address : undefined, by);
+  if (!started.ok) return c.json(started, 409);
+  return c.json({ ...started, qrImage: `data:image/svg+xml;base64,${Buffer.from(qrSvg(started.url)).toString('base64')}` });
+});
+
+security.get('/api/security/pair/:id', async (c) => {
+  const codes = pairCodes();
+  const id = c.req.param('id');
+  const now = codes.status(id);
+  if (now === null) return c.json({ status: 'expired' });
+  if (now !== 'waiting') return c.json(now);
+  const waitMs = Math.min(25_000, Math.max(0, Number(c.req.query('waitMs')) || 25_000));
+  const later = await Promise.race<PairOutcome | 'waiting'>([
+    codes.wait(id),
+    new Promise((r) => { const t = setTimeout(() => r('waiting'), waitMs); t.unref?.(); }),
+  ]);
+  return c.json(later === 'waiting' ? { status: 'waiting' } : later);
+});
+
+security.delete('/api/security/pair', (c) => c.json({ cancelled: pairCodes().cancel() }));
 
 security.get('/api/security/audit', (c) => c.json({ entries: readAudit(Math.min(500, Math.max(1, Number(c.req.query('limit')) || 50))) }));
 
