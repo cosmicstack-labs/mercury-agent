@@ -740,3 +740,40 @@
   - The pasted address carries a one-time code through the chat's servers. It expires in minutes, is consumed at once, and is useless without the client secret, which stays on the computer.
   - Connect reads the sign-in URL gws prints. A gws the owner installed that prints it differently falls back to running `gws auth login` by hand.
   - Follow-ups: OAuth for Mercury's MCP client, which unlocks Google's hosted servers, typed Google tools with approval previews, and a connect button in the dashboard.
+
+## ADR-046: Mercury rings and notifies the owner's phone over the app's live connection only
+
+- **Context**: WhatsApp's `call_owner` lets Mercury ring the owner ("call me at 9pm", or when something goes wrong), but only through WhatsApp. The owner wants the same from the Mercury app on iOS and Android: a real incoming call, and notifications, with no friction. The server didn't know which paired device is which phone, or whether it is connected. Waking a closed app needs a push service: APNs (PushKit VoIP pushes for calls) on iOS, FCM on Android. Both would route through a relay in the owner's backend (Mercury Cloud), which the owner decided against for now, along with any new background or foreground service on Android.
+- **Decision**: reach the phone only while the Mercury app is running and connected.
+  - **Registry.** A phone registers itself after pairing (`PUT /api/devices/me/reach`: platform, app version, ring and notify switches, capabilities). This is stored on its own device record in `devices.json`, only that device can change it, and changes are audited (`device.reach`). No push tokens or keys exist. Live presence is the activity stream (`/api/chat/activity`) a paired device has open right now (`src/reach/presence.ts`).
+  - **Events.** Mercury sends `ring` `{ id, caller, reason, urgency, expiresAt }`, `ring_end` `{ id, outcome }` and `notify` `{ id, title, body, kind, urgency, threadId?, silent }` on that stream. Apps de-duplicate by id, because each app can have more than one stream open.
+  - **Calls** (`src/reach/service.ts`, the agent's core `call_owner`):
+    - The owner's settings apply first. Calls off, below the urgency threshold, in quiet hours (only `critical` rings through) or over the calls-per-hour limit (4) each become a notification instead.
+    - Every live phone that is set to ring rings for 45 s. The first answer stops the others.
+    - With no live phone or no answer, WhatsApp's `call_owner` is tried when that plugin runs.
+    - Still no answer: one retry after 5 minutes. The core "phone" scheduler reuses `call-schedule.ts` semantics, so "call me at 9pm" (`schedule_call`, `/call`) targets the app once a phone is paired, and WhatsApp keeps its own scheduler. After that, a missed-call note is left and a message goes to the owner's messaging channel.
+    - A decline is the owner's answer: no retry, just the note.
+  - **Phones report each ring** (`POST /api/devices/me/ring/:id`, only a phone the ring went to). Answering starts the existing live voice call with `{ callInviteId }`. The server takes the reason from its own record of the ring and adds WhatsApp's opener ("You called the owner and they answered. Why you called: …") after the unchanged instructions.
+  - **Notifications** (`notify_owner`) go to live phones that want them, silently in quiet hours. With no live phone they wait, and `high` urgency also goes to the messaging channel. Anything missed is kept in `~/.mercury/reach/missed.json`. The app fetches it when it comes to the foreground and acknowledges it, which clears it for every phone.
+  - **"Call when something's wrong"** triggers are owner settings, with these defaults:
+    - a bot that needs you: notify;
+    - a bot's own failure report: off;
+    - a background task of 10 minutes or more that failed or timed out: notify.
+    - No trigger calls by default.
+  - **Security (ADR-044).**
+    - `call_owner` and `notify_owner` are outbound sinks. After untrusted content in the turn, they need the owner's explicit yes even under Allow All, so read content alone can't make Mercury ring.
+    - A scheduled run may use them unattended unless what it read carried instructions to an AI.
+    - `schedule_call` and `cancel_scheduled_call` are now control tools.
+    - Everything is rate-limited, and only the owner is ever reached.
+  - **iOS:** a `ring` is reported to CallKit as an incoming call (`reportNewIncomingCall`), even in the foreground. Answering it makes it the call: the voice call adopts that CallKit call instead of starting an outgoing one. No PushKit and no push entitlement, so the default build still signs with a free team.
+  - **Android:**
+    - A `ring` becomes a core-telecom self-managed incoming call with a CallStyle notification (ringtone, vibration, Answer and Decline).
+    - A full-screen incoming-call screen shows over the lock screen. On Android 14+ this needs the owner's one-time full-screen-intent permission, which the app links to.
+    - Answering hands over to the normal outgoing voice call.
+    - "Stay connected" is unchanged and nothing new runs in the background.
+  - **Settings → Calls from Mercury** in both apps: ring this phone, notifications, calls on or off, quiet hours, test ring.
+- **Consequences**:
+  - Calls and notifications reach a phone only while the app is open or still alive in the background. On iOS that is seconds to minutes after leaving the app (longer during a call or audio). On Android it is while the process and its activity stream live: on screen, while a chat works, or with "Stay connected" on.
+  - Otherwise WhatsApp (when linked) and the owner's messaging channel carry the call or message, and the app shows a missed call next time it opens.
+  - Nothing passes through a third party, and nothing new holds a token for the phone.
+  - **Future option.** Ringing a closed app needs push: PushKit VoIP pushes reported to CallKit on iOS (a paid Apple Developer account, an APNs key, and a relay that holds the key), and FCM high-priority data messages on Android. The registry and the ring and notify events are shaped so a push path can be added later as one more delivery route.
