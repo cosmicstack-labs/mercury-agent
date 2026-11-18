@@ -5,6 +5,24 @@
     "description": "News, engineering notes and field reports from the team building Mercury.",
     "items": [
         {
+            "id": "https://mercuryagent.sh/blog/mercury-weekly-1",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/mercury-weekly-1",
+            "title": "Mercury Weekly #1: IPOs, models and agents that pay",
+            "summary": "The week of 9 to 15 November 2026: Anthropic's IPO roadshow, Nvidia's CEO change, new frontier models, ChatGPT Wallet and the Decisions API.",
+            "date_modified": "2026-11-17T00:00:00.000Z",
+            "author": {
+                "name": "Tashir Khan",
+                "url": "https://github.com/tashiriskhan"
+            },
+            "tags": [
+                "Mercury Weekly",
+                "News",
+                "AI Agents",
+                "Security"
+            ]
+        },
+        {
             "id": "https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant",
@@ -43,22 +61,6 @@
             ]
         },
         {
-            "id": "https://mercuryagent.sh/blog/mercury-1-5",
-            "content_html": null,
-            "url": "https://mercuryagent.sh/blog/mercury-1-5",
-            "title": "Mercury 1.5: Mercury Desktop",
-            "summary": "Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.",
-            "date_modified": "2026-11-03T00:00:00.000Z",
-            "author": {
-                "name": "Mercury Engineering",
-                "url": "https://github.com/cosmicstack-labs/mercury-agent"
-            },
-            "tags": [
-                "News",
-                "Releases"
-            ]
-        },
-        {
             "id": "https://mercuryagent.sh/blog/mercury-desktop-tour",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/mercury-desktop-tour",
@@ -71,6 +73,22 @@
             },
             "tags": [
                 "Product",
+                "Releases"
+            ]
+        },
+        {
+            "id": "https://mercuryagent.sh/blog/mercury-1-5",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/mercury-1-5",
+            "title": "Mercury 1.5: Mercury Desktop",
+            "summary": "Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.",
+            "date_modified": "2026-11-03T00:00:00.000Z",
+            "author": {
+                "name": "Mercury Engineering",
+                "url": "https://github.com/cosmicstack-labs/mercury-agent"
+            },
+            "tags": [
+                "News",
                 "Releases"
             ]
         },
