@@ -495,3 +495,47 @@ describe('web bots API — persona builder and plan', () => {
     expect(store.list().length).toBe(before);
   });
 });
+
+describe('web bots API — ids that are not bot ids', () => {
+  // A bot id is lowercase (POST /api/bots lowercases it on create). A client that keeps the id it
+  // sent ("Phone-Bot") and then edits or messages the bot used to get a bare 500 from any route
+  // that read the manifest outside a try, because the store throws on an id it can't hold.
+  const send = (path: string, method: string, body?: unknown) =>
+    app.request(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }) });
+
+  it('answers a plain 404 with a JSON error on every route, never a 500', async () => {
+    store.create({ id: 'phone-bot', name: 'Phone bot' });
+    const calls: Array<[string, string, unknown?]> = [
+      ['/api/bots/Phone-Bot', 'GET'],
+      ['/api/bots/Phone-Bot', 'PATCH', { name: 'New name' }],
+      ['/api/bots/Phone-Bot', 'PATCH', { schedules: [] }],
+      ['/api/bots/Phone-Bot/message', 'POST', { message: 'hi' }],
+      ['/api/bots/Phone-Bot/run', 'POST', {}],
+      ['/api/bots/Phone-Bot/stop', 'POST'],
+      ['/api/bots/Phone-Bot/start', 'POST'],
+      ['/api/bots/Phone-Bot/enable', 'POST'],
+      ['/api/bots/Phone-Bot/disable', 'POST'],
+      ['/api/bots/Phone-Bot/promote', 'POST'],
+      ['/api/bots/Phone-Bot/persona', 'PUT', { persona: 'You are terse.' }],
+      ['/api/bots/Phone-Bot/permissions', 'PUT', { tier: 'readonly' }],
+      ['/api/bots/Phone-Bot/crew', 'POST', { id: 'helper', name: 'Helper' }],
+      ['/api/bots/Phone-Bot', 'DELETE'],
+      ['/api/bots/bad..id/persona', 'GET'],
+    ];
+    for (const [path, method, body] of calls) {
+      const res = await send(path, method, body);
+      expect({ path, method, status: res.status }).toEqual({ path, method, status: 404 });
+      expect((await jreq(res)).error).toMatch(/not found/i);
+    }
+    // Nothing touched the real bot.
+    expect(store.get('phone-bot')).toMatchObject({ name: 'Phone bot', enabled: true });
+  });
+
+  it('still serves the fixed routes that share the /api/bots/:id shape', async () => {
+    expect((await app.request('/api/bots/tiers')).status).toBe(200);
+    expect((await app.request('/api/bots/approvals')).status).toBe(200);
+    expect((await app.request('/api/bots/inbox')).status).toBe(200);
+    // The id after approvals/ is an approval's, not a bot's: it reaches its route.
+    expect((await send('/api/bots/approvals/Q-ABC', 'POST', { answer: 'no' })).status).toBe(409);
+  });
+});
