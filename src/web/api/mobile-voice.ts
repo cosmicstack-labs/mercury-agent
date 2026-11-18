@@ -1,4 +1,6 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
+import { principalOf } from '../middleware.js';
+import { reachService } from '../../reach/service.js';
 import { loadConfig } from '../../utils/config.js';
 import { readSettings, secretValue } from '../../plugins/store.js';
 import { voiceBriefing } from '../../plugins/channel-bridge.js';
@@ -8,8 +10,10 @@ import { pickSpeechEngine, preferredSpeech } from '../../plugins/transcribe.js';
  * Voice calls from the phone, on Mercury's shared Rust voice engine
  * (crates/mercury-voice-mobile, the same links Optimus runs on the desktop).
  *
- *   POST /api/mobile/voice/session  { engine?: 'openai' | 'gemini' }
- *     → { engine, token, ephemeral: true, expiresAt, model, voice, url?, instructions, tools }
+ *   POST /api/mobile/voice/session  { engine?: 'openai' | 'gemini', callInviteId?, reason? }
+ *     → { engine, token, ephemeral: true, expiresAt, model, voice, url?, instructions, tools, opener? }
+ *     A call Mercury placed (ADR-046): `callInviteId` is the ring the phone answered; Mercury
+ *     adds why it called to the instructions so its first words say so (`opener` echoes it).
  *     → 409 { error, fallback: true } when no realtime voice can start (the app uses its own fallback)
  *
  * The phone never sees an API key: Mercury mints a short-lived token with the
@@ -96,6 +100,27 @@ export const PHONE_VOICE_TOOLS = [
 
 export function phoneInstructions(briefing: string = safeBriefing()): string {
   return briefing.trim() ? `${PHONE_VOICE_INSTRUCTIONS}\n\n${briefing.trim()}` : PHONE_VOICE_INSTRUCTIONS;
+}
+
+/**
+ * When Mercury rang the owner and they answered: what it says first. The same words
+ * WhatsApp's call_owner gives its voice (plugins/whatsapp/companion/src/voice.rs).
+ */
+export function callOpener(reason: string): string {
+  return `You called the owner and they answered. Why you called: ${reason}. Greet them, explain why you called in one or two sentences, and help with whatever they need.`;
+}
+
+/** The reason for this session: the ring this device answered (the server's record wins), else the app's own words. */
+function sessionReason(c: Context, body: { callInviteId?: unknown; reason?: unknown }): string | undefined {
+  const inviteId = str(body.callInviteId);
+  const p = principalOf(c);
+  if (inviteId && p?.kind === 'device') {
+    const invite = reachService().answeredInvite(p.deviceId, inviteId);
+    if (invite) return invite.opener;
+  }
+  // eslint-disable-next-line no-control-regex -- strips control characters on purpose
+  const reason = str(body.reason)?.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 300);
+  return reason || undefined;
 }
 
 function safeBriefing(): string {
@@ -412,23 +437,26 @@ mobileVoice.post('/api/mobile/voice/dictation', async (c) => {
 });
 
 mobileVoice.post('/api/mobile/voice/session', async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { engine?: unknown };
+  const body = (await c.req.json().catch(() => ({}))) as { engine?: unknown; callInviteId?: unknown; reason?: unknown };
   const keys = availableKeys();
   const settings = voiceSettings();
   const engine = pickEngine(keys, settings, str(body.engine));
   if (!engine) return c.json({ error: NO_REALTIME_VOICE, fallback: true }, 409);
+  const reason = sessionReason(c, body);
+  const opener = reason ? callOpener(reason) : undefined;
+  const instructions = opener ? `${phoneInstructions()}\n\n${opener}` : phoneInstructions();
   const signal = c.req.raw.signal;
   try {
     if (engine === 'openai') {
       const model = str(settings.voiceModel) ?? VOICE_DEFAULTS.openai.model;
       const voice = str(settings.voice) ?? VOICE_DEFAULTS.openai.voice;
       const m = await mintOpenAI(keys.openai!, model, voice, signal);
-      return c.json({ engine, token: m.token, ephemeral: true, expiresAt: m.expiresAt, model, voice, url: m.url, instructions: phoneInstructions(), tools: PHONE_VOICE_TOOLS }, 200, { 'Cache-Control': 'no-store' });
+      return c.json({ engine, token: m.token, ephemeral: true, expiresAt: m.expiresAt, model, voice, url: m.url, instructions, tools: PHONE_VOICE_TOOLS, ...(opener ? { opener } : {}) }, 200, { 'Cache-Control': 'no-store' });
     }
     const model = str(settings.geminiModel) ?? VOICE_DEFAULTS.gemini.model;
     const voice = str(settings.geminiVoice) ?? VOICE_DEFAULTS.gemini.voice;
     const m = await mintGemini(keys.gemini!, signal);
-    return c.json({ engine, token: m.token, ephemeral: true, expiresAt: m.expiresAt, model, voice, instructions: phoneInstructions(), tools: PHONE_VOICE_TOOLS }, 200, { 'Cache-Control': 'no-store' });
+    return c.json({ engine, token: m.token, ephemeral: true, expiresAt: m.expiresAt, model, voice, instructions, tools: PHONE_VOICE_TOOLS, ...(opener ? { opener } : {}) }, 200, { 'Cache-Control': 'no-store' });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ error: message, fallback: true, engine }, 409);

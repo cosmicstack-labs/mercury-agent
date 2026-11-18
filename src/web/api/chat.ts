@@ -1,4 +1,5 @@
 import { trackStream } from '../../security/live-streams.js';
+import { openLiveLink } from '../../reach/presence.js';
 import { isThisComputer, originOf, principalKey, principalLabel, principalOf } from '../middleware.js';
 import { requireOwner } from '../owner-gate.js';
 import { audit } from '../../security/audit.js';
@@ -291,7 +292,12 @@ chat.get('/api/chat/activity', (c) => {
       const send = (data: string) => { try { controller.enqueue(encoder.encode(data)); } catch { /* closed */ } };
       send(`event: connected\ndata: ${JSON.stringify({ id: clientId })}\n\n`);
       const keepalive = setInterval(() => send(': keepalive\n\n'), 15000);
-      const cleanup = () => { clearInterval(keepalive); ch.removeActivityClient(clientId); untrack(); };
+      // A paired phone's stream is how Mercury rings and notifies it (ADR-046): it's live while this is open.
+      const principal = principalOf(c);
+      const unlink = principal?.kind === 'device'
+        ? openLiveLink(principal.deviceId, (event, data) => send(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+        : () => {};
+      const cleanup = () => { clearInterval(keepalive); ch.removeActivityClient(clientId); unlink(); untrack(); };
       // Revoking the device (or signing the browser out) ends this stream at once.
       const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
       c.req.raw.signal.addEventListener('abort', cleanup);
