@@ -107,6 +107,7 @@ import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/prov
 import { withBaseUrl } from './providers/basic-auth.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
+import { setupPhoneReach, onBackgroundTaskDone, onBotInboxEntry } from './reach/wiring.js';
 import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setTurnControls as setWebTurnControls, setResearchControls as setWebResearchControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
 import { validateApiKey, validateBaseUrl, validateModelName } from './providers/provider-meta.js';
 import { setFirstProviderHandler, setProvidersReload } from './web/api/providers.js';
@@ -3640,6 +3641,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   setWebSessionSyncEnabled(() => agent.isSessionSyncEnabled());
   setWebProgrammingMode(agent.programmingMode);
   setWebBgTasks(agent.backgroundTasks);
+  // Calls and notifications to the owner's phone, over its live connection (ADR-046).
+  // Only the process that serves the phones (not a terminal attached to the daemon).
+  if (!daemonOwnsRuntime) {
+    const phoneReach = setupPhoneReach({
+      messageOwner: async (text) => { await channels.getNotificationChannel()?.send(text); },
+    });
+    agent.backgroundTasks.onAnyComplete((task) => { void onBackgroundTaskDone(task); });
+    botManager?.inbox.onEntry((entry) => { void onBotInboxEntry(entry); });
+    process.once('exit', () => { phoneReach.scheduler.stop(); });
+  }
   setWebModelSwitch((provider, model) => agent.switchProvider(provider, model));
   setProvidersReload(() => agent.reloadProviders());
   // Settings-free skill builder: the default model writes a skill from the owner's description.

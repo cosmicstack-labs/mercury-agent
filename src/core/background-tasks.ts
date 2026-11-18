@@ -102,6 +102,7 @@ export class BackgroundTaskManager {
   private sigkillTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private onCompleteCallbacks: Map<string, TaskCompleteCallback> = new Map();
   private globalOnComplete?: TaskCompleteCallback;
+  private completeListeners = new Set<TaskCompleteCallback>();
   private pruneInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
@@ -128,6 +129,12 @@ export class BackgroundTaskManager {
 
   onGlobalComplete(cb: TaskCompleteCallback): void {
     this.globalOnComplete = cb;
+  }
+
+  /** Another listener for every finished task (e.g. calls from Mercury, ADR-046). Returns the unsubscribe function. */
+  onAnyComplete(cb: TaskCompleteCallback): () => void {
+    this.completeListeners.add(cb);
+    return () => { this.completeListeners.delete(cb); };
   }
 
   spawnShell(command: string, cwd: string, timeoutMs: number = DEFAULT_SHELL_TIMEOUT_MS): string {
@@ -395,6 +402,9 @@ export class BackgroundTaskManager {
     }
     if (this.globalOnComplete) {
       try { this.globalOnComplete(task); } catch {}
+    }
+    for (const l of this.completeListeners) {
+      try { l(task); } catch { /* a listener's problem */ }
     }
   }
 
