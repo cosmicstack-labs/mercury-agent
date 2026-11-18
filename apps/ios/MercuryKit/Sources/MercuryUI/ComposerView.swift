@@ -42,11 +42,7 @@ struct Composer: View {
       GlassGroup(spacing: 8) {
         HStack(spacing: 8) {
           plusMenu
-          // Allow All beside it: a shorter name (…) so the row still fits a small phone.
-          ModelPill(name: model.catalog?.pill ?? "Auto", busy: model.switching, maxName: model.permissions.allowAll ? 96 : 150) { dismissKeyboard(); choosingModel = true }
-          if model.permissions.allowAll {
-            AllowAllBadge { dismissKeyboard(); choosingModel = true }
-          }
+          ModelPill(name: model.catalog?.pill ?? "Auto", busy: model.switching, maxName: 150) { dismissKeyboard(); choosingModel = true }
           Spacer(minLength: 4)
           DictationButton(dictation: model.dictation)
           actionButton
@@ -410,35 +406,6 @@ struct ModelPill: View {
     .buttonStyle(.plain)
     .glassSurface(in: Capsule(), interactive: true)
     .accessibilityLabel("Model: \(name). Change the model")
-  }
-}
-
-/// Allow All is on: Mercury acts without asking. Always in sight next to the model pill
-/// ("⚡︎ Allow All", just the bolt when the row is tight); tap to change it in the model sheet.
-struct AllowAllBadge: View {
-  var action: () -> Void
-  var body: some View {
-    Button(action: action) {
-      ViewThatFits(in: .horizontal) {
-        label(text: true)
-        label(text: false)
-      }
-      .foregroundStyle(Theme.ink)
-      .frame(height: 40)
-      .contentShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .glassSurface(in: Capsule(), interactive: true)
-    .accessibilityLabel("Allow All is on: Mercury acts without asking. Change it")
-  }
-
-  private func label(text: Bool) -> some View {
-    HStack(spacing: 4) {
-      Image(systemName: "bolt.fill").font(.system(size: 12, weight: .semibold))
-      if text { Text("Allow All").font(.system(size: 13, weight: .semibold)).lineLimit(1).fixedSize() }
-    }
-    .padding(.horizontal, text ? 11 : 0)
-    .frame(minWidth: 40)
   }
 }
 

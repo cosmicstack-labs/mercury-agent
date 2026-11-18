@@ -199,13 +199,9 @@ fun Composer(
       Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         CircleIcon(Icons.Outlined.Add, "Add a file, create media or set thinking effort") { dismissKeyboard(); sheet = true }
         Spacer(Modifier.width(8.dp))
-        // Allow All beside it: the name gives way (…) so the row still fits a small phone.
+        // Ask Me / Allow All is chosen inside this same picker (no separate control here).
         Row(Modifier.weight(1f).padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
           ModelPill(composer.catalog?.pill ?: "Auto", composer.switching, Modifier.weight(1f, fill = false)) { dismissKeyboard(); models = true }
-          if (permission.allowAll) {
-            Spacer(Modifier.width(6.dp))
-            AllowAllBadge { dismissKeyboard(); models = true }
-          }
         }
         DictationButton(dictation, onDictate)
         Spacer(Modifier.width(6.dp))
@@ -474,20 +470,6 @@ private fun ModelPill(name: String, busy: Boolean, modifier: Modifier = Modifier
       Text(name, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         modifier = Modifier.widthIn(max = 150.dp))
       Icon(Icons.Outlined.KeyboardArrowDown, null, Modifier.size(16.dp), tint = Mercury.colors.ink3)
-    }
-  }
-}
-
-/** Allow All is on: Mercury acts without asking. Always in sight next to the model pill; tap to change it. */
-@Composable
-private fun AllowAllBadge(onClick: () -> Unit) {
-  Surface(
-    onClick = onClick, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest,
-    modifier = Modifier.height(40.dp).semantics { contentDescription = "Allow All is on: Mercury acts without asking. Change it" },
-  ) {
-    Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-      Icon(Icons.Filled.Bolt, null, Modifier.size(16.dp))
-      Text("Allow All", style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false)
     }
   }
 }
