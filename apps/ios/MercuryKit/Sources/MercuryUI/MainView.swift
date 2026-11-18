@@ -22,6 +22,8 @@ struct MainView: View {
   @State var notifier = Notifier.shared
   @State var adding = false
   @State var quickActions = HomeScreenActions.shared
+  @State var ringer = PhoneRinger.shared
+  @Environment(\.scenePhase) var scenePhase
 
   enum Route: Hashable { case bots, artifacts, brain, settings }
 
@@ -118,6 +120,16 @@ struct MainView: View {
       }
     }
     .task(id: connection.id) { notifier.start(store.client(for: connection)) }
+    // Mercury can ring and notify this phone (ADR-046): tell it how, and show what was missed.
+    .task(id: connection.id) { await ringer.connect(store.client(for: connection)) }
+    .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await ringer.catchUp() } } }
+    // Mercury rang and the owner answered: the call starts here, and Mercury says why it called.
+    .onChange(of: ringer.answered, initial: true) { _, invite in
+      guard let invite else { return }
+      ringer.answered = nil
+      conversation.ringInvite = invite
+      call()
+    }
     // Coming back to the panel refreshes the list.
     .onChange(of: drawer) { _, isOpen in if isOpen { Task { await chats.load() } } }
     // The Home Screen's Call Mercury quick action (at launch, or while running).

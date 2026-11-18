@@ -30,7 +30,8 @@ targets:
         NSMicrophoneUsageDescription: Mercury uses the microphone for voice calls and dictation.
         NSSpeechRecognitionUsageDescription: When your Mercury has no speech service, Mercury types what you say with this iPhone's own speech recognition.
         # Calls are CallKit calls: audio keeps them going in the background, and CallKit
-        # only takes calls from an app with the voip mode (no PushKit: Mercury never rings).
+        # only takes calls from an app with the voip mode. Mercury rings this phone (ADR-046)
+        # only over the app's live connection: no PushKit, no push entitlement.
         UIBackgroundModes: [audio, voip]
         NSLocalNetworkUsageDescription: Mercury connects to the Mercury running on your computer.
         # Home Screen quick action (long-press the icon): App/MercuryApp.swift hands it to HomeScreenActions.

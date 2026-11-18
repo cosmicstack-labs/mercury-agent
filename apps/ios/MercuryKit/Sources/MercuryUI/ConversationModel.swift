@@ -78,6 +78,8 @@ final class ConversationModel {
   /// A call was asked for from outside the chat (the side panel, a Home Screen quick action):
   /// the chat's screen starts it and clears this.
   var callRequested = false
+  /// The ring the requested call answers (ADR-046): Mercury called, so it says why first.
+  var ringInvite: RingInvite?
   /// "Set up voice" is showing (a call or the mic was tapped on a Mercury that can't do it yet).
   var voiceSetup: VoiceSetup.Trigger?
   var titleCheck: Task<Void, Never>?

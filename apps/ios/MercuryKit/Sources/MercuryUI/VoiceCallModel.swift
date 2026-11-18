@@ -70,8 +70,12 @@ final class VoiceCallModel {
   /// Bumped whenever the call moves on, so a listen or a reading that was overtaken stops quietly.
   @ObservationIgnored var turn = 0
 
-  init(conversation: ConversationModel, meter: CallMeter = CallMeter(), tappedAt: Date = .now) {
+  /// Mercury rang this phone and the owner answered (ADR-046): the session starts with why it called.
+  let ring: RingInvite?
+
+  init(conversation: ConversationModel, meter: CallMeter = CallMeter(), tappedAt: Date = .now, ring: RingInvite? = nil) {
     self.conversation = conversation
+    self.ring = ring
     self.meter = meter
     callId = UUID().uuidString.lowercased()
     timeline = CallTimeline(start: tappedAt)
@@ -188,7 +192,7 @@ final class VoiceCallModel {
   }
 
   private func fetchSession() async -> Result<VoiceSessionResult, Error> {
-    do { return .success(try await client.voiceSession()) } catch { return .failure(error) }
+    do { return .success(try await client.voiceSession(ring: ring)) } catch { return .failure(error) }
   }
 
   /// CallKit's outgoing call; without it (it refused, or not on iOS) the app runs the audio itself.

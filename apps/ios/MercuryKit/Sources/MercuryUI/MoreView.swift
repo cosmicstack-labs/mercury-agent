@@ -40,6 +40,7 @@ struct MoreView: View {
         NavigationLink { ChannelsSettings(client: client) } label: { Label("Channels", systemImage: "bubble.left.and.bubble.right") }
         NavigationLink { AppearanceSettings() } label: { Label("Appearance", systemImage: "paintpalette") }
         NavigationLink { NotificationsSettings() } label: { Label("Notifications", systemImage: "bell") }
+        NavigationLink { CallsSettings(client: client) } label: { Label("Calls from Mercury", systemImage: "phone.arrow.down.left") }
         NavigationLink { BudgetsSettings(client: client) } label: { Label("Budgets", systemImage: "gauge.with.dots.needle.33percent") }
         NavigationLink { ActivitySettings(client: client) } label: { Label("Activity", systemImage: "chart.bar") }
         NavigationLink { DevicesSettings(client: client) } label: { Label("Paired devices", systemImage: "iphone.and.arrow.forward") }

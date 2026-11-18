@@ -111,8 +111,11 @@ extension MercuryClient {
   public static let voiceSessionMissing = "Your Mercury is too old for live calls, so this call goes turn by turn: talk, pause, and Mercury answers. Update Mercury on your computer for live calls."
 
   /// POST /api/mobile/voice/session: a token for a live call, or why there can't be one.
-  public func voiceSession(engine: String? = nil) async throws -> VoiceSessionResult {
-    let (data, res) = try await send(request("POST", "/api/mobile/voice/session", body: engine.map { ["engine": $0] } ?? [:], timeout: 12))
+  /// A call Mercury placed (ADR-046) passes the ring it answered, so Mercury starts by saying why it called.
+  public func voiceSession(engine: String? = nil, ring: RingInvite? = nil) async throws -> VoiceSessionResult {
+    var body: [String: Any] = engine.map { ["engine": $0] } ?? [:]
+    if let ring { body["callInviteId"] = ring.id; body["reason"] = ring.reason }
+    let (data, res) = try await send(request("POST", "/api/mobile/voice/session", body: body, timeout: 12))
     let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     switch res.statusCode {
     case 200:

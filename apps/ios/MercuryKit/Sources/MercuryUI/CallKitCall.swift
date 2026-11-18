@@ -8,7 +8,12 @@ import UIKit
 /// The call as iOS sees it: an outgoing CallKit call to "Mercury", so it shows in the Dynamic
 /// Island, on the lock screen and in the green pill, keeps running in the background, follows
 /// Bluetooth and CarPlay, and is paused by a real phone call. CallKit activates the audio session
-/// (`didActivate`), which is when the call's audio starts. No PushKit: Mercury never rings the phone.
+/// (`didActivate`), which is when the call's audio starts.
+///
+/// Mercury can also ring this phone (ADR-046): a `ring` on the live activity stream becomes an
+/// incoming CallKit call (`reportIncoming`). Answering it makes it the call: the voice call then
+/// adopts it in `start()` instead of placing an outgoing one. No PushKit: Mercury rings only while
+/// the app is running (open, or still alive in the background).
 /// Off iOS (the Mac build, tests) every call says it isn't available and the app manages audio itself.
 @MainActor
 final class CallKitCall: NSObject {
@@ -23,10 +28,19 @@ final class CallKitCall: NSObject {
   var onMute: (Bool) -> Void = { _ in }
   /// Another call put this one on hold (true) or let it go (false).
   var onHold: (Bool) -> Void = { _ in }
+  /// An incoming ring was answered or declined on the system's call screen (PhoneRinger listens).
+  var onIncomingAnswer: (UUID) -> Void = { _ in }
+  var onIncomingDecline: (UUID) -> Void = { _ in }
 
   private(set) var uuid: UUID?
   private(set) var active = false
   private var endingHere = false
+  /// An incoming ring still ringing.
+  private(set) var ringingIncoming: UUID?
+  /// The answered incoming call, waiting for the voice call to adopt it.
+  private var answeredIncoming: UUID?
+  /// The current call came in (no "outgoing connected" reports for it).
+  private var incoming = false
 
   #if os(iOS)
   private let provider: CXProvider
@@ -49,8 +63,19 @@ final class CallKitCall: NSObject {
   #endif
 
   /// Starts the outgoing call. Throws when CallKit won't (then the app runs the call itself).
+  /// After an incoming ring was answered, adopts that call instead.
   func start() async throws {
     #if os(iOS)
+    if let answered = answeredIncoming {
+      answeredIncoming = nil
+      uuid = answered
+      incoming = true
+      endingHere = false
+      // CallKit may have activated the audio already, before the call's callbacks were set.
+      if active { onActivate() }
+      return
+    }
+    incoming = false
     let id = UUID()
     uuid = id
     endingHere = false
@@ -80,7 +105,7 @@ final class CallKitCall: NSObject {
   /// The voice answered: the timer on the lock screen starts now.
   func connected() {
     #if os(iOS)
-    guard let uuid else { return }
+    guard let uuid, !incoming else { return }
     provider.reportOutgoingCall(with: uuid, connectedAt: .now)
     #endif
   }
@@ -116,6 +141,63 @@ final class CallKitCall: NSObject {
   }
 }
 
+// MARK: Mercury rings this phone (ADR-046)
+
+/// How a ring stopped without being answered here.
+enum IncomingEnd: Equatable { case answeredElsewhere, unanswered, declinedElsewhere, failed }
+
+/// What PhoneRinger needs from the system's call screen (CallKit; a fake in tests).
+@MainActor
+protocol IncomingCallPresenter: AnyObject {
+  /// Shows the incoming call. Throws when iOS won't (Focus/Do Not Disturb, another call…).
+  func reportIncoming(_ uuid: UUID, caller: String) async throws
+  func endIncoming(_ uuid: UUID, _ how: IncomingEnd)
+  var onIncomingAnswer: (UUID) -> Void { get set }
+  var onIncomingDecline: (UUID) -> Void { get set }
+  /// A call is already on (Mercury's own): a new ring isn't shown.
+  var inCall: Bool { get }
+}
+
+extension CallKitCall: IncomingCallPresenter {
+  var inCall: Bool { uuid != nil || answeredIncoming != nil }
+
+  func reportIncoming(_ id: UUID, caller: String) async throws {
+    #if os(iOS)
+    let update = CXCallUpdate()
+    update.localizedCallerName = caller
+    update.remoteHandle = CXHandle(type: .generic, value: caller)
+    update.supportsHolding = false
+    update.supportsGrouping = false
+    update.supportsUngrouping = false
+    update.supportsDTMF = false
+    update.hasVideo = false
+    ringingIncoming = id
+    do {
+      try await provider.reportNewIncomingCall(with: id, update: update)
+    } catch {
+      ringingIncoming = nil
+      throw error
+    }
+    #else
+    throw CallKitUnavailable()
+    #endif
+  }
+
+  func endIncoming(_ id: UUID, _ how: IncomingEnd) {
+    #if os(iOS)
+    guard ringingIncoming == id else { return }
+    ringingIncoming = nil
+    let reason: CXCallEndedReason = switch how {
+    case .answeredElsewhere: .answeredElsewhere
+    case .declinedElsewhere: .declinedElsewhere
+    case .unanswered: .unanswered
+    case .failed: .failed
+    }
+    provider.reportCall(with: id, endedAt: .now, reason: reason)
+    #endif
+  }
+}
+
 struct CallKitUnavailable: LocalizedError {
   var errorDescription: String? { "CallKit isn't available here." }
 }
@@ -140,8 +222,29 @@ extension CallKitCall: CXProviderDelegate {
     }
   }
 
+  nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+    MainActor.assumeIsolated {
+      guard ringingIncoming == action.callUUID else { action.fail(); return }
+      ringingIncoming = nil
+      answeredIncoming = action.callUUID
+      // Ready for CallKit to activate the audio, as for an outgoing call.
+      try? CallAudioEngine.configureSession()
+      action.fulfill()
+      onIncomingAnswer(action.callUUID)
+    }
+  }
+
   nonisolated func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
     MainActor.assumeIsolated {
+      // Declining a ring (or hanging up an answered one before the voice call took it).
+      if ringingIncoming == action.callUUID || answeredIncoming == action.callUUID {
+        let wasRinging = ringingIncoming == action.callUUID
+        ringingIncoming = nil
+        answeredIncoming = nil
+        action.fulfill()
+        if wasRinging { onIncomingDecline(action.callUUID) }
+        return
+      }
       let outside = !endingHere
       uuid = nil
       active = false

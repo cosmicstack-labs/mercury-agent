@@ -52,7 +52,12 @@ final class Notifier {
     listener?.cancel()
     Self.installDelegate()
     listener = Task {
-      for await e in client.events("/api/chat/activity") where e.name == "activity" {
+      for await e in client.events("/api/chat/activity") {
+        // Mercury ringing or notifying this phone (ADR-046) comes on the same stream.
+        if e.name != "activity" {
+          if let r = ReachEvent.parse(name: e.name, data: e.data) { PhoneRinger.shared.handle(r) }
+          continue
+        }
         guard let data = e.data.data(using: .utf8), let a = try? JSONDecoder().decode(ActivityEvent.self, from: data) else { continue }
         handle(a)
       }

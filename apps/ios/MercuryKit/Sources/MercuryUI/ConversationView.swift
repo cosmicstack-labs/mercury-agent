@@ -54,7 +54,8 @@ struct ConversationView: View {
   func beginCall() {
     // The call takes the mic: dictation stops.
     model.dictation.cancel()
-    call = VoiceCallModel(conversation: model)
+    call = VoiceCallModel(conversation: model, ring: model.ringInvite)
+    model.ringInvite = nil
   }
 
   /// What "Set up voice" said to do once it closed.
