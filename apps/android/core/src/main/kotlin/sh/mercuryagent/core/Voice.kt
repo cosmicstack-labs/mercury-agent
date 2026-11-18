@@ -209,9 +209,16 @@ suspend fun MercuryClient.voiceCapabilities(): VoiceCapabilities {
   return VoiceCapabilities.decode(r.code, r.body)
 }
 
-/** POST /api/mobile/voice/session: a token for a live call, or why there can't be one. */
-suspend fun MercuryClient.voiceSession(engine: String? = null): VoiceSessionResult {
-  val r = send(request("POST", "/api/mobile/voice/session", engineBody(engine)), 12)
+/**
+ * POST /api/mobile/voice/session: a token for a live call, or why there can't be one. A call Mercury
+ * placed (ADR-046) passes the ring it answered, so Mercury starts by saying why it called.
+ */
+suspend fun MercuryClient.voiceSession(engine: String? = null, ring: RingInvite? = null): VoiceSessionResult {
+  val body = if (ring == null) engineBody(engine) else buildJsonObject {
+    engine?.let { put("engine", JsonPrimitive(it)) }
+    put("callInviteId", JsonPrimitive(ring.id)); put("reason", JsonPrimitive(ring.reason))
+  }
+  val r = send(request("POST", "/api/mobile/voice/session", body), 12)
   return VoiceSessionResult.decode(r.code, r.body)
 }
 

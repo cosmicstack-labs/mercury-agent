@@ -28,9 +28,9 @@ class CallManager(private val app: Context) {
   val running: Boolean get() = current?.isEnded == false
 
   /** Starts a call in [conversation] (or returns the one already running). The microphone is allowed. */
-  fun start(conversation: ConversationViewModel): VoiceCallModel {
+  fun start(conversation: ConversationViewModel, ring: sh.mercuryagent.core.RingInvite? = null): VoiceCallModel {
     current?.takeIf { !it.isEnded }?.let { return it }
-    val m = VoiceCallModel(app, conversation, conversation.client, scope, onFinished = { CallService.stop(app) })
+    val m = VoiceCallModel(app, conversation, conversation.client, scope, onFinished = { CallService.stop(app) }, ring = ring)
     current = m
     CallService.start(app)
     m.start()

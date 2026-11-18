@@ -144,7 +144,8 @@ fun ConversationScreen(
   var voiceKeys by remember(vm.client) { mutableStateOf(false) }
   LaunchedEffect(vm.client) { voiceKeys = sh.mercuryagent.core.VOICE_PROVIDERS_FEATURE in calls.features(vm.client) }
   androidx.compose.runtime.DisposableEffect(dictation) { onDispose { dictation.cancel() } }
-  val beginCall: () -> Unit = { mic { dictation.cancel(); calls.start(vm) } }
+  // A ring the owner answered (ADR-046) goes with the call, so Mercury says why it called.
+  val beginCall: () -> Unit = { mic { dictation.cancel(); calls.start(vm, container.takeAnsweredRing()) } }
   // "Set up voice" (VoiceSetupSheet), when a call or the mic needs a voice this Mercury doesn't have.
   var voiceSetup by remember(vm.client) { mutableStateOf<sh.mercuryagent.core.VoiceSetup.Trigger?>(null) }
   /**

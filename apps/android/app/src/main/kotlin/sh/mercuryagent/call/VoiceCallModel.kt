@@ -105,6 +105,8 @@ class VoiceCallModel(
   private val client: MercuryClient,
   private val scope: CoroutineScope,
   private val onFinished: (VoiceCallModel) -> Unit = {},
+  /** Mercury rang this phone and the owner answered (ADR-046): the session starts with why it called. */
+  val ring: sh.mercuryagent.core.RingInvite? = null,
 ) {
   val callId: String = UUID.randomUUID().toString().lowercase()
   val meter = CallMeter()
@@ -174,7 +176,7 @@ class VoiceCallModel(
 
   private suspend fun runCall() {
     mark("screen")
-    val session = scope.async { runCatching { client.voiceSession() } }
+    val session = scope.async { runCatching { client.voiceSession(ring = ring) } }
     // Telecom's call, in parallel with the token.
     val t = CallTelecom(context, scope)
     t.onEndedOutside = { endedOutside() }

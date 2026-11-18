@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.PhoneInTalk
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Savings
 import androidx.compose.material3.AlertDialog
@@ -73,6 +74,7 @@ object SettingsNav {
   @Serializable object Channels
   @Serializable object Appearance
   @Serializable object Notifications
+  @Serializable object Calls
   @Serializable object Budgets
   @Serializable object Activity
   @Serializable object Devices
@@ -85,6 +87,7 @@ fun NavGraphBuilder.settingsGraph(nav: NavHostController, container: AppContaine
   composable<SettingsNav.Root> { SettingsScreen(container, connection, client, onBack = back, onOpen = { nav.navigate(it) }, onAddMercury = onAddMercury) }
   composable<SettingsNav.Appearance> { AppearanceSettings(container, back) }
   composable<SettingsNav.Notifications> { NotificationsSettings(container, back) }
+  composable<SettingsNav.Calls> { CallsSettings(container, client, back) }
   // Models and Voice link to each other: going back to the one underneath instead of stacking them.
   fun openOrBack(route: Any) {
     if (nav.previousBackStackEntry?.destination?.hasRoute(route::class) == true) nav.popBackStack() else nav.navigate(route)
@@ -189,6 +192,7 @@ fun SettingsScreen(
     item { NavRow(Icons.Outlined.Forum, "Channels") { onOpen(SettingsNav.Channels) } }
     item { NavRow(Icons.Outlined.Palette, "Appearance") { onOpen(SettingsNav.Appearance) } }
     item { NavRow(Icons.Outlined.Notifications, "Notifications") { onOpen(SettingsNav.Notifications) } }
+    item { NavRow(Icons.Outlined.PhoneInTalk, "Calls from Mercury") { onOpen(SettingsNav.Calls) } }
     item { NavRow(Icons.Outlined.Savings, "Budgets") { onOpen(SettingsNav.Budgets) } }
     item { NavRow(Icons.Outlined.BarChart, "Activity") { onOpen(SettingsNav.Activity) } }
     item { NavRow(Icons.Outlined.Devices, "Paired devices") { onOpen(SettingsNav.Devices) } }

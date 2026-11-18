@@ -43,6 +43,7 @@ class Notifier(private val context: Context) {
       ch(CH_DONE, "Finished", "A long task finished, a research report is ready, a bot has a result.", NotificationManager.IMPORTANCE_DEFAULT),
       ch(CH_FAILED, "Failed", "A task or a bot stopped with an error.", NotificationManager.IMPORTANCE_DEFAULT),
       ch(CH_CONNECTION, "Staying connected", "Shown while Mercury keeps its connection open in the background.", NotificationManager.IMPORTANCE_MIN),
+      ch(CH_MERCURY, "From Mercury", "What Mercury tells you itself: alerts, reminders, results and missed calls.", NotificationManager.IMPORTANCE_HIGH),
     ))
   }
 
@@ -68,6 +69,22 @@ class Notifier(private val context: Context) {
 
   fun cancel(key: String) = manager.cancel(key, ID)
 
+  /** A notification Mercury sent this phone (ADR-046), or a missed call; a tap opens its chat when it has one. */
+  fun postReach(n: sh.mercuryagent.core.ReachNotice) {
+    if (!canPost) return
+    val b = NotificationCompat.Builder(context, CH_MERCURY)
+      .setSmallIcon(R.drawable.ic_notification)
+      .setContentTitle(n.title)
+      .setContentText(n.body)
+      .setStyle(NotificationCompat.BigTextStyle().bigText(n.body))
+      .setAutoCancel(true)
+      .setSilent(n.silent)
+      .setContentIntent(openIntent(context, n.threadId))
+      .setCategory(if (n.kind == "missed-call") NotificationCompat.CATEGORY_MISSED_CALL else if (n.kind == "alert") NotificationCompat.CATEGORY_ALARM else NotificationCompat.CATEGORY_MESSAGE)
+      .setPriority(if (n.urgency == "high" || n.urgency == "critical") NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
+    try { manager.notify(n.id, ID, b.build()) } catch (_: SecurityException) { /* permission revoked meanwhile */ }
+  }
+
   /** The persistent notification of the background connection (the foreground service's). */
   fun connection(text: String): android.app.Notification =
     NotificationCompat.Builder(context, CH_CONNECTION)
@@ -89,6 +106,7 @@ class Notifier(private val context: Context) {
     const val CH_DONE = "finished"
     const val CH_FAILED = "failed"
     const val CH_CONNECTION = "connection"
+    const val CH_MERCURY = "from_mercury"
     const val ID = 1
     const val EXTRA_KEY = "sh.mercuryagent.KEY"
 
