@@ -429,6 +429,10 @@ struct ModelSheet: View {
   private var stillBody: some View {
     VStack(alignment: .leading, spacing: 8) {
       Text("Model").font(.system(size: 17, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 8)
+      header("Permissions")
+      card { ForEach(PermissionMode.allCases, id: \.self) { permissionRow($0) } }
+      Text(model.permissions.error ?? "For Mercury, in every chat.").font(.system(size: 13))
+        .foregroundStyle(model.permissions.error == nil ? Theme.ink3 : Theme.amber).padding(.horizontal, 16)
       if let c = model.catalog {
         card { row("Auto", c.defaultChoice.map { "Mercury's default · \($0.title)" } ?? "Mercury's default model", on: c.isAuto, enabled: true) {} }
         ForEach(ModelMenu.groups(c.models, query: ""), id: \.title) { g in
@@ -440,10 +444,6 @@ struct ModelSheet: View {
           }
         }
       }
-      header("Permissions")
-      card { ForEach(PermissionMode.allCases, id: \.self) { permissionRow($0) } }
-      Text(model.permissions.error ?? "For Mercury, in every chat.").font(.system(size: 13))
-        .foregroundStyle(model.permissions.error == nil ? Theme.ink3 : Theme.amber).padding(.horizontal, 16)
       Spacer(minLength: 0)
     }
     .padding(.horizontal, 16)
@@ -462,6 +462,16 @@ struct ModelSheet: View {
   private var liveBody: some View {
     NavigationStack {
       List {
+        // Permissions first: how Mercury acts matters more than which model it uses.
+        if query.trimmingCharacters(in: .whitespaces).isEmpty {
+          Section {
+            ForEach(PermissionMode.allCases, id: \.self) { permissionRow($0) }
+          } header: {
+            Text("Permissions")
+          } footer: {
+            if let e = model.permissions.error { Text(e).foregroundStyle(Theme.amber) } else { Text("For Mercury, in every chat.") }
+          }
+        }
         if let voice, query.isEmpty {
           Section {
             NavigationLink { VoiceSettings(client: model.client) } label: { voiceRow(voice.capabilities) }
@@ -484,15 +494,6 @@ struct ModelSheet: View {
           }
         } else {
           ProgressView().frame(maxWidth: .infinity)
-        }
-        if query.trimmingCharacters(in: .whitespaces).isEmpty {
-          Section {
-            ForEach(PermissionMode.allCases, id: \.self) { permissionRow($0) }
-          } header: {
-            Text("Permissions")
-          } footer: {
-            if let e = model.permissions.error { Text(e).foregroundStyle(Theme.amber) } else { Text("For Mercury, in every chat.") }
-          }
         }
       }
       .navigationTitle("Model")

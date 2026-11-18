@@ -529,6 +529,8 @@ private fun ModelSheet(
       when {
         catalog == null -> Box(Modifier.fillMaxWidth().padding(32.dp), Alignment.Center) { androidx.compose.material3.CircularProgressIndicator() }
         else -> LazyColumn(Modifier.fillMaxWidth()) {
+          // Permissions first: how Mercury acts matters more than which model it uses.
+          if (query.isBlank()) permissionItems(permission, vm::setPermission)
           if (query.isBlank()) item(key = "auto") {
             val d = catalog.defaultChoice
             ModelRow("Auto", d?.let { "Mercury's default · ${it.title}" } ?: "Mercury's default model", catalog.isAuto, enabled = d != null) { pick(null) }
@@ -541,14 +543,13 @@ private fun ModelSheet(
             }
           }
           if (groups.isEmpty()) item { Text(if (query.isBlank()) "No providers configured." else "No model matches “$query”.", color = Mercury.colors.ink3, modifier = Modifier.padding(20.dp)) }
-          if (query.isBlank()) permissionItems(permission, vm::setPermission)
         }
       }
     }
   }
 }
 
-/** The model sheet's Permissions, under the models: Ask Me / Allow All, applied at once. */
+/** The model sheet's Permissions, at the top: Ask Me / Allow All, applied at once. */
 private fun androidx.compose.foundation.lazy.LazyListScope.permissionItems(p: sh.mercuryagent.core.PermissionState, onPick: (sh.mercuryagent.core.PermissionMode) -> Unit) {
   item(key = "permissions") { SheetHeader("Permissions") }
   items(sh.mercuryagent.core.PermissionMode.entries, key = { "perm:${it.wire}" }) { m ->
