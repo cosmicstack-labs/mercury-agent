@@ -314,6 +314,7 @@ export interface MercuryConfig {
      * headers. Anything else is refused (DNS rebinding).
      */
     allowedHosts?: string[];
+    publicUrl?: string;
   };
   mcp?: McpConfig;
   /** Opt-in: discover plugin and MCP schemas on demand in the main agent's tool loop. */
