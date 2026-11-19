@@ -74,6 +74,9 @@ fun BotAvatar(
 object BotAvatarCache {
   private val images = ConcurrentHashMap<String, Result<ImageBitmap>>()
 
+  /** The face changed on the server: the next look fetches it again. */
+  fun forget(client: MercuryClient, id: String) { images.remove(client.baseUrl + "|" + id) }
+
   suspend fun image(client: MercuryClient, id: String, cacheDir: File): ImageBitmap? {
     val key = client.baseUrl + "|" + id
     images[key]?.let { return it.getOrNull() }
