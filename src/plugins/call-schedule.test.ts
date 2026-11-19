@@ -100,7 +100,7 @@ describe('CallScheduler', () => {
     expect(handleCallCommand('/calls cancel all', false)).toBe('🗑 Cancelled 2 calls.');
     expect(handleCallCommand('/call 9pm', true)).toBe('Only the owner can schedule calls.');
     registerCallScheduler('whatsapp', null);
-    expect(handleCallCommand('/call 9pm', false)).toMatch(/need the WhatsApp plugin/);
+    expect(handleCallCommand('/call 9pm', false)).toMatch(/need the Mercury app paired on your phone, or the WhatsApp plugin/);
     s.stop();
   });
 });

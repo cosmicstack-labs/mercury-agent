@@ -15,7 +15,9 @@ export type AuditKind =
   | 'action.requested' | 'action.allowed' | 'action.denied'
   | 'remote.changed' | 'login.failed' | 'login.locked' | 'password.changed'
   | 'update.started'
-  | 'voice.key.set' | 'voice.key.removed';
+  | 'voice.key.set' | 'voice.key.removed'
+  | 'permissions.mode'
+  | 'device.reach' | 'reach.settings';
 
 export interface AuditEntry {
   at: string;

@@ -91,7 +91,7 @@ fun ConnectScreen(vm: ConnectViewModel, onClose: (() -> Unit)? = null) {
         colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
         navigationIcon = {
           when {
-            ui.step != ConnectStep.Welcome && ui.step !is ConnectStep.Waiting ->
+            ui.step != ConnectStep.Welcome && ui.step !is ConnectStep.Waiting && ui.step != ConnectStep.Name ->
               IconButton(onClick = { vm.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
             onClose != null && ui.step == ConnectStep.Welcome -> IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, "Close") }
           }
@@ -111,6 +111,7 @@ fun ConnectScreen(vm: ConnectViewModel, onClose: (() -> Unit)? = null) {
         ConnectStep.Welcome::class -> Welcome(vm)
         ConnectStep.SignIn::class -> SignIn(vm, ui)
         ConnectStep.Token::class -> PasteToken(vm, ui)
+        ConnectStep.Name::class -> NameStep(vm, ui)
         else -> (ui.step as? ConnectStep.Waiting)?.let { Waiting(vm, it.pairing) }
       }
     }

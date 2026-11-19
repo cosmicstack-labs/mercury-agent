@@ -15,9 +15,19 @@
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
   <uses-permission android:name="android.permission.WAKE_LOCK" />
   <uses-permission android:name="android.permission.VIBRATE" />
+  <!-- Mercury rings this phone (ADR-046): the incoming call over the lock screen. Android 14+
+       asks the owner once (Settings → Calls from Mercury). -->
+  <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
   <uses-feature android:name="android.hardware.microphone" android:required="false" />
   <uses-feature android:name="android.hardware.sensor.proximity" android:required="false" />
   <uses-feature android:name="android.hardware.telephony" android:required="false" />
+  <!-- Dictation without a Mercury speech service: the phone's own speech recogniser
+       (SpeechRecognizer.isRecognitionAvailable needs to see the recognition service). -->
+  <queries>
+    <intent>
+      <action android:name="android.speech.RecognitionService" />
+    </intent>
+  </queries>
 
   <application
     android:name=".MercuryApplication"
@@ -53,6 +63,19 @@
       <!-- The launcher's Call Mercury shortcut (long-press the icon). -->
       <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
     </activity>
+    <!-- Mercury is calling: full screen over the lock screen (call/IncomingCallActivity.kt). -->
+    <activity
+      android:name=".call.IncomingCallActivity"
+      android:exported="false"
+      android:excludeFromRecents="true"
+      android:launchMode="singleInstance"
+      android:showWhenLocked="true"
+      android:turnScreenOn="true"
+      android:taskAffinity="sh.mercuryagent.ring"
+      android:theme="@style/Theme.Mercury" />
+    <receiver
+      android:name=".call.RingActionReceiver"
+      android:exported="false" />
     <service
       android:name=".notify.ConnectionService"
       android:exported="false"

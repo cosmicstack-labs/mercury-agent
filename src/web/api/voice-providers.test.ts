@@ -62,7 +62,7 @@ describe('voice providers share one key store with Optimus', () => {
     for (const k of [GEMINI_KEY, ELEVEN_KEY, OPENAI_KEY]) expect(text).not.toContain(k.slice(0, -4));
     const body = JSON.parse(text) as { providers: Array<Record<string, unknown>>; capabilities: Record<string, unknown> };
     const by = Object.fromEntries(body.providers.map((p) => [p.id, p]));
-    expect(by.gemini).toMatchObject({ env: 'GEMINI_API_KEY', set: true, source: 'store', hint: '1234', canEdit: true, uses: ['calls', 'optimus'] });
+    expect(by.gemini).toMatchObject({ env: 'GEMINI_API_KEY', set: true, source: 'store', hint: '1234', canEdit: true, uses: ['calls', 'dictation', 'optimus'] });
     expect(by.elevenlabs).toMatchObject({ set: true, source: 'env', hint: 'abcd', canEdit: false });
     expect(by.openai).toMatchObject({ env: null, set: true, source: 'provider', hint: 'wxyz', canEdit: false });
     expect(by.deepgram).toMatchObject({ set: false, source: null, canEdit: true });
@@ -142,10 +142,11 @@ describe('voice providers share one key store with Optimus', () => {
     const before = (await (await mobileVoice.request('http://127.0.0.1/api/mobile/voice/capabilities')).json()) as Record<string, unknown>;
     expect(before).toMatchObject({ call: false, dictation: false });
     const saved = (await (await put('gemini', GEMINI_KEY)).json()) as { capabilities: Record<string, unknown> };
-    expect(saved.capabilities).toMatchObject({ call: true, callEngine: 'gemini', callEngineName: 'Gemini Live', dictation: false });
+    expect(saved.capabilities).toMatchObject({ call: true, callEngine: 'gemini', callEngineName: 'Gemini Live', dictation: true, dictationEngine: 'gemini', dictationEngineName: 'Gemini' });
     await put('elevenlabs', ELEVEN_KEY);
     const after = (await (await mobileVoice.request('http://127.0.0.1/api/mobile/voice/capabilities')).json()) as Record<string, unknown>;
-    expect(after).toMatchObject({ call: true, callEngine: 'gemini', dictation: true, dictationEngine: 'elevenlabs', dictationEngineName: 'ElevenLabs Scribe' });
+    // Gemini comes before ElevenLabs when the owner hasn't picked one.
+    expect(after).toMatchObject({ call: true, callEngine: 'gemini', dictation: true, dictationEngine: 'gemini' });
   });
 
   it('is advertised to clients', () => {

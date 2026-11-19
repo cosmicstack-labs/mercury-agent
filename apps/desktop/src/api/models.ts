@@ -193,6 +193,23 @@ export const speakApi = {
   },
 };
 
+/** POST /api/mobile/voice/dictation: a short-lived token for the owner's speech service (never a key). */
+export interface DictationTokenResponse {
+  engine: string;
+  token: string;
+  ephemeral: boolean;
+  expiresAt: string;
+  model?: string;
+  url?: string;
+  language?: string;
+}
+
+/** Live dictation: GET /api/mobile/voice/capabilities says who listens; any signed-in client may ask, not only phones. */
+export const liveDictationApi = {
+  capabilities: () => http.get<VoiceCapabilities>("/api/mobile/voice/capabilities"),
+  token: (engine?: string) => http.post<DictationTokenResponse>("/api/mobile/voice/dictation", engine ? { engine } : {}),
+};
+
 export const transcribeApi = {
   status: () => http.get<{ available: boolean; engine: string | null }>("/api/transcribe"),
   send: (audio: Blob, language?: string) =>

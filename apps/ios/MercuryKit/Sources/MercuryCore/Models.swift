@@ -9,10 +9,16 @@ public struct Connection: Codable, Identifiable, Hashable, Sendable {
   public var deviceId: String?
   public var createdAt: Date
   public var lastUsedAt: Date?
+  /// Which of the Mercury logos this one wears (`ConnectionLogos.ids`); nil in records saved before
+  /// logos, until the store gives them one.
+  public var logo: String?
 
-  public init(id: String = Connection.newId(), name: String, baseURL: URL, deviceId: String? = nil, createdAt: Date = .now) {
-    self.id = id; self.name = name; self.baseURL = baseURL; self.deviceId = deviceId; self.createdAt = createdAt
+  public init(id: String = Connection.newId(), name: String, baseURL: URL, deviceId: String? = nil, createdAt: Date = .now, logo: String? = nil) {
+    self.id = id; self.name = name; self.baseURL = baseURL; self.deviceId = deviceId; self.createdAt = createdAt; self.logo = logo
   }
+
+  /// The logo to draw: the saved one, else the first.
+  public var logoId: String { logo.flatMap { ConnectionLogos.ids.contains($0) ? $0 : nil } ?? ConnectionLogos.ids[0] }
 
   /// 12 random hex characters, like Mercury Desktop's connection ids.
   public static func newId() -> String {
@@ -27,6 +33,8 @@ public struct Health: Decodable, Sendable {
   public var apiVersion: Int?
   public var features: [String]?
   public var setupRequired: Bool?
+  /// The computer's host name (newer runtimes, only to a signed-in device): the friendly name's first guess.
+  public var host: String?
 }
 
 public struct Device: Decodable, Sendable, Hashable {

@@ -22,11 +22,20 @@ MainActor.assumeIsolated {
   // --- Dictation screens (03k–03m, the composer's mic): DictationGallery.swift ---
   let dictationScreens = DictationGallery.screens()
   // --- end Dictation ---
+  // --- Set up voice (11a–11i): VoiceSetupSheet.swift ---
+  let voiceSetupScreens = VoiceSetupGallery.screens()
+  // --- end Set up voice ---
+  // --- Plugins (12a–12g): PluginsSettings.swift ---
+  let pluginScreens = PluginsGallery.screens()
+  // --- end Plugins ---
+  // --- Brain → Mind map (13a–13g): MindMapGallery.swift ---
+  let mindMapScreens = MindMapGallery.screens()
+  // --- end Mind map ---
   // --- Media on its way (09a–09e) and Appearance (10a, 10d): AppearanceGallery.swift ---
   let mediaScreens = AppearanceGallery.screens() + AppearanceGallery.themed()
   // --- end Media/Appearance ---
   let only = CommandLine.arguments.dropFirst(2).first
-  for s in Gallery.screens() + artifactScreens + botScreens + chatScreens + callScreens + dictationScreens + mediaScreens
+  for s in Gallery.screens() + artifactScreens + botScreens + chatScreens + callScreens + dictationScreens + voiceSetupScreens + pluginScreens + mediaScreens + mindMapScreens
   where only == nil || s.name.hasPrefix(only!) {
     let (name, view) = (s.name, { s.view })
     for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {

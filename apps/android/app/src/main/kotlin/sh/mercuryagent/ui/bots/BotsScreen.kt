@@ -27,7 +27,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Inbox
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -75,11 +78,15 @@ private sealed interface BotsPage {
   data object Roster : BotsPage
   data object Inbox : BotsPage
   data class Bot(val leadId: String) : BotsPage
+  data object New : BotsPage
+  data class Edit(val id: String) : BotsPage
 
   companion object {
-    fun encode(p: BotsPage): String = when (p) { Roster -> ""; Inbox -> "inbox"; is Bot -> "bot:${p.leadId}" }
+    fun encode(p: BotsPage): String = when (p) { Roster -> ""; Inbox -> "inbox"; New -> "new"; is Bot -> "bot:${p.leadId}"; is Edit -> "edit:${p.id}" }
     fun decode(s: String): BotsPage = when {
       s == "inbox" -> Inbox
+      s == "new" -> New
+      s.startsWith("edit:") -> Edit(s.removePrefix("edit:"))
       s.startsWith("bot:") -> Bot(s.removePrefix("bot:"))
       else -> Roster
     }
@@ -109,12 +116,21 @@ fun BotsScreen(vm: BotsViewModel, onBack: () -> Unit, onOpenChat: (String) -> Un
     onStopOrDispose { vm.stop() }
   }
   LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }
-  BackHandler(enabled = page != BotsPage.Roster) { pageKey = "" }
+  BackHandler(enabled = page != BotsPage.Roster) {
+    pageKey = if (page is BotsPage.Edit) BotsPage.encode(BotsPage.Bot(page.id)) else ""
+  }
 
   when (page) {
     BotsPage.Roster -> RosterPage(vm, ui, snackbar, onBack, onOpen = { pageKey = BotsPage.encode(it) })
     BotsPage.Inbox -> InboxPage(vm, ui, snackbar, onBack = { pageKey = "" })
-    is BotsPage.Bot -> BotDetailPage(vm, ui, page.leadId, snackbar, onBack = { pageKey = "" })
+    BotsPage.New -> NewBotPage(vm) { id -> pageKey = id?.let { BotsPage.encode(BotsPage.Bot(it)) } ?: "" }
+    is BotsPage.Edit -> {
+      val b = ui.bot(page.id)
+      if (b == null) LaunchedEffect(Unit) { pageKey = "" }
+      else EditBotPage(vm, b) { pageKey = BotsPage.encode(BotsPage.Bot(page.id)) }
+    }
+    is BotsPage.Bot -> BotDetailPage(vm, ui, page.leadId, snackbar, onBack = { pageKey = "" },
+      onEdit = { pageKey = BotsPage.encode(BotsPage.Edit(it)) })
   }
 }
 
@@ -130,6 +146,10 @@ private fun RosterPage(vm: BotsViewModel, ui: BotsUi, snackbar: SnackbarHostStat
       LargeTopAppBar(
         title = { Text("Bots") }, scrollBehavior = scroll,
         navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+        actions = {
+          if (ui.available && ui.bots.isNotEmpty()) AllBotsMenu(vm) { vm.say(it) }
+          if (ui.available) IconButton(onClick = { onOpen(BotsPage.New) }) { Icon(Icons.Outlined.Add, "New bot") }
+        },
       )
     },
     snackbarHost = { SnackbarHost(snackbar) },
@@ -153,7 +173,10 @@ private fun BotsList(vm: BotsViewModel, ui: BotsUi, onOpen: (BotsPage) -> Unit) 
         BotsEmpty("Bots are off on this Mercury", "Turn bots on in Mercury's settings on your computer to see them here.")
       }
       ui.loaded && ui.bots.isEmpty() && ui.error == null -> item(key = "none") {
-        BotsEmpty("No bots yet", "Make a bot in Mercury Desktop. It shows up here, and you can watch it work and talk to it from your phone.")
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+          BotsEmpty("No bots yet", "A bot works on its own, on a schedule or when you message it, and reports back to your inbox.")
+          Button(onClick = { onOpen(BotsPage.New) }) { Text("New bot") }
+        }
       }
       ui.bots.isNotEmpty() -> {
         item(key = "inbox") { InboxRow(ui.unread, ui.approvals.size) { onOpen(BotsPage.Inbox) } }
@@ -299,8 +322,9 @@ private enum class DetailTab(val title: String) { Live("Live"), Inbox("Inbox"), 
 /** A bot, or a whole fleet when [leadId] is a lead: Live, Inbox and History. */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun BotDetailPage(vm: BotsViewModel, ui: BotsUi, leadId: String, snackbar: SnackbarHostState, onBack: () -> Unit) {
+private fun BotDetailPage(vm: BotsViewModel, ui: BotsUi, leadId: String, snackbar: SnackbarHostState, onBack: () -> Unit, onEdit: (String) -> Unit) {
   var tab by rememberSaveable { mutableIntStateOf(0) }
+  var managing by rememberSaveable { mutableStateOf(false) }
   val members = ui.members(leadId)
   val lead = ui.bot(leadId)
   LaunchedEffect(leadId) { vm.tick() }
@@ -320,6 +344,9 @@ private fun BotDetailPage(vm: BotsViewModel, ui: BotsUi, leadId: String, snackba
             }
           },
           navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+          actions = {
+            if (lead != null) IconButton(onClick = { managing = true }) { Icon(Icons.Outlined.Tune, "Manage ${lead.name}") }
+          },
         )
         PrimaryTabRow(selectedTabIndex = tab) {
           DetailTab.entries.forEachIndexed { i, t ->
@@ -344,5 +371,9 @@ private fun BotDetailPage(vm: BotsViewModel, ui: BotsUi, leadId: String, snackba
       DetailTab.Inbox -> BotsInboxList(vm, ui, members.map { it.id }, m)
       DetailTab.History -> BotsHistory(vm, ui, members, m)
     }
+  }
+  if (managing && lead != null) {
+    BotManageSheet(vm, lead, crewCount = ui.bots.count { it.parent == lead.id }, onDismiss = { managing = false },
+      onEdit = { managing = false; onEdit(lead.id) }, onDeleted = { managing = false; onBack() })
   }
 }

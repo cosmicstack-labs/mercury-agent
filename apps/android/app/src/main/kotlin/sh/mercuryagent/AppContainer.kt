@@ -11,6 +11,11 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import sh.mercuryagent.core.ConnectionStore
 import sh.mercuryagent.core.KeystoreSecretStore
 import sh.mercuryagent.core.PrefsKeyValueStore
+import sh.mercuryagent.core.ackMissed
+import sh.mercuryagent.core.missed
+import sh.mercuryagent.core.registerReach
+import sh.mercuryagent.core.reportRing
+import kotlinx.coroutines.launch
 import sh.mercuryagent.data.AppearanceStore
 import sh.mercuryagent.data.ReadMarksStore
 
@@ -27,11 +32,69 @@ class AppContainer(context: Context) {
   val connections = ConnectionStore(PrefsKeyValueStore(app), KeystoreSecretStore(app))
   val appearance = AppearanceStore(app.prefs, scope)
   val readMarks = ReadMarksStore(app.prefs)
+  /** Brain → Mind map's display and force settings. */
+  val mindMapSettings = sh.mercuryagent.data.MindMapSettingsStore(app.prefs, scope)
   val notifier = sh.mercuryagent.notify.Notifier(app)
   val notifyPrefs = sh.mercuryagent.notify.NotifyPrefsStore(app)
   val monitor = sh.mercuryagent.notify.ActivityMonitor(app, connections, notifyPrefs, notifier, scope)
   /** Voice calls (one at a time) and each Mercury's voice capabilities. */
   val calls = sh.mercuryagent.call.CallManager(app)
+
+  // ── Mercury rings and notifies this phone (ADR-046), over the activity stream only ──
+  private val reachPrefs = app.getSharedPreferences("mercury.reach", Context.MODE_PRIVATE)
+  val ringTelecom = sh.mercuryagent.call.RingTelecom(app, scope)
+  val ringer = sh.mercuryagent.call.PhoneRinger(
+    scope, ringTelecom,
+    report = { id, outcome -> activeClient()?.let { c -> runCatching { c.reportRing(id, outcome) } } },
+    post = { notifier.postReach(it) },
+  ).apply {
+    ringOn = reachPrefs.getBoolean("ring", true)
+    notifyOn = reachPrefs.getBoolean("notify", true)
+  }
+  /** Why registering this phone failed (Settings → Calls from Mercury), or null. */
+  val reachProblem = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+  private fun activeClient(): sh.mercuryagent.core.MercuryClient? = connections.state.value.active?.let { connections.client(it) }
+
+  /** Ring this phone / show Mercury's notifications on it: kept here and told to Mercury. */
+  fun setReach(ring: Boolean = ringer.ringOn, notify: Boolean = ringer.notifyOn) {
+    ringer.ringOn = ring; ringer.notifyOn = notify
+    reachPrefs.edit().putBoolean("ring", ring).putBoolean("notify", notify).apply()
+    activeClient()?.let { c -> scope.launch { registerReach(c) } }
+  }
+
+  private suspend fun registerReach(c: sh.mercuryagent.core.MercuryClient) {
+    val caps = buildList { add("telecom"); if (sh.mercuryagent.call.RingTelecom.canRingFullScreen(app)) add("full-screen-intent") }
+    reachProblem.value = try {
+      c.registerReach(ringer.ringOn, ringer.notifyOn, appVersion, caps); null
+    } catch (e: sh.mercuryagent.core.MercuryException.Server) {
+      when (e.code) {
+        404 -> "Your Mercury is too old to call this phone. Update Mercury on your computer."
+        403 -> "This phone isn't paired with a device token, so Mercury can't call it. Pair it again from Mercury Desktop."
+        else -> e.message
+      }
+    } catch (e: Exception) { e.message }
+  }
+
+  /** The streams opened: tell Mercury how to reach this phone, and show what it missed. */
+  private fun reachConnected(c: sh.mercuryagent.core.MercuryClient) {
+    scope.launch {
+      registerReach(c)
+      val items = runCatching { c.missed() }.getOrNull() ?: return@launch
+      val ids = ringer.showMissed(items)
+      runCatching { c.ackMissed(ids) }
+    }
+  }
+
+  /** Answer a ring on this phone: the chat on screen starts the call, which says why Mercury called. */
+  fun answerRing(id: String): Boolean {
+    if (!ringer.answerHere(id)) return false
+    requestCall()
+    return true
+  }
+
+  /** The answered ring, for the call that starts now (once). */
+  fun takeAnsweredRing(): sh.mercuryagent.core.RingInvite? = ringer.takeAnswered()
 
   /** What the owner sees in their device list: the phone's own name, then the app. */
   val deviceName: String by lazy {
@@ -41,6 +104,21 @@ class AppContainer(context: Context) {
   }
 
   val appVersion: String get() = BuildConfig.VERSION_NAME
+
+  init {
+    ringTelecom.onAnswer = { id -> if (answerRing(id)) openApp() }
+    ringTelecom.onDecline = { id -> ringer.declineHere(id) }
+    ringTelecom.callRunning = { calls.running }
+    monitor.onReach = { ringer.handle(it) }
+    monitor.onStreamsStarted = { reachConnected(it) }
+  }
+
+  private fun openApp() {
+    runCatching {
+      app.startActivity(android.content.Intent(app, MainActivity::class.java)
+        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP))
+    }
+  }
 
   private val ui = app.getSharedPreferences("mercury.ui", Context.MODE_PRIVATE)
 

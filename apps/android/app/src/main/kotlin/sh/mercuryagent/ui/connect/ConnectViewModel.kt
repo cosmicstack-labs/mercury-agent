@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import sh.mercuryagent.core.Connection
+import sh.mercuryagent.core.ConnectionLogos
 import sh.mercuryagent.core.ConnectionStore
 import sh.mercuryagent.core.Device
 import sh.mercuryagent.core.MercuryClient
@@ -25,7 +26,12 @@ sealed interface ConnectStep {
   data object SignIn : ConnectStep
   data object Token : ConnectStep
   data class Waiting(val pairing: Pairing) : ConnectStep
+  /** Connected, not saved yet: a friendly name and a logo, then it's saved. */
+  data object Name : ConnectStep
 }
+
+/** Connected, not saved yet: what the name step saves. */
+data class PendingConnection(val url: String, val token: String, val deviceId: String?)
 
 data class ConnectUi(
   val step: ConnectStep = ConnectStep.Welcome,
@@ -35,6 +41,11 @@ data class ConnectUi(
   val token: String = "",
   val busy: Boolean = false,
   val error: String? = null,
+  val pending: PendingConnection? = null,
+  val name: String = "",
+  val logo: String = ConnectionLogos.ids[0],
+  /** The name as first guessed, until the person types their own. */
+  val suggestedName: String = "",
 ) {
   val canSignIn: Boolean get() = address.isNotBlank() && username.isNotBlank() && password.isNotEmpty() && !busy
   val canUseToken: Boolean get() = address.isNotBlank() && token.trim().startsWith("mdt_") && !busy
@@ -43,7 +54,9 @@ data class ConnectUi(
 /**
  * The connect flow (ADR-035; iOS: ConnectModel.swift): an address and the owner's sign-in, then (off
  * the owner's computer) a 5-character code the owner approves before Mercury hands this phone a token.
- * Or a device token made elsewhere, checked with a health probe first.
+ * Or a device token made elsewhere, checked with a health probe first. Last, once it's connected, a
+ * friendly name (the computer's name as a first guess) and a logo, as Mercury Desktop names a remote
+ * when it's added; the Mercury is saved when that step is done.
  */
 class ConnectViewModel(
   private val store: ConnectionStore,
@@ -59,10 +72,14 @@ class ConnectViewModel(
   fun setUsername(v: String) = _ui.update { it.copy(username = v) }
   fun setPassword(v: String) = _ui.update { it.copy(password = v) }
   fun setToken(v: String) = _ui.update { it.copy(token = v) }
+  fun setName(v: String) = _ui.update { it.copy(name = v) }
+  fun setLogo(v: String) = _ui.update { it.copy(logo = v) }
 
   /** Back within the flow; false when there's nowhere further back to go. */
   fun back(): Boolean = when (_ui.value.step) {
     ConnectStep.Welcome -> false
+    // Connected: back saves it as it is rather than dropping a token Mercury has already handed out.
+    ConnectStep.Name -> { save(); true }
     is ConnectStep.Waiting -> { cancelWaiting(); true }
     else -> { go(ConnectStep.Welcome); true }
   }
@@ -132,8 +149,35 @@ class ConnectViewModel(
 
   private fun fail(e: Exception) = _ui.update { it.copy(error = e.message) }
 
+  /**
+   * Connected: on to the name step, with the address as a first guess, then the computer's own name
+   * when it says (GET /api/health's `host`) unless the person has started typing.
+   */
   private fun finish(url: String, token: String, device: Device?) {
-    val host = url.substringAfter("://").substringBefore(':').removePrefix("[").removeSuffix("]")
-    store.add(Connection(name = host.ifEmpty { "Mercury" }, baseUrl = url, deviceId = device?.id ?: MercuryClient.deviceIdFromToken(token)), token)
+    val guess = ConnectionLogos.suggestedName(null, url)
+    _ui.update {
+      it.copy(
+        step = ConnectStep.Name, pending = PendingConnection(url, token, device?.id ?: MercuryClient.deviceIdFromToken(token)),
+        name = guess, suggestedName = guess, logo = store.nextLogo, error = null,
+      )
+    }
+    viewModelScope.launch {
+      val host = runCatching { makeClient(url, token).health().host }.getOrNull() ?: return@launch
+      suggest(host, url)
+    }
+  }
+
+  fun suggest(host: String?, url: String) {
+    val better = ConnectionLogos.suggestedName(host, url)
+    _ui.update { it.copy(name = if (it.name == it.suggestedName) better else it.name, suggestedName = better) }
+  }
+
+  /** Saves the Mercury with its name (the guess when left blank) and logo, and makes it active. */
+  fun save() {
+    val s = _ui.value
+    val p = s.pending ?: return
+    val n = s.name.trim().ifEmpty { s.suggestedName }.take(60)
+    _ui.update { it.copy(pending = null) }
+    store.add(Connection(name = n, baseUrl = p.url, deviceId = p.deviceId, logo = s.logo), p.token)
   }
 }

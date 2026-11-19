@@ -100,7 +100,8 @@ final class CallAudioEngine: CallPlayback, @unchecked Sendable {
   /// Speaker or earpiece (a headset, when one is connected, wins either way).
   static func setSpeaker(_ on: Bool) {
     #if os(iOS)
-    try? AVAudioSession.sharedInstance().overrideOutputAudioPort(on ? .speaker : .none)
+    do { try AVAudioSession.sharedInstance().overrideOutputAudioPort(on ? .speaker : .none) } catch { CallLog.note("speaker override \(on) failed: \(error)") }
+    CallLog.note("speaker \(on) \(CallLog.routeLine())")
     #endif
   }
 
@@ -216,13 +217,15 @@ final class CallAudioEngine: CallPlayback, @unchecked Sendable {
       self.meter.setVoice(audible ? PCM.display(PCM.peak(UnsafeBufferPointer(start: ch[0], count: Int(buf.frameLength)))) : 0)
     }
     engine.prepare()
-    try engine.start()
+    do { try engine.start() } catch { CallLog.note("engine.start failed: \(error)"); throw error }
     player.play()
     lock.lock(); running = true; lock.unlock()
+    CallLog.note("engine running in=\(format.sampleRate)Hz/\(format.channelCount)ch out=\(engine.outputNode.outputFormat(forBus: 0).sampleRate)Hz player=\(player.isPlaying) \(CallLog.routeLine())")
   }
 
   /// After a configuration change the engine has stopped: start it again with the new format.
   private func rewire() {
+    CallLog.note("engine configuration changed \(CallLog.routeLine())")
     lock.lock(); let wasRunning = running; lock.unlock()
     guard wasRunning else { return }
     try? run()
@@ -252,9 +255,10 @@ final class CallAudioEngine: CallPlayback, @unchecked Sendable {
 
   /// Plays engine audio (16 kHz mono PCM16 LE) right after what's already queued.
   func play(_ data: Data) {
-    guard let buf = PCM.playBuffer(data) else { return }
+    CallLog.count("audio.bytes", by: data.count)
+    guard let buf = PCM.playBuffer(data) else { CallLog.count("audio.unplayable"); return }
     lock.lock()
-    guard attached else { lock.unlock(); return }
+    guard attached else { lock.unlock(); CallLog.count("audio.notAttached"); return }
     let gen = generation
     scheduled += 1
     let first = scheduled == 1
@@ -264,12 +268,14 @@ final class CallAudioEngine: CallPlayback, @unchecked Sendable {
     if first { sink?(true) }
     player.scheduleBuffer(buf, completionCallbackType: .dataPlayedBack) { [weak self] _ in self?.played(gen) }
     if live && !player.isPlaying { player.play() }
+    CallLog.count(live ? "audio.scheduled" : "audio.scheduledNotRunning")
   }
 
   private func played(_ gen: Int) {
     lock.lock()
     guard gen == generation, scheduled > 0 else { lock.unlock(); return }
     scheduled -= 1
+    CallLog.count("audio.played")
     let ended = scheduled == 0
     let sink = playbackSink
     lock.unlock()
@@ -277,6 +283,7 @@ final class CallAudioEngine: CallPlayback, @unchecked Sendable {
   }
 
   func flush() {
+    CallLog.note("flush (\(Thread.callStackSymbols.dropFirst().prefix(3).map { $0.split(separator: " ").dropFirst(3).first.map(String.init) ?? "?" }.joined(separator: " < ")))")
     lock.lock()
     generation += 1
     let had = scheduled > 0

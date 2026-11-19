@@ -17,21 +17,30 @@ sealed interface ChatStatus {
 }
 
 /**
- * The chat list's sections, as Mercury Desktop groups them (ThreadList.tsx `groupByDay`):
- * Today, Yesterday, Previous 7 days, Previous 30 days, Older. Counted in calendar days, so a chat
- * from 11 pm is "Yesterday" at 1 am.
+ * The drawer's day labels, after Mercury Desktop's ThreadList `groupByDay`, finer for the week:
+ * "Today", "Yesterday", "2 days ago" … "6 days ago", "Previous 30 days", then the month ("October",
+ * or "September 2025" in another year). Counted in calendar days in the phone's time zone, so a chat
+ * from 11 pm is "Yesterday" at 1 am. The same rules as iOS's `ChatSections`.
  */
 object ChatSections {
-  data class Section(val title: String, val threads: List<ChatThread>)
+  /** [title] null: no label (Saved, which is newest save first, not by day). */
+  data class Section(val title: String?, val threads: List<ChatThread>)
+
+  private val months = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
 
   fun title(d: Instant, now: Instant = Instant.now(), zone: ZoneId = ZoneId.systemDefault()): String {
-    val days = ChronoUnit.DAYS.between(d.atZone(zone).toLocalDate(), now.atZone(zone).toLocalDate())
+    val day = d.atZone(zone).toLocalDate()
+    val today = now.atZone(zone).toLocalDate()
+    val days = ChronoUnit.DAYS.between(day, today)
     return when {
       days <= 0 -> "Today"
       days == 1L -> "Yesterday"
-      days < 7 -> "Previous 7 days"
+      days < 7 -> "$days days ago"
       days < 30 -> "Previous 30 days"
-      else -> "Older"
+      else -> {
+        val month = months[day.monthValue - 1]
+        if (day.year == today.year) month else "$month ${day.year}"
+      }
     }
   }
 
@@ -109,25 +118,33 @@ object RelativeTime {
 }
 
 /**
- * The drawer's history, as in Grok's: one flat list, newest first, each row dated (no day
- * headers). "Saved" shows only saved chats, newest save first. A search filters live, on titles
- * and previews; the label above the list says which it is. Built off the main thread.
+ * The drawer's history, as in Grok's: one list, newest first, rows the title alone, with small day
+ * labels between them ("Today", "3 days ago", "October"; search results keep them). "Saved" shows
+ * only saved chats, newest save first, unlabelled. A search filters live, on titles and previews;
+ * the label above the list says which it is. Built off the main thread.
  */
 data class ChatHistory(
   val threads: List<ChatThread> = emptyList(),
   val query: String = "",
   val savedOnly: Boolean = false,
+  val sections: List<ChatSections.Section> = emptyList(),
 ) {
   val isEmpty: Boolean get() = threads.isEmpty()
   /** "Conversations", "Saved" or "Results". */
   val label: String get() = when { query.isNotEmpty() -> "Results"; savedOnly -> "Saved"; else -> "Conversations" }
 
   companion object {
-    fun build(threads: List<ChatThread>, query: String, savedOnly: Boolean): ChatHistory {
+    fun build(
+      threads: List<ChatThread>, query: String, savedOnly: Boolean,
+      now: Instant = Instant.now(), zone: ZoneId = ZoneId.systemDefault(),
+    ): ChatHistory {
       val q = query.trim()
       val base = if (savedOnly) threads.filter { it.savedAt != null }.sortedByDescending { it.savedAt }
       else threads.sortedByDescending { it.lastActivity }
-      return ChatHistory(if (q.isEmpty()) base else base.filter { ChatSearch.matches(it, q) }, q, savedOnly)
+      val shown = if (q.isEmpty()) base else base.filter { ChatSearch.matches(it, q) }
+      val sections = if (savedOnly) (if (shown.isEmpty()) emptyList() else listOf(ChatSections.Section(null, shown)))
+      else ChatSections.byDay(shown, now, zone)
+      return ChatHistory(shown, q, savedOnly, sections)
     }
   }
 }

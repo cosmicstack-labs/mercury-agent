@@ -50,6 +50,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.outlined.PanTool
+import androidx.compose.ui.semantics.selected
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
@@ -129,10 +133,16 @@ fun Composer(
   onDictate: () -> Unit,
   onCall: () -> Unit,
   modifier: Modifier = Modifier,
+  /** The Mercury has `voice.providers`: the model picker links to Settings → Voice. */
+  voiceKeys: Boolean = false,
+  onVoiceSettings: () -> Unit = {},
 ) {
   val draft = vm.draft
   val attachments by vm.attachments.collectAsStateWithLifecycle()
   val composer by vm.composer.collectAsStateWithLifecycle()
+  val permission by vm.permissions.state.collectAsStateWithLifecycle()
+  // Ask Me / Allow All: read when the composer appears and whenever the app comes back.
+  androidx.lifecycle.compose.LifecycleResumeEffect(vm) { vm.refreshPermissions(); onPauseOrDispose {} }
   val canSend = draft.text.isNotBlank() || attachments.isNotEmpty()
   var sheet by remember { mutableStateOf(false) }
   val dismissKeyboard = sh.mercuryagent.ui.rememberDismissKeyboard()
@@ -150,7 +160,7 @@ fun Composer(
     MediaIntent.IMAGE -> "Describe the image"
     MediaIntent.VIDEO -> "Describe the video"
     MediaIntent.MUSIC -> "Describe the music"
-    else -> if (dictation.active) "Listening…" else if (composer.code) "Describe what to build" else "Ask anything"
+    else -> if (dictation.active) dictation.listeningLabel else if (composer.code) "Describe what to build" else "Ask anything"
   }
   val hasChips = attachments.isNotEmpty() || composer.media != null || composer.ownEffort != null
 
@@ -190,8 +200,10 @@ fun Composer(
       Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         CircleIcon(Icons.Outlined.Add, "Add a file, create media or set thinking effort") { dismissKeyboard(); sheet = true }
         Spacer(Modifier.width(8.dp))
-        ModelPill(composer.catalog?.pill ?: "Auto", composer.switching) { dismissKeyboard(); models = true }
-        Spacer(Modifier.weight(1f))
+        // Ask Me / Allow All is chosen inside this same picker (no separate control here).
+        Row(Modifier.weight(1f).padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+          ModelPill(composer.catalog?.pill ?: "Auto", composer.switching, Modifier.weight(1f, fill = false)) { dismissKeyboard(); models = true }
+        }
         DictationButton(dictation, onDictate)
         Spacer(Modifier.width(6.dp))
         val mode = when { busy && !canSend -> 2; canSend -> 1; else -> 0 }
@@ -206,7 +218,13 @@ fun Composer(
     }
   }
 
-  if (models) ModelSheet(vm, composer, onDismiss = { models = false })
+  if (models) ModelSheet(
+    vm, composer, permission, onDismiss = { models = false },
+    voice = if (voiceKeys) VoiceLine(dictation.capabilities) else null,
+    onVoiceSettings = { models = false; onVoiceSettings() },
+  )
+  // An older Mercury wants the owner's go-ahead for Allow All: the code to approve.
+  sh.mercuryagent.ui.more.OwnerGateSheet(vm.gate)
   if (sheet) ComposerSheet(
     vm, composer, attachments.size,
     onDismiss = { sheet = false },
@@ -232,18 +250,20 @@ private fun DictationButton(dictation: sh.mercuryagent.call.DictationModel, onCl
     sh.mercuryagent.call.DictationModel.Phase.Starting, sh.mercuryagent.call.DictationModel.Phase.Listening -> "Stop dictation"
     sh.mercuryagent.call.DictationModel.Phase.Stopping -> "Finishing dictation"
   }
-  val ink = MaterialTheme.colorScheme.onSurface
+  val red = Mercury.colors.red
   IconButton(
     onClick = onClick,
     modifier = Modifier.alpha(if (on || dictation.available || dictation.capabilities == null) 1f else 0.35f),
   ) {
     Box(contentAlignment = Alignment.Center) {
       if (on) androidx.compose.foundation.Canvas(Modifier.size(36.dp)) {
-        drawCircle(ink.copy(alpha = 0.10f + 0.25f * level), radius = size.minDimension / 2 * (0.82f + 0.18f * level))
+        drawCircle(red.copy(alpha = 0.14f + 0.25f * level), radius = size.minDimension / 2 * (0.82f + 0.18f * level))
       }
       Icon(
-        if (on) Icons.Outlined.GraphicEq else Icons.Outlined.Mic, label,
+        // Listening: the same mic, filled and red, so it reads as "tap to stop" (not the call's waveform).
+        if (on) Icons.Filled.Mic else Icons.Outlined.Mic, label,
         Modifier.alpha(if (dictation.phase == sh.mercuryagent.call.DictationModel.Phase.Stopping) 0.6f else 1f),
+        tint = if (on) red else androidx.compose.ui.graphics.Color.Unspecified,
       )
     }
   }
@@ -442,10 +462,10 @@ private fun CircleIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, la
 
 /** The model Mercury answers with ("Auto" on its configured default): tap to pick another. */
 @Composable
-private fun ModelPill(name: String, busy: Boolean, onClick: () -> Unit) {
+private fun ModelPill(name: String, busy: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
   Surface(
     onClick = onClick, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest,
-    modifier = Modifier.height(40.dp).semantics { contentDescription = "Model: $name. Change the model" },
+    modifier = modifier.height(40.dp).semantics { contentDescription = "Model: $name. Change the model" },
   ) {
     Row(Modifier.padding(start = 12.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
       if (busy) androidx.compose.material3.CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
@@ -464,7 +484,14 @@ private fun ModelPill(name: String, busy: Boolean, onClick: () -> Unit) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ModelSheet(vm: ConversationViewModel, c: ComposerState, onDismiss: () -> Unit) {
+private fun ModelSheet(
+  vm: ConversationViewModel,
+  c: ComposerState,
+  permission: sh.mercuryagent.core.PermissionState,
+  onDismiss: () -> Unit,
+  voice: VoiceLine? = null,
+  onVoiceSettings: () -> Unit = {},
+) {
   val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var query by remember { mutableStateOf("") }
   androidx.compose.runtime.LaunchedEffect(Unit) { vm.loadModels() }
@@ -478,6 +505,15 @@ private fun ModelSheet(vm: ConversationViewModel, c: ComposerState, onDismiss: (
         "Changes the model for Mercury, in every chat.", style = MaterialTheme.typography.bodySmall, color = Mercury.colors.ink3,
         modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 8.dp),
       )
+      voice?.let { v ->
+        Row(
+          Modifier.fillMaxWidth().clickable(onClickLabel = "Set up voice", onClick = onVoiceSettings).padding(horizontal = 20.dp, vertical = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(v.status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+          Text("Set up voice →", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+        }
+      }
       if ((catalog?.models?.size ?: 0) > 8) Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).height(44.dp)
           .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(22.dp)).padding(horizontal = 14.dp),
@@ -496,6 +532,8 @@ private fun ModelSheet(vm: ConversationViewModel, c: ComposerState, onDismiss: (
       when {
         catalog == null -> Box(Modifier.fillMaxWidth().padding(32.dp), Alignment.Center) { androidx.compose.material3.CircularProgressIndicator() }
         else -> LazyColumn(Modifier.fillMaxWidth()) {
+          // Permissions first: how Mercury acts matters more than which model it uses.
+          if (query.isBlank()) permissionItems(permission, vm::setPermission)
           if (query.isBlank()) item(key = "auto") {
             val d = catalog.defaultChoice
             ModelRow("Auto", d?.let { "Mercury's default · ${it.title}" } ?: "Mercury's default model", catalog.isAuto, enabled = d != null) { pick(null) }
@@ -512,6 +550,41 @@ private fun ModelSheet(vm: ConversationViewModel, c: ComposerState, onDismiss: (
       }
     }
   }
+}
+
+/** The model sheet's Permissions, at the top: Ask Me / Allow All, applied at once. */
+private fun androidx.compose.foundation.lazy.LazyListScope.permissionItems(p: sh.mercuryagent.core.PermissionState, onPick: (sh.mercuryagent.core.PermissionMode) -> Unit) {
+  item(key = "permissions") { SheetHeader("Permissions") }
+  items(sh.mercuryagent.core.PermissionMode.entries, key = { "perm:${it.wire}" }) { m ->
+    val on = p.mode == m
+    ListItem(
+      headlineContent = { Text(m.title, maxLines = 1) },
+      supportingContent = { Text(m.detail, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+      leadingContent = { Icon(if (m.allowAll) Icons.Filled.Bolt else Icons.Outlined.PanTool, null, Modifier.size(20.dp)) },
+      trailingContent = {
+        if (on && p.saving) androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+        else if (on) Icon(Icons.Outlined.Check, "Current")
+      },
+      colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
+      modifier = Modifier.semantics { selected = on }.clickable(onClick = { onPick(m) }),
+    )
+  }
+  item(key = "perm:footer") {
+    Text(
+      p.error ?: "For Mercury, in every chat.", style = MaterialTheme.typography.bodySmall,
+      color = if (p.error != null) Mercury.colors.amber else Mercury.colors.ink3,
+      modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 12.dp),
+    )
+  }
+}
+
+/** The model picker's voice line: what calls use, from the capabilities the mic already asked for. */
+data class VoiceLine(val capabilities: sh.mercuryagent.core.VoiceCapabilities?) {
+  val status: String
+    get() {
+      val c = capabilities ?: return "Voice"
+      return if (c.call) "Voice: ${c.callEngineName ?: c.callEngine ?: "ready"} ✓" else "Voice: not set up"
+    }
 }
 
 @Composable

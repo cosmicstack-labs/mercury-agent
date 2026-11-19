@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
-import { tmpdir, platform } from 'node:os';
+import { tmpdir, platform, hostname } from 'node:os';
 import { join } from 'node:path';
 import { writeAttachToken, readAttachToken, createSession } from './auth.js';
 import { authGuard } from './middleware.js';
@@ -117,8 +117,9 @@ describe('/api/health (attach liveness)', () => {
     const { default: statusRoutes } = await import('./api/status.js');
     const loopback = await statusRoutes.request('http://127.0.0.1:6174/api/health', {}, { incoming: { socket: { remoteAddress: '127.0.0.1' } } });
     expect(loopback.status).toBe(200);
-    const body = await loopback.json() as { ok: boolean; pid: number; booting: boolean };
+    const body = await loopback.json() as { ok: boolean; pid: number; booting: boolean; host: string };
     expect(body.ok).toBe(true);
+    expect(body.host).toBe(hostname());
     expect(body.pid).toBe(process.pid);
     expect(typeof body.booting).toBe('boolean');
     const remote = await statusRoutes.request('http://127.0.0.1:6174/api/health', {}, { incoming: { socket: { remoteAddress: '10.0.0.7' } } });

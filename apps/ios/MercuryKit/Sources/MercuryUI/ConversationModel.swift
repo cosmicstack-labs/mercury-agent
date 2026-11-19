@@ -65,6 +65,10 @@ final class ConversationModel {
   var switching = false
   /// Live dictation into `draft` (the composer's mic).
   let dictation = DictationModel()
+  /// The owner's go-ahead for a change an older Mercury gates (Allow All).
+  let gate: OwnerGate
+  /// Ask Me / Allow All: the model sheet's Permissions and the indicator by the model pill.
+  let permissions: PermissionModel
 
   let client: MercuryClient
   var listener: Task<Void, Never>?
@@ -74,6 +78,10 @@ final class ConversationModel {
   /// A call was asked for from outside the chat (the side panel, a Home Screen quick action):
   /// the chat's screen starts it and clears this.
   var callRequested = false
+  /// The ring the requested call answers (ADR-046): Mercury called, so it says why first.
+  var ringInvite: RingInvite?
+  /// "Set up voice" is showing (a call or the mic was tapped on a Mercury that can't do it yet).
+  var voiceSetup: VoiceSetup.Trigger?
   var titleCheck: Task<Void, Never>?
   var stopFallback: Task<Void, Never>?
   /// A turn ended, with Mercury's reply when it gave one (a voice call reads it aloud).
@@ -89,6 +97,8 @@ final class ConversationModel {
     threadId = thread?.id
     title = thread?.displayTitle ?? "New chat"
     savedAt = thread?.savedAt
+    gate = OwnerGate(client: client)
+    permissions = PermissionModel(client: client, gate: gate)
     dictation.conversation = self
   }
 
@@ -377,6 +387,9 @@ final class ConversationModel {
     if let s = data["sessionId"] as? String, let id = threadId, s != id { return }
     let now = Date.now
     switch event {
+    case "status":
+      // The runtime's live status: Ask Me / Allow All changed anywhere (Desktop, a terminal, a phone).
+      permissions.apply(status: data)
     case "queued":
       queued = data["position"] as? Int ?? 1
       if agent == .idle { agent = .thinking }

@@ -16,6 +16,10 @@ struct ConversationView: View {
   /// The bottom of the conversation is on screen: the jump-to-latest button hides.
   @State var atEnd = true
   @State var deleting = false
+  /// A call tap is asking the Mercury whether it can take calls.
+  @State var checkingVoice = false
+  /// Set by "Set up voice" before it closes: the call or dictation to start after.
+  @State var afterSetup: VoiceSetup.Next?
   /// The side panel's button (nil: none, as when pushed).
   var onMenu: (() -> Void)? = nil
   var onNewChat: (() -> Void)? = nil
@@ -25,11 +29,44 @@ struct ConversationView: View {
   /// Nothing said yet: the mark and greeting in the middle, ideas above the composer.
   var empty: Bool { model.loaded && model.messages.isEmpty && !model.busy }
 
+  /// Every call entry comes here (the top phone button, the composer's waveform, the side panel's
+  /// Call Mercury, the Home Screen action). When this Mercury can't take calls yet and can set up
+  /// voice, "Set up voice" shows instead; otherwise the call starts as it always has.
   func startCall() {
     dismissKeyboard()
+    if model.dictation.capabilities?.call == true { beginCall(); return }
+    guard !checkingVoice else { return }
+    checkingVoice = true
+    Task {
+      defer { checkingVoice = false }
+      var caps = model.dictation.capabilities
+      if caps == nil { caps = try? await model.client.voiceCapabilities() }
+      if caps?.call == true { return beginCall() }
+      let supported = await model.client.hasVoiceProviders()
+      switch VoiceSetup.decide(.call, supported: supported, caps: caps) {
+      case .proceed, .legacy: beginCall()
+      case .setup: model.dictation.cancel(); model.voiceSetup = .call
+      }
+    }
+  }
+
+  /// Starts the call itself (unchanged: VoiceCallModel takes it from here).
+  func beginCall() {
     // The call takes the mic: dictation stops.
     model.dictation.cancel()
-    call = VoiceCallModel(conversation: model)
+    call = VoiceCallModel(conversation: model, ring: model.ringInvite)
+    model.ringInvite = nil
+  }
+
+  /// What "Set up voice" said to do once it closed.
+  func voiceSetupClosed() {
+    let next = afterSetup
+    afterSetup = nil
+    switch next {
+    case .startCall?: beginCall()
+    case .startDictation?: model.dictation.start()
+    default: break
+    }
   }
 
   var body: some View {
@@ -164,6 +201,12 @@ struct ConversationView: View {
       if let id { model.onSeen(id, true) }
     }
     .quickLookPreview($preview)
+    .sheet(item: $model.voiceSetup, onDismiss: voiceSetupClosed) { trigger in
+      VoiceSetupSheet(client: model.client, trigger: trigger) { next in
+        afterSetup = next
+        model.voiceSetup = nil
+      }
+    }
     .callCover($call)
     .environment(\.mercuryClient, model.client)
   }

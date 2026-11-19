@@ -6,8 +6,8 @@ import MercuryCore
 /// The message box. The + menu adds a photo or a file (image, PDF, TXT or Markdown), sets the next
 /// message to make an image, a video or music (ADR-042), and picks how hard the model thinks in
 /// this chat (ADR-041). What's set shows as small chips above the text, each one tap to remove.
-/// The mic dictates live into the box (DictationModel): greyed out, with what to add, when this
-/// Mercury has no speech service that can. Send, or stop while Mercury works on this chat.
+/// The mic dictates live into the box (DictationModel) with Mercury's speech service, or the phone's
+/// own speech recognition when Mercury has none. Send, or stop while Mercury works on this chat.
 struct Composer: View {
   @Bindable var model: ConversationModel
   var focus: FocusState<Bool>.Binding
@@ -19,6 +19,7 @@ struct Composer: View {
   @State private var photos: [PhotosPickerItem] = []
   @State private var importing = false
   @State private var choosingModel = false
+  @Environment(\.scenePhase) private var scenePhase
 
   private var stopMode: Bool { model.busy && !model.canSend }
 
@@ -41,7 +42,7 @@ struct Composer: View {
       GlassGroup(spacing: 8) {
         HStack(spacing: 8) {
           plusMenu
-          ModelPill(name: model.catalog?.pill ?? "Auto", busy: model.switching) { dismissKeyboard(); choosingModel = true }
+          ModelPill(name: model.catalog?.pill ?? "Auto", busy: model.switching, maxName: 150) { dismissKeyboard(); choosingModel = true }
           Spacer(minLength: 4)
           DictationButton(dictation: model.dictation)
           actionButton
@@ -66,11 +67,13 @@ struct Composer: View {
     .task { if model.model == nil { await model.loadComposerInfo() } }
     .task { if model.catalog == nil { await model.loadModels() } }
     .task { await model.dictation.load() }
+    .task { await model.permissions.refresh() }
+    .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await model.permissions.refresh() } } }
     .onDisappear { model.dictation.cancel() }
   }
 
   private var placeholder: String {
-    if model.dictation.active { return "Listening…" }
+    if model.dictation.active { return model.dictation.listeningLabel }
     return switch model.media?.kind {
     case .image?: "Describe the image"
     case .video?: "Describe the video"
@@ -250,8 +253,9 @@ struct Composer: View {
   }
 }
 
-/// The composer's mic: dictates live into the box. Greyed out when this Mercury can't (a tap says
-/// what to add); while listening, filled, with a ring that follows the voice. Tap again to stop.
+/// The composer's mic: dictates live into the box. Greyed out only when nothing can listen (during a
+/// call, or no speech service and the phone's recogniser refused); while listening, filled, with a
+/// ring that follows the voice. Tap again to stop.
 struct DictationButton: View {
   var dictation: DictationModel
 
@@ -262,15 +266,16 @@ struct DictationButton: View {
         if on {
           TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
             let level = CGFloat(dictation.meter.read(now: ctx.date).mic)
-            Circle().stroke(Theme.accent.opacity(0.35), lineWidth: 3)
+            Circle().stroke(Theme.red.opacity(0.35), lineWidth: 3)
               .frame(width: 36, height: 36).scaleEffect(1 + 0.32 * level)
           }
         }
-        Image(systemName: on ? "waveform" : "mic")
+        // Listening: the same mic, filled and red, so it reads as "tap to stop" (not the call's waveform).
+        Image(systemName: on ? "mic.fill" : "mic")
           .font(.system(size: 16, weight: .medium))
-          .foregroundStyle(on ? Theme.onAccent : Theme.ink2)
+          .foregroundStyle(on ? Color.white : Theme.ink2)
           .frame(width: 36, height: 36)
-          .glassSurface(in: Circle(), interactive: true, tint: on ? Theme.accent : nil)
+          .glassSurface(in: Circle(), interactive: true, tint: on ? Theme.red : nil)
           .opacity(dictation.phase == .stopping ? 0.6 : 1)
       }
       .opacity(on || dictation.available || dictation.capabilities == nil ? 1 : 0.35)
@@ -385,12 +390,14 @@ enum ImagePrep {
 struct ModelPill: View {
   var name: String
   var busy = false
+  /// The name's widest, then it ends in "…".
+  var maxName: CGFloat = 150
   var action: () -> Void
   var body: some View {
     Button(action: action) {
       HStack(spacing: 6) {
         if busy { ProgressView().controlSize(.mini) } else { Image(systemName: "sparkles").font(.system(size: 13)) }
-        Text(name).font(.system(size: 15, weight: .medium)).lineLimit(1).frame(maxWidth: 150, alignment: .leading).fixedSize(horizontal: true, vertical: false)
+        Text(name).font(.system(size: 15, weight: .medium)).lineLimit(1).frame(maxWidth: maxName, alignment: .leading).fixedSize(horizontal: true, vertical: false)
         Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.ink3)
       }
       .foregroundStyle(Theme.ink)
@@ -410,10 +417,67 @@ struct ModelSheet: View {
   var model: ConversationModel
   @Environment(\.dismiss) private var dismiss
   @State private var query = ""
+  /// What calls and dictation use, on a Mercury with voice providers.
+  @State private var voice: VoiceProviders?
+  /// Snapshots: no navigation or list (the renderer can't draw them).
+  var still = false
 
   var body: some View {
+    if still { stillBody } else { liveBody }
+  }
+
+  /// The sheet as the Snapshots tool draws it: the same rows and sections, in a plain stack.
+  private var stillBody: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Model").font(.system(size: 17, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 8)
+      header("Permissions")
+      card { ForEach(PermissionMode.allCases, id: \.self) { permissionRow($0) } }
+      Text(model.permissions.error ?? "For Mercury, in every chat.").font(.system(size: 13))
+        .foregroundStyle(model.permissions.error == nil ? Theme.ink3 : Theme.amber).padding(.horizontal, 16)
+      if let c = model.catalog {
+        card { row("Auto", c.defaultChoice.map { "Mercury's default · \($0.title)" } ?? "Mercury's default model", on: c.isAuto, enabled: true) {} }
+        ForEach(ModelMenu.groups(c.models, query: ""), id: \.title) { g in
+          header(g.models.count > 1 ? "\(g.title) · \(g.models.count)" : g.title)
+          card {
+            ForEach(g.models) { m in
+              row(m.title, m.title != m.model ? m.model : ModelMenu.providerName(m.name), on: m.isCurrent && !c.isAuto, enabled: m.available) {}
+            }
+          }
+        }
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 16)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+  }
+
+  private func header(_ t: String) -> some View {
+    Text(t).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink3).padding(.horizontal, 16).padding(.top, 8)
+  }
+
+  private func card<C: View>(@ViewBuilder _ c: () -> C) -> some View {
+    VStack(spacing: 14) { c() }.padding(.horizontal, 16).padding(.vertical, 12)
+      .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+
+  private var liveBody: some View {
     NavigationStack {
       List {
+        // Permissions first: how Mercury acts matters more than which model it uses.
+        if query.trimmingCharacters(in: .whitespaces).isEmpty {
+          Section {
+            ForEach(PermissionMode.allCases, id: \.self) { permissionRow($0) }
+          } header: {
+            Text("Permissions")
+          } footer: {
+            if let e = model.permissions.error { Text(e).foregroundStyle(Theme.amber) } else { Text("For Mercury, in every chat.") }
+          }
+        }
+        if let voice, query.isEmpty {
+          Section {
+            NavigationLink { VoiceSettings(client: model.client) } label: { voiceRow(voice.capabilities) }
+          }
+        }
         if let c = model.catalog {
           Section {
             if query.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -441,7 +505,41 @@ struct ModelSheet: View {
       .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
     }
     .presentationDetents([.medium, .large])
+    .ownerGate(model.gate)
     .task { await model.loadModels() }
+    .task { await model.permissions.refresh() }
+    .task { voice = (try? await model.client.voiceProvidersIfSupported()) ?? nil }
+  }
+
+  /// "Voice: Gemini Live ✓ · Set up voice →".
+  private func voiceRow(_ c: VoiceCapabilities) -> some View {
+    HStack(spacing: 6) {
+      Image(systemName: "waveform").foregroundStyle(Theme.ink2)
+      Text(c.callName.map { "Voice: \($0) ✓" } ?? "Voice: not set up").foregroundStyle(Theme.ink).lineLimit(1)
+      Spacer(minLength: 6)
+      Text("Set up voice").font(.system(size: 13)).foregroundStyle(Theme.ink3)
+    }
+    .font(.system(size: 14))
+  }
+
+  /// "Ask Me — Mercury asks before anything risky": applies at once, ticked when it's the mode.
+  private func permissionRow(_ m: PermissionMode) -> some View {
+    let p = model.permissions
+    let on = p.mode == m
+    return Button { Task { await p.set(m) } } label: {
+      HStack(spacing: 12) {
+        Image(systemName: m == .allowAll ? "bolt.fill" : "hand.raised").font(.system(size: 15)).foregroundStyle(Theme.ink2).frame(width: 22)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(m.title).foregroundStyle(Theme.ink).lineLimit(1)
+          Text(m.detail).font(.system(size: 13)).foregroundStyle(Theme.ink3).lineLimit(1)
+        }
+        Spacer()
+        if on && p.saving { ProgressView().controlSize(.small) } else if on { Image(systemName: "checkmark").foregroundStyle(Theme.ink) }
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(on ? .isSelected : [])
   }
 
   private func row(_ title: String, _ detail: String?, on: Bool, enabled: Bool, action: @escaping () -> Void) -> some View {

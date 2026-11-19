@@ -46,7 +46,7 @@ class ConnectionStore(
     val active: Connection? get() = connections.firstOrNull { it.id == activeId }
   }
 
-  @Serializable private data class Saved(val version: Int = 1, val connections: List<Connection> = emptyList(), val activeId: String? = null)
+  @Serializable private data class Saved(val version: Int = 2, val connections: List<Connection> = emptyList(), val activeId: String? = null)
 
   private val _state = MutableStateFlow(load())
   val state: StateFlow<State> = _state.asStateFlow()
@@ -55,15 +55,25 @@ class ConnectionStore(
   private fun load(): State {
     val raw = kv.getString(KEY) ?: return State()
     val saved = runCatching { MercuryJson.decodeFromString(Saved.serializer(), raw) }.getOrNull() ?: return State()
-    return State(saved.connections, saved.activeId)
+    // Saved before friendly names and logos: each gets its logo once, kept from then on.
+    val migrated = ConnectionLogos.migrate(saved.connections)
+    val state = State(migrated ?: saved.connections, saved.activeId)
+    if (migrated != null) kv.putString(KEY, MercuryJson.encodeToString(Saved.serializer(), Saved(2, state.connections, state.activeId)))
+    return state
   }
+
+  /** The logo a Mercury added now would get by default. */
+  val nextLogo: String get() = ConnectionLogos.next(_state.value.connections)
 
   fun client(c: Connection): MercuryClient = makeClient(c.baseUrl, secrets.get(account(c.id)))
 
-  /** Saves a newly paired Mercury and makes it active. */
+  /** Saves a newly paired Mercury and makes it active (with the next logo when it has none). */
   fun add(c: Connection, token: String) {
     secrets.set(account(c.id), token)
-    _state.update { s -> State(s.connections.filter { it.id != c.id } + c, c.id) }
+    _state.update { s ->
+      val withLogo = if (c.logo == null) c.copy(logo = ConnectionLogos.next(s.connections)) else c
+      State(s.connections.filter { it.id != c.id } + withLogo, c.id)
+    }
     save()
   }
 
@@ -77,7 +87,19 @@ class ConnectionStore(
 
   fun rename(id: String, name: String) {
     val n = name.trim().ifEmpty { return }
-    _state.update { s -> s.copy(connections = s.connections.map { if (it.id == id) it.copy(name = n) else it }) }
+    _state.update { s -> s.copy(connections = s.connections.map { if (it.id == id) it.copy(name = n.take(60)) else it }) }
+    save()
+  }
+
+  /** A new friendly name (ignored when blank) and logo for a saved Mercury. */
+  fun update(id: String, name: String, logo: String) {
+    val n = name.trim().take(60)
+    _state.update { s ->
+      s.copy(connections = s.connections.map {
+        if (it.id != id) it
+        else it.copy(name = n.ifEmpty { it.name }, logo = if (logo in ConnectionLogos.ids) logo else it.logo)
+      })
+    }
     save()
   }
 
@@ -95,7 +117,7 @@ class ConnectionStore(
 
   private fun save() {
     val s = _state.value
-    kv.putString(KEY, MercuryJson.encodeToString(Saved.serializer(), Saved(1, s.connections, s.activeId)))
+    kv.putString(KEY, MercuryJson.encodeToString(Saved.serializer(), Saved(2, s.connections, s.activeId)))
   }
 
   companion object {

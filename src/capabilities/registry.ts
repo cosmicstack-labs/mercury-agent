@@ -46,7 +46,8 @@ import { createCreateIssueTool } from './github/create-issue.js';
 import { createGithubApiTool } from './github/github-api.js';
 import { createFetchUrlTool } from './web/fetch-url.js';
 import { createWebSearchTool } from './web/web-search.js';
-import { activeCallScheduler, describeTime } from '../plugins/call-schedule.js';
+import { activeCallScheduler, describeTime, pluginCallScheduler } from '../plugins/call-schedule.js';
+import { createPhoneTools, phoneToolsAvailable } from '../reach/tools.js';
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import {
@@ -451,9 +452,14 @@ export class CapabilityRegistry {
     // Untrusted content can't steer privileged actions (ADR-044): every tool
     // set goes through the guard, for the main agent, sub-agents and bots.
     const guard = (tools: Record<string, Tool>) => guardTools(tools, { permissions: this.permissions, notify: (text) => this.ownerNotice?.(text) });
-    // Scheduled calls (when a calling channel plugin is running): owner only.
-    if (this.permissions.getCurrentSenderRole() !== 'member' && activeCallScheduler()) {
-      return guard(this.filterSessionTools({ ...this.getToolsInner(), ...callTools() }));
+    // Calls and notifications to the owner's phone (ADR-046), and scheduled
+    // calls (the Mercury app, or a calling channel plugin): owner only.
+    if (this.permissions.getCurrentSenderRole() !== 'member') {
+      const phone = phoneToolsAvailable() ? createPhoneTools(this.permissions) : {};
+      const calls = activeCallScheduler() ? callTools() : {};
+      if (Object.keys(phone).length || Object.keys(calls).length) {
+        return guard(this.filterSessionTools({ ...this.getToolsInner(), ...phone, ...calls }));
+      }
     }
     return guard(this.filterSessionTools(this.getToolsInner()));
   }
@@ -523,16 +529,18 @@ function callTools(): Record<string, Tool> {
   return {
     schedule_call: tool({
       description:
-        'Schedule Mercury to call the owner on WhatsApp later, e.g. "call me at 9pm about the deploy", "call me back in 20 minutes", "call me tomorrow 8:30am". ' +
+        'Schedule Mercury to call the owner later (the Mercury app on their phone, else WhatsApp), e.g. "call me at 9pm about the deploy", "call me back in 20 minutes", "call me tomorrow 8:30am". ' +
         'Pass the time exactly as the owner said it (e.g. "9pm", "after 9 PM", "in 20 minutes", "tomorrow 8:30am"); it is converted in code. ' +
-        'Tell the owner the confirmation it returns (it has the exact time). For "call me when X is done", do X first, then call call_owner.',
+        'Tell the owner the confirmation it returns (it has the exact time). For "call me when X is done", do X first, then call call_owner. ' +
+        'Set via "whatsapp" only when the owner asks for a WhatsApp call.',
       inputSchema: zodSchema(z.object({
         when: z.string().min(1).max(80).describe('The time as the owner said it'),
         topic: z.string().max(300).optional().describe('What the call is about, in a few words'),
+        via: z.enum(['auto', 'whatsapp']).optional().describe('auto (default): the Mercury app, falling back to WhatsApp'),
       })),
-      execute: async ({ when, topic }) => {
-        const s = activeCallScheduler();
-        if (!s) return 'Calls need the WhatsApp plugin, linked and running.';
+      execute: async ({ when, topic, via }) => {
+        const s = via === 'whatsapp' ? pluginCallScheduler() : activeCallScheduler();
+        if (!s) return via === 'whatsapp' ? 'WhatsApp calls need the WhatsApp plugin, linked and running.' : 'Calls need the Mercury app paired on the owner\'s phone, or the WhatsApp plugin, linked and running.';
         try {
           return s.schedule(when, topic ?? '').confirmation;
         } catch (err) {

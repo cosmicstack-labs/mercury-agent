@@ -17,10 +17,12 @@ import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Devices
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.PhoneInTalk
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Savings
 import androidx.compose.material3.AlertDialog
@@ -49,9 +51,11 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.composable
+import androidx.navigation.toRoute
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import sh.mercuryagent.AppContainer
@@ -70,9 +74,12 @@ object SettingsNav {
   @Serializable object Channels
   @Serializable object Appearance
   @Serializable object Notifications
+  @Serializable object Calls
   @Serializable object Budgets
   @Serializable object Activity
   @Serializable object Devices
+  @Serializable object Plugins
+  @Serializable data class Plugin(val id: String)
 }
 
 fun NavGraphBuilder.settingsGraph(nav: NavHostController, container: AppContainer, connection: Connection, client: MercuryClient, onAddMercury: () -> Unit) {
@@ -80,8 +87,17 @@ fun NavGraphBuilder.settingsGraph(nav: NavHostController, container: AppContaine
   composable<SettingsNav.Root> { SettingsScreen(container, connection, client, onBack = back, onOpen = { nav.navigate(it) }, onAddMercury = onAddMercury) }
   composable<SettingsNav.Appearance> { AppearanceSettings(container, back) }
   composable<SettingsNav.Notifications> { NotificationsSettings(container, back) }
-  composable<SettingsNav.Models> { ModelsSettings(client, back) }
-  composable<SettingsNav.Voice> { VoiceSettings(client, back) }
+  composable<SettingsNav.Calls> { CallsSettings(container, client, back) }
+  // Models and Voice link to each other: going back to the one underneath instead of stacking them.
+  fun openOrBack(route: Any) {
+    if (nav.previousBackStackEntry?.destination?.hasRoute(route::class) == true) nav.popBackStack() else nav.navigate(route)
+  }
+  composable<SettingsNav.Models> { ModelsSettings(client, back, onVoice = { openOrBack(SettingsNav.Voice) }) }
+  composable<SettingsNav.Voice> {
+    VoiceSettings(client, container.calls, back, onOpenModels = { openOrBack(SettingsNav.Models) }, onOpenPlugin = { nav.navigate(SettingsNav.Plugin(it)) })
+  }
+  composable<SettingsNav.Plugins> { PluginsSettings(client, connection.name, back, onOpen = { nav.navigate(SettingsNav.Plugin(it)) }) }
+  composable<SettingsNav.Plugin> { entry -> PluginDetailSettings(client, connection.name, entry.toRoute<SettingsNav.Plugin>().id, back) }
   composable<SettingsNav.Channels> { ChannelsSettings(client, back) }
   composable<SettingsNav.Budgets> { BudgetsSettings(client, back) }
   composable<SettingsNav.Activity> { ActivitySettings(client, back) }
@@ -136,6 +152,7 @@ fun SettingsScreen(
   var health by remember { mutableStateOf<Health?>(null) }
   var healthError by remember { mutableStateOf<String?>(null) }
   var confirm by remember { mutableStateOf(false) }
+  var editing by remember { mutableStateOf<Connection?>(null) }
   val scope = rememberCoroutineScope()
   val context = LocalContext.current
 
@@ -155,8 +172,9 @@ fun SettingsScreen(
             else -> Text("Online · Mercury ${health?.version.orEmpty()}")
           }
         },
-        leadingContent = { Icon(Icons.Outlined.Computer, null) },
+        leadingContent = { sh.mercuryagent.ui.components.MercuryLogo(connection.logoId, 44.dp) },
         trailingContent = { StatusDot(if (health != null && healthError == null) Mercury.colors.green else Mercury.colors.ink4, size = 10.dp) },
+        modifier = Modifier.clickable(onClickLabel = "Rename it or pick its logo") { editing = connection },
       )
     }
     item { ListItem(headlineContent = { Text("Address") }, supportingContent = { Text(connection.baseUrl) }) }
@@ -170,9 +188,11 @@ fun SettingsScreen(
     item { SettingsHeader("Settings") }
     item { NavRow(Icons.Outlined.Memory, "Models") { onOpen(SettingsNav.Models) } }
     item { NavRow(Icons.Outlined.GraphicEq, "Voice") { onOpen(SettingsNav.Voice) } }
+    item { NavRow(Icons.Outlined.Extension, "Plugins") { onOpen(SettingsNav.Plugins) } }
     item { NavRow(Icons.Outlined.Forum, "Channels") { onOpen(SettingsNav.Channels) } }
     item { NavRow(Icons.Outlined.Palette, "Appearance") { onOpen(SettingsNav.Appearance) } }
     item { NavRow(Icons.Outlined.Notifications, "Notifications") { onOpen(SettingsNav.Notifications) } }
+    item { NavRow(Icons.Outlined.PhoneInTalk, "Calls from Mercury") { onOpen(SettingsNav.Calls) } }
     item { NavRow(Icons.Outlined.Savings, "Budgets") { onOpen(SettingsNav.Budgets) } }
     item { NavRow(Icons.Outlined.BarChart, "Activity") { onOpen(SettingsNav.Activity) } }
     item { NavRow(Icons.Outlined.Devices, "Paired devices") { onOpen(SettingsNav.Devices) } }
@@ -182,6 +202,7 @@ fun SettingsScreen(
       ListItem(
         headlineContent = { Text(c.name) },
         supportingContent = { Text(c.baseUrl) },
+        leadingContent = { sh.mercuryagent.ui.components.MercuryLogo(c.logoId, 36.dp) },
         trailingContent = { if (c.id == connection.id) Icon(Icons.Outlined.Check, "Connected") },
         modifier = Modifier.clickable(onClickLabel = "Switch to ${c.name}") { store.activate(c.id) },
       )
@@ -205,6 +226,9 @@ fun SettingsScreen(
     }
   }
 
+  editing?.let { c ->
+    sh.mercuryagent.ui.connect.EditMercurySheet(c, onDismiss = { editing = null }) { n, l -> store.update(c.id, n, l); editing = null }
+  }
   if (confirm) AlertDialog(
     onDismissRequest = { confirm = false },
     title = { Text("Disconnect from ${connection.name}?") },

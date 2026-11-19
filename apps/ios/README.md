@@ -69,13 +69,17 @@ route, save the JSON, then
 Live dictation (the composer's mic) runs on the same engine: `Dictation` streams
 the microphone to a speech-to-text service and the words appear in the message
 box as they're said (partial text, replaced by final text as it settles). The
-app asks `GET /api/mobile/voice/capabilities` whether this Mercury can dictate
-(the mic is greyed out, with what to add, when it can't) and
-`POST /api/mobile/voice/dictation` for a short-lived token: an OpenAI Realtime
-transcription session (`gpt-live-transcribe`), a Deepgram temporary token
-(Nova-3) or an ElevenLabs single-use Scribe token, whichever the owner has a key
-for (their "Who listens" choice in Settings → Voice first). Gemini can't dictate:
-Gemini Live only transcribes inside a conversation where it also answers. Live check:
+app asks `GET /api/mobile/voice/capabilities` which service this Mercury
+dictates with and `POST /api/mobile/voice/dictation` for a short-lived token:
+an OpenAI Realtime transcription session (`gpt-live-transcribe`), a Gemini Live
+session that only listens (`gemini-2.5-flash-native-audio-latest`, an ephemeral
+token locked to transcription; the model never answers), a Deepgram temporary
+token (Nova-3) or an ElevenLabs single-use Scribe token. It's the same service
+Desktop's voice typing uses: the owner's voice choice in Settings → Voice
+(Optimus's "Who listens") when it has a key, else OpenAI, Gemini, Deepgram,
+ElevenLabs. With no speech key at all (or a Mercury too old to say), the phone
+dictates with its own speech recognition (iOS `SFSpeechRecognizer`, on the
+device when it can); the mic is never greyed out for want of a key. Live check:
 
     SMOKE_DICTATION=dictation.json SMOKE_PCM=speech.s16le cargo test --release smoke_live_dictation -- --ignored --nocapture
 
@@ -100,10 +104,15 @@ The Snapshots renderer can't draw native text fields, plain buttons or spinners
 ## Screens
 
 1. Connect: sign in to your Mercury, then approve the phone with a 5-character code (ADR-035).
+   Last, a friendly name (the computer's name from GET /api/health's `host` as a first guess, as
+   Mercury Desktop names a remote) and one of twelve playful Mercury logos (`MercuryLogo.swift`: the
+   mark dressed up, all vector; the first Mercury gets the first, the next the second). Both are kept
+   per connection and can be changed from the side panel's header (the switcher's Edit) or Settings.
 The app is chat-first, like the Android app and the ChatGPT and Grok apps (no tab bar): the
 conversation fills the screen, and the round menu button or a swipe from the leading edge opens the
-side panel (`ChatsView.swift`: the connected Mercury, Bots, Artifacts, Saved, one flat list of
-chats, and Settings, Search and New chat at the bottom). It is monochrome: Mercury's green only in
+side panel (`ChatsView.swift`: the connected Mercury with its logo and name, Bots, Artifacts, Saved,
+the chats with small day labels between them (Today, Yesterday, 3 days ago, Previous 30 days,
+October), all one scrolling list, and Settings, Search and New chat pinned at the bottom). It is monochrome: Mercury's green only in
 the mark and the "working" dot, amber for needs you, red for failed. The chat's bar has Ask | Code
 (Code sends coding turns, `programming: "auto"` with `cwd`, Mercury's project folder from GET
 /api/workspace/info, as Mercury Desktop's Code view does; the folder's name shows under the pill); the

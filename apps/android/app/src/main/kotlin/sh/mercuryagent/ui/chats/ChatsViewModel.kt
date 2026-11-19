@@ -86,13 +86,14 @@ class ChatsViewModel(
    * the chats, the search or the Saved filter change (590 chats never sort during a frame).
    */
   val history: StateFlow<ChatHistory> = _ui
-    .map { HistoryKey(it.threads, it.query, it.savedOnly) }
+    .map { HistoryKey(it.threads, it.query, it.savedOnly, java.time.LocalDate.now()) }
     .distinctUntilChanged()
     .map { ChatHistory.build(it.threads, it.query, it.savedOnly) }
     .flowOn(Dispatchers.Default)
     .stateIn(viewModelScope, SharingStarted.Eagerly, ChatHistory())
 
-  private data class HistoryKey(val threads: List<ChatThread>, val query: String, val savedOnly: Boolean)
+  /** The day too, so the labels move on after midnight. */
+  private data class HistoryKey(val threads: List<ChatThread>, val query: String, val savedOnly: Boolean, val day: java.time.LocalDate)
 
   fun refresh() {
     _ui.update { it.copy(refreshing = true) }
