@@ -28,6 +28,8 @@ export interface ScheduledCall {
   topic: string;
   createdAt: string;
   attempts: number;
+  /** Ring only these phones / only the Mercury app (a call to a named device). */
+  target?: { deviceIds?: string[]; appOnly?: boolean; targetLabel?: string };
 }
 
 const RETRY_MS = 5 * 60_000;
@@ -171,7 +173,7 @@ export class CallScheduler {
   }
 
   /** Schedule a call; returns the confirmation to show (or throws with a plain reason). */
-  schedule(when: string, topic: string, now = new Date()): { call: ScheduledCall; confirmation: string } {
+  schedule(when: string, topic: string, now = new Date(), target?: ScheduledCall['target']): { call: ScheduledCall; confirmation: string } {
     const at = parseWhen(when, now);
     if (!at) throw new Error(`I couldn't work out when "${when}" is. Try "9pm", "in 20 minutes" or "tomorrow 8:30am".`);
     if (at.getTime() - now.getTime() > MAX_AHEAD_MS) throw new Error('That\'s more than 30 days away; pick a closer time.');
@@ -181,24 +183,26 @@ export class CallScheduler {
       topic: topic.trim().slice(0, 300) || 'checking in',
       createdAt: now.toISOString(),
       attempts: 0,
+      ...(target ? { target } : {}),
     };
     this.calls.push(call);
     this.arm(call);
     this.save();
-    return { call, confirmation: `✅ I'll call you at ${describeTime(at, now)}${call.topic !== 'checking in' ? ` about ${call.topic}` : ''}.` };
+    return { call, confirmation: `✅ I'll call you${target?.targetLabel ? ` on ${target.targetLabel}` : ''} at ${describeTime(at, now)}${call.topic !== 'checking in' ? ` about ${call.topic}` : ''}.` };
   }
 
   /**
    * An immediate call nobody answered: the one retry, 5 minutes from now
    * (counted as the second attempt, so no answer then gives up).
    */
-  retryLater(topic: string, now = new Date()): ScheduledCall {
+  retryLater(topic: string, now = new Date(), target?: ScheduledCall['target']): ScheduledCall {
     const call: ScheduledCall = {
       id: `c${Date.now().toString(36)}${(++this.seq).toString(36)}`,
       at: new Date(now.getTime() + RETRY_MS).toISOString(),
       topic: topic.trim().slice(0, 300) || 'checking in',
       createdAt: now.toISOString(),
       attempts: 1,
+      ...(target ? { target } : {}),
     };
     this.calls.push(call);
     this.arm(call);
@@ -322,6 +326,11 @@ export function activeCallScheduler(): CallScheduler | undefined {
   if (phone && phoneAvailable()) return phone;
   for (const [id, s] of schedulers) if (id !== PHONE_SCHEDULER_ID) return s;
   return undefined;
+}
+
+/** The Mercury app's scheduler (calls to a named phone or the app go through it). */
+export function phoneCallScheduler(): CallScheduler | undefined {
+  return schedulers.get(PHONE_SCHEDULER_ID);
 }
 
 /** A calling channel plugin's scheduler (not the phone's). */

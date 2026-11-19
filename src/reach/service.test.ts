@@ -98,6 +98,57 @@ describe('ReachService', () => {
     });
   });
 
+  describe('a call to a named device (the owner said which)', () => {
+    it('rings only that device, never WhatsApp', async () => {
+      live('aaaa0001', sent);
+      live('aaaa0002', sent);
+      const wa = vi.fn(async () => 'answered');
+      const s = make({ whatsappCall: () => wa });
+      const p = s.callOwner({ reason: 'test', deviceIds: ['aaaa0002'], appOnly: true, targetLabel: 'your iPhone' });
+      await Promise.resolve();
+      const rings = sent.filter((e) => e.event === 'ring');
+      expect(rings.map((e) => e.device)).toEqual(['aaaa0002']);
+      s.report('aaaa0002', String(rings[0].data.id), 'answered');
+      expect(await p).toMatchObject({ outcome: 'answered', via: 'app', deviceId: 'aaaa0002' });
+      expect(wa).not.toHaveBeenCalled();
+    });
+
+    it('when it is not connected: rings nothing else and says so', async () => {
+      live('aaaa0001', sent);
+      const wa = vi.fn(async () => 'answered');
+      const retry = vi.fn();
+      const s = make({ whatsappCall: () => wa, scheduleRetry: retry });
+      const r = await s.callOwner({ reason: 'test', deviceIds: ['aaaa0002'], appOnly: true, targetLabel: 'your iPhone' });
+      expect(r.outcome).toBe('no_phone');
+      expect(r.text).toMatch(/^not_connected: your iPhone isn't connected/);
+      expect(sent.filter((e) => e.event === 'ring')).toEqual([]);
+      expect(wa).not.toHaveBeenCalled();
+      expect(retry).not.toHaveBeenCalled();
+    });
+
+    it('no answer: retries on the same device, still without WhatsApp', async () => {
+      vi.useFakeTimers();
+      live('aaaa0002', sent);
+      const wa = vi.fn(async () => 'answered');
+      const retry = vi.fn();
+      const s = make({ whatsappCall: () => wa, scheduleRetry: retry });
+      const p = s.callOwner({ reason: 'r', deviceIds: ['aaaa0002'], appOnly: true, targetLabel: 'your iPhone' });
+      await vi.advanceTimersByTimeAsync(1001);
+      const r = await p;
+      expect(r.outcome).toBe('no_answer');
+      expect(wa).not.toHaveBeenCalled();
+      expect(retry).toHaveBeenCalledWith('r', { deviceIds: ['aaaa0002'], appOnly: true, targetLabel: 'your iPhone' });
+    });
+
+    it('"the Mercury app": any connected phone, never WhatsApp', async () => {
+      const wa = vi.fn(async () => 'answered');
+      const s = make({ whatsappCall: () => wa });
+      const r = await s.callOwner({ reason: 'x', appOnly: true, targetLabel: 'the Mercury app' });
+      expect(r.text).toMatch(/^not_connected: the Mercury app isn't connected/);
+      expect(wa).not.toHaveBeenCalled();
+    });
+  });
+
   describe('a ring', () => {
     it('times out as no_answer and then tries WhatsApp', async () => {
       vi.useFakeTimers();

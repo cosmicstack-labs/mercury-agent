@@ -47,7 +47,7 @@ export function setupPhoneReach(opts: PhoneReachOptions): PhoneReachWiring {
   const scheduler = new CallScheduler(PHONE_SCHEDULER_ID, opts.messageOwner, {
     dir: opts.dir ?? reachDir(),
     // The owner scheduled this call themselves; it can only ring them.
-    place: async (c) => (await service.callOwner({ reason: scheduledCallReason(c), source: 'scheduled', followUp: false })).text,
+    place: async (c) => (await service.callOwner({ reason: scheduledCallReason(c), source: 'scheduled', followUp: false, ...c.target })).text,
     retryable: (outcome) => !SETTLED.test(outcome),
     giveUp: async (c, outcome) => {
       if (SETTLED.test(outcome)) return;
@@ -57,7 +57,7 @@ export function setupPhoneReach(opts: PhoneReachOptions): PhoneReachWiring {
   service.setDeps({
     whatsappCall: whatsappCaller,
     messageOwner: opts.messageOwner,
-    scheduleRetry: (reason) => { scheduler.retryLater(reason); },
+    scheduleRetry: (reason, target) => { scheduler.retryLater(reason, undefined, target); },
   });
   const hasPhone = () => listPhones().length > 0;
   setPhoneSchedulerAvailability(hasPhone);

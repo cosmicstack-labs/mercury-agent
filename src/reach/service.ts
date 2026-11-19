@@ -47,8 +47,14 @@ export interface CallRequest {
   opener?: string;
   urgency?: Urgency;
   source?: ReachSource;
-  /** Only these devices (Settings → test ring rings just the phone that asked). */
+  /** Only these devices (Settings → test ring rings just the phone that asked; a call to a named device). */
   deviceIds?: string[];
+  /**
+   * The owner asked for the Mercury app or a particular device: ring only that, never WhatsApp,
+   * and say so plainly when it isn't connected. `targetLabel` names it in the answer ("Salman's iPhone").
+   */
+  appOnly?: boolean;
+  targetLabel?: string;
   /** Retry in 5 minutes and leave a missed-call note when nobody answers (default true). */
   followUp?: boolean;
 }
@@ -95,7 +101,7 @@ export interface ReachDeps {
   /** A message on the owner's messaging channel (Telegram, WhatsApp, Signal…). */
   messageOwner?: (text: string) => Promise<void>;
   /** Ring again in 5 minutes (the phone call scheduler). */
-  scheduleRetry?: (reason: string) => void;
+  scheduleRetry?: (reason: string, target?: { deviceIds?: string[]; appOnly?: boolean; targetLabel?: string }) => void;
 }
 
 export const RING_TIMEOUT_MS = 45_000;
@@ -152,6 +158,14 @@ export class ReachService {
     }
 
     const live = this.livePhones('ring', req.deviceIds);
+    const label = req.targetLabel ?? (req.deviceIds?.length ? 'that phone' : 'the Mercury app');
+    // A named device that isn't connected: ring nothing else (the owner asked for that device).
+    if (req.appOnly && !live.length && source !== 'test') {
+      return {
+        outcome: 'no_phone', via: 'none',
+        text: `not_connected: ${label} isn't connected to Mercury right now (the Mercury app has to be open on it). Nothing else was rung, because the owner asked for ${label}. Tell them, and offer to try again once it's open, or to call another way if they want.`,
+      };
+    }
     let result: CallResult | null = null;
     if (live.length) {
       const rung = await this.ring(live.map((d) => d.id), reason, req.opener, urgency);
@@ -163,12 +177,12 @@ export class ReachService {
         if (followUp) addMissed({ kind: 'call', title: 'You declined a call from Mercury', body: reason, urgency });
         return { outcome: 'declined', via: 'app', inviteId: rung.inviteId, text: 'declined: the owner declined the call. Don\'t call again about this; send a message if it still matters.' };
       }
-      result = { outcome: 'no_answer', via: 'app', inviteId: rung.inviteId, text: 'no_answer: the phone rang but nobody picked up.' };
+      result = { outcome: 'no_answer', via: 'app', inviteId: rung.inviteId, text: `no_answer: ${req.appOnly ? label : 'the phone'} rang but nobody picked up.` };
     }
     if (source === 'test') return result ?? { outcome: 'no_phone', via: 'none', text: 'no_phone: this phone isn\'t connected to Mercury right now.' };
 
-    // The owner's other way to be rung.
-    const wa = s.fallback.whatsapp ? this.deps.whatsappCall?.() ?? null : null;
+    // The owner's other way to be rung (not when they asked for a particular device or the app).
+    const wa = s.fallback.whatsapp && !req.appOnly ? this.deps.whatsappCall?.() ?? null : null;
     if (wa) {
       try {
         const out = String(await wa(reason));
@@ -185,7 +199,8 @@ export class ReachService {
     result ??= { outcome: 'no_phone', via: 'none', text: 'no_phone: no phone with the Mercury app is connected right now.' };
 
     if (followUp && this.deps.scheduleRetry) {
-      this.deps.scheduleRetry(reason);
+      if (req.appOnly || req.deviceIds?.length) this.deps.scheduleRetry(reason, { deviceIds: req.deviceIds, appOnly: req.appOnly, targetLabel: req.targetLabel });
+      else this.deps.scheduleRetry(reason);
       return { ...result, text: `${result.text} Mercury will try once more in 5 minutes, then leave a missed-call note. Don't call again yourself.` };
     }
     if (followUp) await this.missedCall(reason, urgency);
