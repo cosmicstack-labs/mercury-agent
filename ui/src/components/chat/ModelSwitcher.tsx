@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { Brain, Check, ChevronDown, Loader2, Pencil, RotateCcw, Search, X } from "lucide-react";
+import { Brain, Check, ChevronDown, Loader2, Pencil, RefreshCw, RotateCcw, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,17 +45,17 @@ export function ModelSwitcher({ currentProvider, currentModel }: ModelSwitcherPr
   const setProvider = useChatStore((s) => s.setProvider);
   const setModel = useChatStore((s) => s.setModel);
 
-  const loadModels = useCallback(async () => {
+  const loadModels = useCallback(async (refresh = false) => {
     // Always refetch: model lists and names change (pulls, renames).
-    setLoading(!models);
+    setLoading(true);
     try {
-      setModels(await api.chat.models.list());
+      setModels(await api.chat.models.list(refresh));
     } catch {
       // silently fail
     } finally {
       setLoading(false);
     }
-  }, [models]);
+  }, []);
 
   // Load once up front so the button can show the friendly name.
   useEffect(() => {
@@ -158,15 +158,33 @@ export function ModelSwitcher({ currentProvider, currentModel }: ModelSwitcherPr
           </Button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-80 p-2">
-          <div className="relative mb-2">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search models..."
-              className="h-8 pl-7 text-xs"
-            />
+          <div className="mb-2 flex items-center gap-1">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search models..."
+                className="h-8 pl-7 text-xs"
+              />
+            </div>
+            {models?.providers.some((p) => p.name === "chatgptWeb") && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                title="Refresh ChatGPT models"
+                aria-label="Refresh ChatGPT models"
+                disabled={loading}
+                onClick={() => loadModels(true)}
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+              </Button>
+            )}
           </div>
+          {models?.notices?.map((notice) => (
+            <p key={notice} role="status" className="px-2 pb-2 text-xs text-muted-foreground">{notice}</p>
+          ))}
 
           {loading && !models ? (
             <div className="flex items-center justify-center py-4">
