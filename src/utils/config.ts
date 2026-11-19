@@ -14,6 +14,7 @@ import {
 } from '../cloud/endpoints.js';
 
 const MERCURY_HOME = join(homedir(), '.mercury');
+const DEFAULT_CHATGPT_CODEX_MODEL = 'gpt-5.6-sol';
 
 loadDotenv();
 const mercuryEnvPath = join(MERCURY_HOME, '.env');
@@ -511,7 +512,7 @@ export function getDefaultConfig(): MercuryConfig {
         name: 'chatgptWeb',
         apiKey: '', // not used — auth is via OAuth
         baseUrl: 'https://chatgpt.com/backend-api',
-        model: getEnv('CHATGPT_WEB_MODEL', 'gpt-5.4-mini'),
+        model: getEnv('CHATGPT_WEB_MODEL', DEFAULT_CHATGPT_CODEX_MODEL),
         enabled: getEnvBool('CHATGPT_WEB_ENABLED', false),
       },
       githubCopilot: {
@@ -689,30 +690,13 @@ export function loadConfig(): MercuryConfig {
   ));
 }
 
-/**
- * 2026-09: OpenAI's Codex-for-ChatGPT backend now validates the model slug
- * against the account's LIVE entitlements and rejects everything else with
- * HTTP 400 "The 'X' model is not supported when using Codex with a ChatGPT
- * account." The old catalog fetched the ChatGPT web-app list
- * (/backend-api/models), whose hyphenated slugs (e.g. `gpt-5-6-thinking`) are
- * ALL rejected — authenticated users could not chat. Migrate any
- * non-entitled chatgptWeb model to the current recommended Codex slug.
- */
-const CHATGPT_CODEX_MODEL_SLUGS = [
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.6-luna',
-  'gpt-5.5',
-  'gpt-6-astra',
-  'gpt-reserve',
-] as const;
-
-const DEFAULT_CHATGPT_CODEX_MODEL = 'gpt-5.6-sol';
-
+// Older Mercury releases offered web-app GPT-5 IDs and used gpt-5.4-mini
+// as a setup fallback. Migrate those values without rewriting other IDs:
+// the live Codex catalog can change independently of Mercury releases.
 export function migrateLegacyChatGPTModel(config: MercuryConfig): MercuryConfig {
   const chatgpt = config.providers?.chatgptWeb;
-  if (chatgpt?.enabled && !((CHATGPT_CODEX_MODEL_SLUGS as readonly string[]).includes(chatgpt.model))) {
-    logger.warn({ staleModel: chatgpt.model, replacement: DEFAULT_CHATGPT_CODEX_MODEL }, 'chatgptWeb model not entitled on the Codex backend — migrating');
+  if (chatgpt?.enabled && (chatgpt.model === 'gpt-5.4-mini' || /^gpt-5-\d+(?:-|$)/.test(chatgpt.model))) {
+    logger.warn({ staleModel: chatgpt.model, replacement: DEFAULT_CHATGPT_CODEX_MODEL }, 'Migrating legacy ChatGPT model ID');
     chatgpt.model = DEFAULT_CHATGPT_CODEX_MODEL;
   }
   return config;

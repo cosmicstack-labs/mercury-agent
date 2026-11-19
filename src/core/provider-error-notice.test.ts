@@ -68,7 +68,7 @@ describe('durable fallback notices', () => {
     expect(agentCliWiring()).toBe(true);
   });
 
-  it('config: stale chatgptWeb slugs migrate to the entitled Codex slug', async () => {
+  it('config: migrates legacy ChatGPT IDs and preserves models newer than the build', async () => {
     const { migrateLegacyChatGPTModel } = await import('../utils/config.js');
 
     // The exact slug the old catalog produced — rejected by the codex backend.
@@ -77,11 +77,12 @@ describe('durable fallback notices', () => {
     } as any);
     expect(stale.providers.chatgptWeb.model).toBe('gpt-5.6-sol');
 
-    // Already-entitled models stay untouched.
-    const current = migrateLegacyChatGPTModel({
-      providers: { chatgptWeb: { name: 'chatgptWeb', enabled: true, apiKey: '', baseUrl: '', model: 'gpt-5.5' } },
-    } as any);
-    expect(current.providers.chatgptWeb.model).toBe('gpt-5.5');
+    for (const model of ['gpt-5.5', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.2-astra', 'future-codex-model']) {
+      const current = migrateLegacyChatGPTModel({
+        providers: { chatgptWeb: { name: 'chatgptWeb', enabled: true, apiKey: '', baseUrl: '', model } },
+      } as any);
+      expect(current.providers.chatgptWeb.model).toBe(model);
+    }
 
     // Disabled provider is not migrated.
     const disabled = migrateLegacyChatGPTModel({
