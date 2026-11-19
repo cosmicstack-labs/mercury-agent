@@ -51,6 +51,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.outlined.PanTool
 import androidx.compose.ui.semantics.selected
 import androidx.compose.material.icons.filled.Stop
@@ -249,18 +250,20 @@ private fun DictationButton(dictation: sh.mercuryagent.call.DictationModel, onCl
     sh.mercuryagent.call.DictationModel.Phase.Starting, sh.mercuryagent.call.DictationModel.Phase.Listening -> "Stop dictation"
     sh.mercuryagent.call.DictationModel.Phase.Stopping -> "Finishing dictation"
   }
-  val ink = MaterialTheme.colorScheme.onSurface
+  val red = Mercury.colors.red
   IconButton(
     onClick = onClick,
     modifier = Modifier.alpha(if (on || dictation.available || dictation.capabilities == null) 1f else 0.35f),
   ) {
     Box(contentAlignment = Alignment.Center) {
       if (on) androidx.compose.foundation.Canvas(Modifier.size(36.dp)) {
-        drawCircle(ink.copy(alpha = 0.10f + 0.25f * level), radius = size.minDimension / 2 * (0.82f + 0.18f * level))
+        drawCircle(red.copy(alpha = 0.14f + 0.25f * level), radius = size.minDimension / 2 * (0.82f + 0.18f * level))
       }
       Icon(
-        if (on) Icons.Outlined.GraphicEq else Icons.Outlined.Mic, label,
+        // Listening: the same mic, filled and red, so it reads as "tap to stop" (not the call's waveform).
+        if (on) Icons.Filled.Mic else Icons.Outlined.Mic, label,
         Modifier.alpha(if (dictation.phase == sh.mercuryagent.call.DictationModel.Phase.Stopping) 0.6f else 1f),
+        tint = if (on) red else androidx.compose.ui.graphics.Color.Unspecified,
       )
     }
   }

@@ -266,15 +266,16 @@ struct DictationButton: View {
         if on {
           TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
             let level = CGFloat(dictation.meter.read(now: ctx.date).mic)
-            Circle().stroke(Theme.accent.opacity(0.35), lineWidth: 3)
+            Circle().stroke(Theme.red.opacity(0.35), lineWidth: 3)
               .frame(width: 36, height: 36).scaleEffect(1 + 0.32 * level)
           }
         }
-        Image(systemName: on ? "waveform" : "mic")
+        // Listening: the same mic, filled and red, so it reads as "tap to stop" (not the call's waveform).
+        Image(systemName: on ? "mic.fill" : "mic")
           .font(.system(size: 16, weight: .medium))
-          .foregroundStyle(on ? Theme.onAccent : Theme.ink2)
+          .foregroundStyle(on ? Color.white : Theme.ink2)
           .frame(width: 36, height: 36)
-          .glassSurface(in: Circle(), interactive: true, tint: on ? Theme.accent : nil)
+          .glassSurface(in: Circle(), interactive: true, tint: on ? Theme.red : nil)
           .opacity(dictation.phase == .stopping ? 0.6 : 1)
       }
       .opacity(on || dictation.available || dictation.capabilities == nil ? 1 : 0.35)

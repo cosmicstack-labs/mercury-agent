@@ -1,4 +1,4 @@
-import { ArrowUp, Check, Mic, Square, X } from "lucide-react";
+import { ArrowUp, Check, Mic, X } from "lucide-react";
 import { useUi } from "~/app/store";
 import { Button } from "~/components/ui/Button";
 import { Spinner } from "~/components/ui/bits";
@@ -32,7 +32,8 @@ export function MicButton({ d, disabled, size = "md" }: { d: Dictation; disabled
     return (
       <Tooltip label={finishing ? "Writing the last words…" : "Stop dictation"} shortcut={finishing ? undefined : "esc"} side="top">
         <Button type="button" variant="secondary" size={size} icon disabled={finishing} onClick={() => d.finish("insert")} aria-label="Stop dictation" aria-pressed="true" className="!rounded-full text-red">
-          {finishing ? <Spinner size={size === "sm" ? 12 : 15} /> : <Square size={size === "sm" ? 11 : 13} fill="currentColor" />}
+          {/* Listening: the same mic, in red, so it reads as "click to stop". */}
+          {finishing ? <Spinner size={size === "sm" ? 12 : 15} /> : <Mic size={size === "sm" ? 14 : 17} />}
         </Button>
       </Tooltip>
     );
