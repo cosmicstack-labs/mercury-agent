@@ -8,19 +8,47 @@ import MercuryCore
 /// Put it in a NavigationStack, as the other tabs are: `NavigationStack { BotsView(client: client) }`.
 public struct BotsView: View {
   @State var model: BotsModel
+  @State var creating = false
+  @State var confirmStopAll = false
+  @State var note: String?
 
   public init(client: MercuryClient) { _model = State(initialValue: BotsModel(client: client)) }
   init(model: BotsModel) { _model = State(initialValue: model) }
 
   public var body: some View {
     ScrollView {
-      BotsList(model: model).padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 24)
+      if let note { FormNote(icon: "info.circle", text: note).padding(.horizontal, 16).padding(.top, 4) }
+      BotsList(model: model, onNew: { creating = true }).padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 24)
     }
     .background(Theme.bg)
     .overlay {
       if !model.loaded { ProgressView() }
     }
     .navigationTitle("Bots")
+    .toolbar {
+      ToolbarItemGroup(placement: .primaryAction) {
+        if model.available && !model.bots.isEmpty {
+          Menu {
+            Button { Task { note = await model.all(stop: false) } } label: { Label("Start all", systemImage: "play") }
+            Button(role: .destructive) { confirmStopAll = true } label: { Label("Stop all", systemImage: "stop") }
+          } label: { Image(systemName: "ellipsis.circle") }
+          .accessibilityLabel("All bots")
+        }
+        if model.available {
+          Button { creating = true } label: { Image(systemName: "plus") }.accessibilityLabel("New bot")
+        }
+      }
+    }
+    .confirmationDialog("Stop every bot?", isPresented: $confirmStopAll, titleVisibility: .visible) {
+      Button("Stop all", role: .destructive) { Task { note = await model.all(stop: true) } }
+    } message: {
+      Text("Running work halts and queued work is held until you start them again.")
+    }
+    .sheet(isPresented: $creating) {
+      NewBotSheet(client: model.client, existingIds: model.bots.map(\.id)) { id in
+        if id != nil { Task { await model.load() } }
+      }
+    }
     .refreshable { await model.load() }
     .task { await model.load() }
     .onAppear { model.appeared() }
@@ -31,6 +59,7 @@ public struct BotsView: View {
 /// The roster: the inbox, then fleets (lead with its crew), then bots on their own.
 struct BotsList: View {
   var model: BotsModel
+  var onNew: (() -> Void)? = nil
 
   var body: some View {
     let (fleets, solo) = model.layout
@@ -39,7 +68,10 @@ struct BotsList: View {
       if !model.available {
         BotsEmpty(title: "Bots are off on this Mercury", text: "Turn bots on in Mercury's settings on your computer to see them here.")
       } else if model.loaded && model.bots.isEmpty && model.error == nil {
-        BotsEmpty(title: "No bots yet", text: "Make a bot in Mercury Desktop. It shows up here, and you can watch it work and talk to it from your phone.")
+        BotsEmpty(title: "No bots yet", text: "A bot works on its own, on a schedule or when you message it, and reports back to your inbox.")
+        if let onNew {
+          Button("New bot", action: onNew).buttonStyle(PrimaryButtonStyle()).padding(.horizontal, 40)
+        }
       } else {
         NavigationLink { BotsInboxScreen(model: model) } label: {
           InboxRow(unread: model.unread, asking: model.approvals.count)
@@ -170,6 +202,10 @@ struct BotDetail: View {
   var model: BotsModel
   var leadId: String
   @State var tab: Tab = .live
+  @State var managing = false
+  @State var editing = false
+  @State var addingCrew = false
+  @Environment(\.dismiss) private var dismiss
 
   enum Tab: String, CaseIterable { case live = "Live", inbox = "Inbox", history = "History" }
 
@@ -196,6 +232,25 @@ struct BotDetail: View {
     .navigationBarTitleDisplayMode(.inline)
     .toolbar(.hidden, for: .tabBar)
     #endif
+    .toolbar {
+      ToolbarItem(placement: .primaryAction) {
+        Button { managing = true } label: { Image(systemName: "slider.horizontal.3") }
+          .accessibilityLabel("Manage \(model.bot(leadId)?.name ?? "bot")")
+          .disabled(model.bot(leadId) == nil)
+      }
+    }
+    .sheet(isPresented: $managing) {
+      BotManageSheet(model: model, id: leadId,
+                     onEdit: { managing = false; Task { try? await Task.sleep(for: .milliseconds(450)); editing = true } },
+                     onAddCrew: { managing = false; Task { try? await Task.sleep(for: .milliseconds(450)); addingCrew = true } },
+                     onDeleted: { dismiss() })
+    }
+    .sheet(isPresented: $editing) {
+      if let b = model.bot(leadId) {
+        BotEditSheet(client: model.client, status: b) { Task { await model.load() } }
+      }
+    }
+    .sheet(isPresented: $addingCrew) { AddCrewSheet(model: model, leadId: leadId) }
     .onAppear { model.appeared() }
     .onDisappear { model.disappeared() }
   }

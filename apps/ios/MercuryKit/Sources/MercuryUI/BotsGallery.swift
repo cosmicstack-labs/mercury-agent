@@ -75,6 +75,29 @@ public enum BotsGallery {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(Theme.bg)
   }
 
+  static func newBot(_ m: BotsModel) -> NewBotModel { NewBotModel(client: m.client, existingIds: m.bots.map(\.id)) }
+
+  static func draftedBot(_ m: BotsModel) -> NewBotModel {
+    let f = newBot(m)
+    f.step = .form
+    f.plan = BotPlan(shape: "solo", reason: "One job on a schedule: a single bot does it best and costs least.")
+    f.fields = BotFields(name: "AI News Brief", description: "Every weekday at 7:30, brief me on AI news",
+                         persona: "## Character\nYou are a concise news editor.\n\n## Standing instructions\n- Five items at most, each one line with a link.\n- Skip what you already reported.\n\n## Output\nClose with bot_report; if nothing is new, call bot_no_update.",
+                         tier: "readonly", schedules: [BotSchedule(name: "routine", cron: "30 7 * * 1-5", prompt: "Every weekday at 7:30, brief me on AI news")])
+    return f
+  }
+
+  static func editedBot(_ m: BotsModel) -> EditBotModel {
+    let e = EditBotModel(client: m.client, id: "price-watch", tier: "readonly")
+    e.loaded = true
+    e.bot = BotManifest(id: "price-watch", name: "Price Watch", description: "Tells me when tracked prices drop")
+    e.fields = BotFields(name: "Price Watch", description: "Tells me when tracked prices drop",
+                         persona: "You check the three tracked prices and report only when one drops below its limit.",
+                         tier: "readonly", schedules: [BotSchedule(name: "check", cron: "0 */4 * * *", prompt: "Check the tracked prices.")],
+                         model: nil, budget: "500000")
+    return e
+  }
+
   public static func screens() -> [(name: String, view: AnyView)] {
     let m = sampleModel()
     let entries = [
@@ -109,6 +132,32 @@ public enum BotsGallery {
           ForEach(history) { r in HistoryRow(run: r, bot: m.bot(r.botId), fleet: true) }
         }
         .padding(.horizontal, 16)
+      })),
+      ("08h-bots-new-describe", AnyView(header("New bot") {
+        let f = newBot(m); f.ask = "Every weekday at 7:30, brief me on AI news: five items with links, nothing I've seen."
+        return NewBotDescribe(form: f).padding(.horizontal, 16).environment(\.stillForm, true)
+      })),
+      ("08i-bots-new-draft", AnyView(header("New bot") {
+        NewBotForm(form: draftedBot(m)).padding(.horizontal, 16).environment(\.stillForm, true)
+      })),
+      ("08j-bots-new-draft-schedule", AnyView(header("New bot") {
+        let f = draftedBot(m)
+        return VStack(alignment: .leading, spacing: 22) {
+          FormBlock(title: "When it runs") { ScheduleListEditor(schedules: .constant(f.fields.schedules + [BotSchedule(name: "routine-2", cron: "*/5 * * * *", prompt: "Check for breaking news.")])) }
+          FormBlock(title: "What it may do") { TierPickerView(value: .constant("operator"), tiers: BotTiers.ids) }
+        }
+        .padding(.horizontal, 16).environment(\.stillForm, true)
+      })),
+      ("08k-bots-edit", AnyView(header("Edit Price Watch") {
+        BotEditContent(edit: editedBot(m), status: m.bot("price-watch")).padding(.horizontal, 16).environment(\.stillForm, true)
+      })),
+      ("08l-bots-manage", AnyView(header("Manage") {
+        BotManageContent(model: m, id: "opersourcefyi-manger", note: "Started a run.", working: false, act: { _ in }, onEdit: {}, onAddCrew: {}, onDelete: {})
+          .padding(.horizontal, 16)
+      })),
+      ("08m-bots-manage-solo", AnyView(header("Manage") {
+        BotManageContent(model: m, id: "article-writer", note: nil, working: false, act: { _ in }, onEdit: {}, onAddCrew: {}, onDelete: {})
+          .padding(.horizontal, 16)
       })),
       ("08g-bots-avatars", AnyView(header("Faces") {
         let ids = ["analytics-bot", "article-writer", "content-bot", "opersourcefyi-manger", "deployment-bot", "w", "writer", "inbox-triage",
