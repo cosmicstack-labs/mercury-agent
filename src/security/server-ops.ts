@@ -1,5 +1,5 @@
 import { createDevice, getDevice, listDevices, revokeAllDevices, revokeDevice } from '../web/devices.js';
-import { lastRemoteRequest } from '../web/middleware.js';
+import { lastPlainHttpRequest, lastRemoteRequest } from '../web/middleware.js';
 import { approvalRoutes } from '../web/owner-gate.js';
 import { sessionCount } from '../web/auth.js';
 import { ownerApprovals } from './owner-approvals.js';
@@ -31,7 +31,7 @@ export function localServerOps(opts: { cloudConnected?: () => boolean; by?: stri
   const by = opts.by ?? 'this computer';
   return {
     async status(): Promise<ServerStatus> {
-      const findings = securityCheck({ lastRemote: lastRemoteRequest(), cloudConnected: opts.cloudConnected?.() ?? false });
+      const findings = securityCheck({ lastRemote: lastRemoteRequest(), lastPlainHttp: lastPlainHttpRequest(), cloudConnected: opts.cloudConnected?.() ?? false });
       return {
         remote: readRemoteSettings(),
         devices: listDevices(),

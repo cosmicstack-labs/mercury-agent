@@ -17,7 +17,7 @@ import { runServerCommand, type ServerOps } from '../security/server-menu.js';
  * Mercury stopped it edits the settings and device list directly.
  */
 
-async function opsForThisComputer(): Promise<{ ops: ServerOps; live: boolean }> {
+export async function opsForThisComputer(): Promise<{ ops: ServerOps; live: boolean }> {
   const token = readAttachToken();
   const base = `http://127.0.0.1:${getWebPort()}`;
   if (token) {

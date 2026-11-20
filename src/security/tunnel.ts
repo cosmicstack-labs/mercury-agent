@@ -161,7 +161,7 @@ export function readTailscale(opts: { port: number; run?: RunTailscale }): Tails
   return value;
 }
 
-function configuredPublicUrl(): string | null {
+export function configuredPublicUrl(): string | null {
   try {
     const v = loadConfig().web?.publicUrl;
     return typeof v === 'string' && v.trim() ? v.trim() : null;
@@ -170,7 +170,7 @@ function configuredPublicUrl(): string | null {
   }
 }
 
-function toUrl(input: string): URL | null {
+export function toUrl(input: string): URL | null {
   const s = input.trim();
   try {
     const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`);

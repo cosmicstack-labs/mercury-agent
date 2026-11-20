@@ -30,6 +30,8 @@ export interface RequestOrigin {
   clientIp: string;
   /** The client's address is real: the proxy passed it on, or the client connected directly (so allow-lists can work). */
   clientIpKnown: boolean;
+  scheme: 'https' | 'http' | null;
+  via: 'local' | 'direct' | 'tailscale' | 'funnel' | 'cloudflare' | 'proxy';
 }
 
 const PROXY_HEADERS = [
@@ -79,12 +81,34 @@ export function requestOrigin(c: Context): RequestOrigin {
   // Known: what the proxy reported, or a direct connection's own socket address.
   const viaProxy = proxied && forwarded !== '';
   const direct = !proxied && !socketLocal && socket !== '';
+  const local = socketLocal && !proxied && hostLocal;
+  const via: RequestOrigin['via'] = header('tailscale-funnel-request') ? 'funnel'
+    : header('tailscale-user-login') || header('tailscale-user-name') || header('tailscale-headers-info') ? 'tailscale'
+      : header('cf-ray') || header('cf-connecting-ip') || header('cf-visitor') ? 'cloudflare'
+        : proxied ? 'proxy' : local ? 'local' : 'direct';
   return {
     socketLocal,
     proxied,
     hostLocal,
-    local: socketLocal && !proxied && hostLocal,
+    local,
     clientIp: normalizeIp(viaProxy ? forwarded : socket || 'unknown'),
     clientIpKnown: viaProxy || direct,
+    scheme: forwardedScheme(header, via, proxied),
+    via,
   };
+}
+
+function forwardedScheme(header: (name: string) => string, via: RequestOrigin['via'], proxied: boolean): 'https' | 'http' | null {
+  const pick = (v: string | undefined): 'https' | 'http' | null => {
+    const s = (v ?? '').trim().replace(/^"|"$/g, '').toLowerCase();
+    return s === 'https' || s === 'http' ? s : null;
+  };
+  const xfp = pick(header('x-forwarded-proto').split(',')[0]);
+  if (xfp) return xfp;
+  const fwd = pick(/proto=("?[a-z]+"?)/i.exec(header('forwarded'))?.[1]);
+  if (fwd) return fwd;
+  const visitor = pick(/"scheme"\s*:\s*"([a-z]+)"/i.exec(header('cf-visitor'))?.[1]);
+  if (visitor) return visitor;
+  if (via === 'tailscale') return 'http';
+  return proxied ? null : 'http';
 }

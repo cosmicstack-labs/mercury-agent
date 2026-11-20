@@ -8,8 +8,9 @@ import { pinnedServicePath } from '../cli/service.js';
 import { mercuryGwsDir } from '../google/gws-binary.js';
 import { loadPermissionMode } from '../capabilities/permission-mode-store.js';
 import { listDevices } from '../web/devices.js';
-import { loadWebAuth } from '../web/auth.js';
-import { readRemoteSettings } from './remote-settings.js';
+import { getWebPort, loadWebAuth } from '../web/auth.js';
+import { readRemoteSettings, type RemoteSettings } from './remote-settings.js';
+import { configuredPublicUrl, hostAllowsPlainHttp, isLoopbackHost, readTailscale, toUrl, type TailscaleState } from './tunnel.js';
 
 /**
  * The security check (`mercury doctor --security`, /server → Security check,
@@ -29,9 +30,79 @@ const CREDENTIAL_FILES = ['devices.json', 'web-config.json', 'web-sessions.json'
 
 export interface CheckContext {
   /** The last request from outside this computer, if any (middleware.lastRemoteRequest). */
-  lastRemote?: { at: number; proxied: boolean; clientIpKnown: boolean } | null;
+  lastRemote?: { at: number; proxied: boolean; clientIpKnown: boolean; scheme?: 'https' | 'http' | null; via?: string } | null;
+  lastPlainHttp?: { at: number; ip: string } | null;
+  tailscale?: TailscaleState | null;
+  publicUrl?: string | null;
+  port?: number;
   cloudConnected?: boolean;
   now?: number;
+}
+
+const RECENT_MS = 7 * 86_400_000;
+
+function agoText(at: number, now: number): string {
+  const minutes = Math.round((now - at) / 60_000);
+  if (minutes < 2) return 'just now';
+  if (minutes < 120) return `${minutes} minutes ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} hours ago` : `${Math.round(hours / 24)} days ago`;
+}
+
+export function remoteAccessFindings(ctx: CheckContext, remote: Pick<RemoteSettings, 'enabled'>, deviceCount: number): SecurityFinding[] {
+  const out: SecurityFinding[] = [];
+  const devicesText = `${deviceCount} device${deviceCount === 1 ? '' : 's'}`;
+  if (!remote.enabled) {
+    if (deviceCount) out.push({ level: 'info', title: `Remote access is off, but ${devicesText} ${deviceCount === 1 ? 'is' : 'are'} paired`, detail: "They can't connect until remote access is on.", fix: 'mercury server on, or sign them out: mercury server revoke-all' });
+    return out;
+  }
+  const now = ctx.now ?? Date.now();
+  const port = ctx.port ?? getWebPort();
+  const recent = (at: number | undefined): boolean => at !== undefined && now - at < RECENT_MS;
+  const tailscale = ctx.tailscale !== undefined ? ctx.tailscale : readTailscale({ port });
+  const configured = ctx.publicUrl !== undefined ? ctx.publicUrl : configuredPublicUrl();
+  const publicUrl = configured ? toUrl(configured) : null;
+  const lastRemote = ctx.lastRemote && recent(ctx.lastRemote.at) ? ctx.lastRemote : null;
+  const plainRequest = ctx.lastPlainHttp && recent(ctx.lastPlainHttp.at) ? ctx.lastPlainHttp : null;
+  const serveHttps = tailscale?.serve.find((s) => s.https);
+  const servePlain = tailscale?.serve.find((s) => !s.https);
+
+  const plainUrl = publicUrl && publicUrl.protocol === 'http:' && !hostAllowsPlainHttp(publicUrl.hostname) && !isLoopbackHost(publicUrl.hostname) ? publicUrl.origin : null;
+  if (plainUrl || plainRequest) {
+    out.push({
+      level: 'risk',
+      title: 'Mercury is reachable over plain http from the internet',
+      detail: plainUrl ? `web.publicUrl is ${plainUrl}, so passwords and tokens would cross the internet unencrypted.` : `A request from ${plainRequest!.ip} came in over plain http ${agoText(plainRequest!.at, now)}.`,
+      fix: `Serve Mercury over HTTPS (tailscale serve --bg ${port}, or a Cloudflare Tunnel), then set web.publicUrl to the https:// address`,
+    });
+  }
+
+  const otherTunnel = !!publicUrl || (!!lastRemote && lastRemote.via !== 'tailscale' && lastRemote.via !== 'funnel');
+  const certsOff = !!tailscale && (!tailscale.magicDns || !tailscale.httpsCerts);
+  if (tailscale && ((servePlain && !serveHttps) || (certsOff && (tailscale.serve.length > 0 || !otherTunnel)))) {
+    const off = [!tailscale.magicDns && 'MagicDNS', !tailscale.httpsCerts && 'HTTPS Certificates'].filter(Boolean).join(' and ');
+    out.push({
+      level: 'warn',
+      title: "Tailscale Serve isn't using HTTPS",
+      detail: servePlain && !serveHttps ? `It sends ${servePlain.url} to Mercury over plain http, which the phone apps refuse.` : `${off} ${off.includes(' and ') ? 'are' : 'is'} off for your tailnet, so tailscale serve can't give Mercury an https:// address.`,
+      fix: `In the Tailscale admin console, open DNS and turn on MagicDNS and HTTPS Certificates, then run tailscale serve --bg ${port}`,
+    });
+  }
+
+  if (!tailscale?.serve.length && !publicUrl && !lastRemote) {
+    out.push({
+      level: deviceCount ? 'warn' : 'info',
+      title: 'Remote access is on, but no tunnel reaches Mercury',
+      detail: "Mercury only listens on this computer, and it found no Tailscale Serve, no web.publicUrl and no recent remote request. If you use another tunnel, set web.publicUrl to its address.",
+      fix: `tailscale serve --bg ${port}, then mercury server pair`,
+    });
+  }
+
+  const working = serveHttps?.url ?? (publicUrl?.protocol === 'https:' && lastRemote?.scheme === 'https' ? publicUrl.origin : null);
+  if (working) {
+    out.push({ level: 'ok', title: `Remote access works over HTTPS: ${working}`, detail: serveHttps ? 'Tailscale Serve sends it to Mercury.' : 'A remote request came in over HTTPS recently.' });
+  }
+  return out;
 }
 
 export function securityCheck(ctx: CheckContext = {}): SecurityFinding[] {
@@ -67,6 +138,7 @@ export function securityCheck(ctx: CheckContext = {}): SecurityFinding[] {
       out.push({ level: 'risk', title: "The address allow-list can't work with this tunnel", detail: "The last remote request didn't say which address it came from, so every remote client is refused while the list is set.", fix: 'Use a tunnel that passes the client address (Tailscale Serve, Cloudflare Tunnel), or clear the list' });
     }
   }
+  out.push(...remoteAccessFindings({ ...ctx, now }, remote, devices.length));
 
   // Credential files
   const home = getMercuryHome();

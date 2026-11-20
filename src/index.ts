@@ -4342,9 +4342,12 @@ program
     if (opts.security) {
       const { securityCheck, summarizeFindings } = await import('./security/check.js');
       const { findingsText } = await import('./security/server-menu.js');
-      const findings = securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
+      const { opsForThisComputer } = await import('./cli/server-cli.js');
+      const { ops, live } = await opsForThisComputer();
+      const findings = live ? (await ops.status()).check.findings : securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
       console.log(`\n  Security: ${summarizeFindings(findings)}\n`);
       console.log(findingsText(findings).split('\n').map((l) => `  ${l}`).join('\n'));
+      if (!live) console.log(chalk.dim('\n  Mercury is not running, so this check could not include recent remote requests.'));
       console.log(chalk.dim('\n  Manage remote access with `mercury server` (or /server in the terminal chat).\n'));
       if (findings.some((f) => f.level === 'risk')) process.exitCode = 1;
       return;
@@ -4374,7 +4377,9 @@ program
     {
       // One line about security on every doctor run; details with --security.
       const { securityCheck, summarizeFindings } = await import('./security/check.js');
-      const findings = securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
+      const { opsForThisComputer } = await import('./cli/server-cli.js');
+      const { ops, live } = await opsForThisComputer();
+      const findings = live ? (await ops.status()).check.findings : securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
       const summary = summarizeFindings(findings);
       const line = `  Security: ${summary}${summary === 'All good' ? '' : ' — run `mercury doctor --security`'}`;
       console.log(findings.some((f) => f.level === 'risk') ? chalk.yellow(line) : chalk.dim(line));

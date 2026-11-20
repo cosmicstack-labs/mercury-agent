@@ -5,6 +5,7 @@ import { checkDeviceToken, looksLikeDeviceToken, noteDeviceSeen } from './device
 import { requestOrigin, hostName, type RequestOrigin } from '../security/request-origin.js';
 import { readRemoteSettings } from '../security/remote-settings.js';
 import { ipAllowed } from '../security/ip-match.js';
+import { hostAllowsPlainHttp } from '../security/tunnel.js';
 import { audit } from '../security/audit.js';
 import { loadConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
@@ -142,8 +143,11 @@ function crossSite(c: Context): boolean {
 }
 
 /** The last request from outside this computer: what the security screen says about the tunnel. */
-let lastRemote: { at: number; proxied: boolean; clientIpKnown: boolean; ip: string } | null = null;
+let lastRemote: { at: number; proxied: boolean; clientIpKnown: boolean; ip: string; scheme: RequestOrigin['scheme']; via: RequestOrigin['via'] } | null = null;
 export function lastRemoteRequest(): typeof lastRemote { return lastRemote; }
+
+let lastPlainHttp: { at: number; ip: string } | null = null;
+export function lastPlainHttpRequest(): typeof lastPlainHttp { return lastPlainHttp; }
 
 const blockedLogged = new Map<string, number>();
 function logBlocked(ip: string, detail: string): void {
@@ -171,7 +175,8 @@ export async function authGuard(c: Context, next: Next) {
 
   // Remote clients: remote access has to be on, and their address allowed.
   if (!origin.local) {
-    lastRemote = { at: Date.now(), proxied: origin.proxied, clientIpKnown: origin.clientIpKnown, ip: origin.clientIp };
+    lastRemote = { at: Date.now(), proxied: origin.proxied, clientIpKnown: origin.clientIpKnown, ip: origin.clientIp, scheme: origin.scheme, via: origin.via };
+    if (origin.scheme === 'http' && origin.clientIpKnown && !hostAllowsPlainHttp(origin.clientIp)) lastPlainHttp = { at: lastRemote.at, ip: origin.clientIp };
     const remote = readRemoteSettings();
     if (!remote.enabled) {
       logBlocked(origin.clientIp, 'remote access is off');

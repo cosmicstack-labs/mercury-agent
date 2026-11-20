@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { createDevice, getDevice, listDevices, revokeAllDevices, revokeDevice } from '../devices.js';
-import { authenticateRequest, isThisComputer, lastRemoteRequest, principalKey } from '../middleware.js';
+import { authenticateRequest, isThisComputer, lastPlainHttpRequest, lastRemoteRequest, principalKey } from '../middleware.js';
 import { approvalRoutes } from '../owner-gate.js';
 import { ownerApprovals } from '../../security/owner-approvals.js';
 import { readRemoteSettings, writeRemoteSettings, type RemoteSettings } from '../../security/remote-settings.js';
@@ -42,7 +42,7 @@ security.use('/api/security/*', async (c, next) => {
 });
 
 function status() {
-  const findings = securityCheck({ lastRemote: lastRemoteRequest(), cloudConnected: cloudConnected() });
+  const findings = securityCheck({ lastRemote: lastRemoteRequest(), lastPlainHttp: lastPlainHttpRequest(), cloudConnected: cloudConnected() });
   return {
     remote: readRemoteSettings(),
     devices: listDevices(),
@@ -150,7 +150,7 @@ security.delete('/api/security/pair', (c) => c.json({ cancelled: pairCodes().can
 security.get('/api/security/audit', (c) => c.json({ entries: readAudit(Math.min(500, Math.max(1, Number(c.req.query('limit')) || 50))) }));
 
 security.get('/api/security/check', (c) => {
-  const findings = securityCheck({ lastRemote: lastRemoteRequest(), cloudConnected: cloudConnected() });
+  const findings = securityCheck({ lastRemote: lastRemoteRequest(), lastPlainHttp: lastPlainHttpRequest(), cloudConnected: cloudConnected() });
   return c.json({ summary: summarizeFindings(findings), findings });
 });
 
