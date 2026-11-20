@@ -1,7 +1,7 @@
 ---
 slug: what-is-a-personal-ai-assistant
 title: "What Is a Personal AI Assistant? 10 Real Tasks in 2026"
-description: "An AI personal assistant acts for one person across their accounts, files, apps and connected services. Here is what it is, ten tasks it can handle, and the permissions each one needs."
+description: "A personal AI assistant acts for one person across accounts, files, apps and services. What it is, ten tasks it handles, and the permissions each needs."
 authors: [tashiriskhan]
 tags: [product, security, ai-agents, self-hosted-ai]
 image: ./cover.jpg

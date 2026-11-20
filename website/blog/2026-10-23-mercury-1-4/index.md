@@ -1,7 +1,7 @@
 ---
 slug: mercury-1-4
-title: "Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk"
-description: "Mercury 1.4 adds isolated plugins and two official ones: WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse."
+title: "Mercury 1.4: plugins, WhatsApp calls, and Optimus"
+description: "Mercury 1.4 adds isolated plugins, WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse."
 authors: [salman]
 tags: [news, releases, product]
 image: ./cover.jpg
