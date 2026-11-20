@@ -32,6 +32,15 @@ The sign-in password is set during `mercury setup` (or `mercury web-reset-passwo
 
 Remote access (other devices, the IP allow-list, device limits) is managed with `/server` in the terminal or `mercury server`.
 
+If you reach Mercury through a tunnel it can't detect itself (Cloudflare Tunnel, ngrok, your own proxy), set its address so [pairing a phone](../desktop/remote-access#connect-a-phone) puts it in the QR code:
+
+```yaml
+web:
+  publicUrl: https://mercury.example.com
+```
+
+Tailscale Serve is found without this.
+
 ## Chats at the same time
 
 Mercury answers several chats at once: your terminal, a Telegram chat, two desktop conversations and a scheduled task can all run together. Each chat still handles its own messages one after another, in order.
