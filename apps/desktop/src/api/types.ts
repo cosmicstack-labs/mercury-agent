@@ -49,6 +49,26 @@ export interface ApprovalNeeded {
   expiresAt?: number;
 }
 
+export interface PairShown {
+  ok: true;
+  id: string;
+  code: string;
+  display: string;
+  address: string;
+  url: string;
+  expiresAt: number;
+  qrImage: string;
+}
+
+export type PairRefusal = "remote-off" | "limit" | "not-running" | "none" | "insecure" | "loopback" | "invalid";
+
+export interface PairedPhone {
+  name: string;
+  platform: string;
+}
+
+export type PairStatus = { status: "waiting" } | { status: "paired"; device: PairedPhone } | { status: "expired" | "replaced" | "cancelled" };
+
 /** A security question waiting for the owner (Mercury Desktop on the runtime's own computer). */
 export interface OwnerApproval {
   id: string;

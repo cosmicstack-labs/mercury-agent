@@ -8,7 +8,7 @@ import type { ChatEffort, ImageIntent, MediaModelsResponse, TurnsInfo, VoiceRepl
 import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
   BotActivityEvent, BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
-  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, PluginItem, ReasoningChoice, Skill, DeviceSummary,
+  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, PluginItem, ReasoningChoice, Skill, DeviceSummary, PairShown, PairStatus,
 } from "./types";
 
 export const health = {
@@ -67,6 +67,10 @@ export const security = {
   decide: (id: string, decision: "allow" | "deny") => http.post<{ approval: OwnerApproval }>(`/api/security/approvals/${encodeURIComponent(id)}`, { decision, by: "desktop" }),
   /** A question this device asked (a 428): how it stands. */
   status: (id: string) => http.get<{ status: OwnerApproval["status"]; code?: string }>(`/api/security/approvals/${encodeURIComponent(id)}/status`),
+  pair: (address?: string) => http.post<PairShown>("/api/security/pair", { address, by: "desktop" }),
+  pairStatus: (id: string) => http.get<PairStatus>(`/api/security/pair/${encodeURIComponent(id)}`),
+  cancelPair: () => http.delete<{ cancelled: boolean }>("/api/security/pair"),
+  setRemote: (patch: { enabled?: boolean }) => http.put<unknown>("/api/security/remote", patch),
 };
 
 export const chat = {

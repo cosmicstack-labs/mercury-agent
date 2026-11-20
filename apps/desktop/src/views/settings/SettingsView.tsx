@@ -1,4 +1,4 @@
-import { Activity, Info, MessagesSquare, Palette, Server, Sparkles, UserRound } from "lucide-react";
+import { Activity, Info, MessagesSquare, Palette, QrCode, Server, Sparkles, UserRound } from "lucide-react";
 import { ImageSettings } from "./Images";
 import { UpdatesSettings } from "~/updates/UpdatesSettings";
 import { useEffect, useState } from "react";
@@ -24,6 +24,7 @@ import { ConcurrencySettings } from "./Concurrency";
 import { ChannelsSettings } from "./Channels";
 import { isVisible, orderedIds, useContributions, type ContributionArea } from "~/extensions/registry";
 import { NotificationsSettings } from "./Notifications";
+import { PairPhone, canPairHere } from "./PairPhone";
 
 /**
  * Settings: a short list of groups on the left; a group with more than one
@@ -113,7 +114,7 @@ export function SettingsView({ connection, health, onSwitchConnection }: { conne
             {section === "statusbar" && <StatusBarSettings />}
             {section === "analytics" && <Analytics />}
             {section === "connections" && <Connections current={connection} health={health} onSwitchConnection={onSwitchConnection} />}
-            {section === "devices" && <Devices current={connection} />}
+            {section === "devices" && <Devices current={connection} health={health} />}
             {section === "startup" && <Startup />}
             {section === "about" && <About health={health} onAnalytics={() => go("analytics")} />}
           </div>
@@ -193,10 +194,11 @@ function Connections({ current, health, onSwitchConnection }: { current: Connect
   );
 }
 
-function Devices({ current }: { current: Connection }) {
+function Devices({ current, health }: { current: Connection; health: HealthInfo }) {
   const [devices, setDevices] = useState<DeviceSummary[]>([]);
   const [self, setSelf] = useState<string | null>(null);
   const [supported, setSupported] = useState(true);
+  const [pairing, setPairing] = useState(false);
   async function load() {
     try {
       const res = await api.auth.devices();
@@ -210,7 +212,13 @@ function Devices({ current }: { current: Connection }) {
   if (!supported) return <p className="text-sm text-ink3">This runtime does not support paired devices yet (needs Mercury 1.5).</p>;
   return (
     <section className="flex flex-col gap-3">
-      <p className="text-sm text-ink3">Devices paired with {current.name}. Revoke one and it is signed out at once.</p>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-ink3">Devices paired with {current.name}. Revoke one and it is signed out at once.</p>
+        {canPairHere(current.kind, health.features) && <Button size="sm" variant="outline" onClick={() => setPairing(true)}><QrCode size={13} /> Pair a phone</Button>}
+      </div>
+      <Dialog open={pairing} onOpenChange={setPairing} title="Pair a phone" description="Scan the code with the Mercury app on your phone.">
+        {pairing && <PairPhone onPaired={() => void load()} onClose={() => setPairing(false)} />}
+      </Dialog>
       <div className="overflow-hidden rounded-lg border border-line bg-surface">
         {devices.length === 0 && <p className="px-4 py-3 text-xs text-ink4">No devices paired. This app attaches with the local token.</p>}
         {devices.map((d) => (
