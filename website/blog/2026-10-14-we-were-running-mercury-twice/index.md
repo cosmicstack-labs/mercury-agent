@@ -1,7 +1,7 @@
 ---
 slug: we-were-running-mercury-twice
 title: "We were running Mercury twice and didn't know it"
-description: "Typing felt sluggish on every machine, and the terminal renderer took the blame. The real cause was a second full copy of the agent, started quietly by the launcher. How we found it, and why the fix was an architecture change rather than a performance tweak."
+description: "Typing felt sluggish everywhere. The cause was a second full copy of the agent, started quietly by the launcher. How we found it and fixed it."
 authors: [salman]
 tags: [engineering, postmortem, runtime]
 image: ./cover.jpg

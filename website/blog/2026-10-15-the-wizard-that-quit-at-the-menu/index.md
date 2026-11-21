@@ -1,7 +1,7 @@
 ---
 slug: the-wizard-that-quit-at-the-menu
 title: "The setup wizard that quit at the first menu"
-description: "For six releases, a brand-new Mercury install asked for your name, showed one menu, and exited without an error. A walkthrough of a one-tick race between two readers of the same terminal, and the test that now keeps it from coming back."
+description: "A new Mercury install asked for your name, showed one menu, then quit with no error. How a one-tick race caused it, and the test that stops it returning."
 authors: [mercury-eng]
 tags: [engineering, postmortem]
 image: ./cover.jpg
