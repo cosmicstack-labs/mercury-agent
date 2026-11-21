@@ -67,6 +67,7 @@ import {
   createSpotifyPlaylistsTool,
 } from './spotify/index.js';
 import { createAskUserTool, createUpdatePlanTool, setAskUserHandler } from './interaction/index.js';
+import { createAskOwnerTool } from './interaction/ask-owner.js';
 import { isGitHubConfigured, setGitHubToken } from '../utils/github.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { Scheduler } from '../core/scheduler.js';
@@ -429,6 +430,7 @@ export class CapabilityRegistry {
     }
 
     this.tools.ask_user = createAskUserTool(() => this.getChannelContext());
+    this.tools.ask_owner = createAskOwnerTool({ permissions: this.permissions, cwd: () => this.getCwd() });
     this.tools.update_plan = createUpdatePlanTool();
     logger.info('Interaction tools registered');
   }
@@ -472,7 +474,8 @@ export class CapabilityRegistry {
     if (this.permissions.getCurrentSenderRole() === 'member') {
       const filtered: Record<string, Tool> = {};
       for (const [name, tool] of Object.entries(this.tools)) {
-        if (name !== 'install_skill' && name !== 'create_skill' && !name.startsWith('browser_')) filtered[name] = tool;
+        // ask_owner: a member's message must not send the owner a request for a code.
+        if (name !== 'install_skill' && name !== 'create_skill' && name !== 'ask_owner' && !name.startsWith('browser_')) filtered[name] = tool;
       }
       return filtered;
     }

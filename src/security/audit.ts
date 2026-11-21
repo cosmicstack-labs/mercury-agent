@@ -18,7 +18,8 @@ export type AuditKind =
   | 'voice.key.set' | 'voice.key.removed'
   | 'permissions.mode'
   | 'device.reach' | 'reach.settings'
-  | 'bot.auto.allowed' | 'bot.auto.refused';
+  | 'bot.auto.allowed' | 'bot.auto.refused'
+  | 'owner.task';
 
 export interface AuditEntry {
   at: string;

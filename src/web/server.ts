@@ -26,6 +26,7 @@ import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, 
 import suggestionRoutes from './api/suggestions.js';
 import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api/agents.js';
 import botsRoutes, { setBotManager, setBotsWebhookSecret } from './api/bots.js';
+import { ownerTaskRoutes } from './api/owner-tasks.js';
 import spotifyRoutes, { setSpotifyClient } from './api/spotify.js';
 import kanbanRoutes, { setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders } from './api/kanban.js';
 import ideRoutes, { setIDEProviders } from './api/workspace-ide.js';
@@ -135,6 +136,7 @@ app.route('/', brainRoutes);
 app.route('/', chatRoutes);
 app.route('/', agentRoutes);
 app.route('/', botsRoutes);
+app.route('/', ownerTaskRoutes);
 app.route('/', spotifyRoutes);
 app.route('/', kanbanRoutes);
 app.route('/', ideRoutes);

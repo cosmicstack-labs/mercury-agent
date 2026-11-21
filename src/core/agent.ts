@@ -17,6 +17,8 @@ import { ArtifactCollector } from '../artifacts/collector.js';
 import { artifactStore, type Artifact } from '../artifacts/store.js';
 import { chatFoldersFor, outputRoot, researchDir, type ChatFolders } from '../artifacts/output-dir.js';
 import { ownerApprovals } from '../security/owner-approvals.js';
+import { ownerTasks, ownerTaskText, parseOwnerTaskReply } from '../security/owner-tasks.js';
+import { reachService } from '../reach/service.js';
 import { approvalAnsweredText, approvalRequestText, isOwnerSender, newLocationText, parseApprovalReply } from '../security/approval-messages.js';
 import { audit } from '../security/audit.js';
 import { setApprovalRoutes } from '../web/owner-gate.js';
@@ -913,6 +915,7 @@ export class Agent {
 
     this.channels.onIncomingMessage((msg) => this.enqueueMessage(msg));
     this.wireOwnerApprovals();
+    this.wireOwnerTasks();
 
     this.scheduler.onHeartbeat(async () => {
       await this.heartbeat();
@@ -986,6 +989,53 @@ export class Agent {
       const cli = this.channels.get('cli');
       if (cli instanceof CLIChannel) cli.sendSystemNotice(text);
     });
+  }
+
+  /**
+   * Owner tasks (ADR-048): something only the owner can do (a CAPTCHA, a
+   * one-time code) goes to every messaging channel they connected (with the
+   * image or audio attached), the terminal, every connected app, and the
+   * phones as a notification. Answered by "<code> <answer>" from any of them.
+   */
+  private wireOwnerTasks(): void {
+    const messaging = () => this.channels.getActiveChannels().filter((t) => t !== 'cli' && t !== 'web' && t !== 'internal').map((t) => this.channels.get(t)).filter((ch): ch is NonNullable<typeof ch> => !!ch && ch.isReady() && !ch.noBroadcast);
+    ownerTasks().onChange((t, change) => {
+      const web = this.channels.get('web');
+      if (web instanceof WebChannel) web.sendOwnerTask(t, change);
+      if (change !== 'new') return;
+      const text = ownerTaskText(t);
+      for (const ch of messaging()) {
+        void ch.send(text)
+          .then(() => (t.media ? ch.sendFile(t.media.path) : undefined))
+          .catch((e) => logger.warn({ e, channel: ch.type }, 'Owner task: send failed'));
+      }
+      const cli = this.channels.get('cli');
+      if (cli instanceof CLIChannel) cli.sendSystemNotice(`${text.replace(/Reply “/g, 'Type “/answer ').replace(/or “decline/, 'or “/answer decline')}${t.media ? `\nOpen it: ${t.media.path}` : ''}`);
+      void reachService().notifyOwner({ title: `Mercury needs you: ${t.title}`, body: `${t.prompt}\nCode ${t.code}`, kind: 'alert', urgency: 'normal', source: 'owner-task' }).catch(() => {});
+    });
+  }
+
+  /** "K7Q2M 4fz9q" from the owner: the answer to an owner task. True when it was one (and nothing else should see it). */
+  private answerOwnerTask(msg: ChannelMessage): boolean {
+    if (msg.channelType === 'web' || msg.channelType === 'internal') return false;
+    const text = msg.channelType === 'cli' ? msg.content.trim().replace(/^\/answer\s+/i, '') : msg.content;
+    if (msg.channelType === 'cli' && !/^\/answer\s/i.test(msg.content.trim())) return false;
+    const reply = parseOwnerTaskReply(text);
+    if (!reply) return false;
+    const pending = ownerTasks().find(reply.code);
+    if (!pending || pending.status !== 'pending') return false;
+    const channel = this.channels.getChannelForMessage(msg);
+    if (msg.channelType !== 'cli' && !isOwnerSender(msg)) {
+      void channel?.send('Only the owner (an admin of this chat) can answer that.', msg.channelId).catch(() => {});
+      return true;
+    }
+    const done = 'decline' in reply ? ownerTasks().decline(reply.code, msg.channelType) : ownerTasks().answer(reply.code, reply.answer, msg.channelType);
+    const note = !done ? 'That task has already been answered or has expired.' : done.status === 'answered' ? `✅ Thanks, passed on: ${pending.title}.` : `Skipped: ${pending.title}.`;
+    if (msg.channelType === 'cli') {
+      const cli = this.channels.get('cli');
+      if (cli instanceof CLIChannel) cli.sendSystemNotice(note);
+    } else void channel?.send(note, msg.channelId).catch(() => {});
+    return true;
   }
 
   /** A messaging-channel reply to a security question. True when it was one (and nothing else should see it). */
@@ -1068,6 +1118,8 @@ export class Agent {
     // "approve K7Q2M": the owner answering a security question (a new device,
     // a remote sensitive action) from their messaging channel.
     if (this.answerOwnerApproval(msg)) return;
+    // "K7Q2M 4fz9q": the owner's answer to a task only they can do (ADR-048).
+    if (this.answerOwnerTask(msg)) return;
 
     // Onboarding from a chat without a bot thread (Telegram, web, Discord):
     // the next plain message in THAT chat is the new bot's persona — same

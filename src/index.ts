@@ -74,6 +74,7 @@ import { SECOND_BRAIN_UNAVAILABLE_MESSAGE } from './memory/second-brain-db.js';
 import { isSqliteAvailable } from './utils/sqlite-driver.js';
 import { runStorageDoctor } from './utils/storage-doctor.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { setLookRegistry } from './core/look-with-models.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
 import { SubAgentSupervisor } from './core/supervisor.js';
@@ -2505,6 +2506,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     ? initCloudTokenStore(config)
     : null;
   const providers = await ProviderRegistry.create(config, cloudTokenStore);
+  setLookRegistry(providers);
 
   if (!providers.hasProviders()) {
     if (isDaemon) {

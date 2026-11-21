@@ -18,6 +18,7 @@ import { isPluginToolName, pluginToolAllowed } from '../plugins/tool-bridge.js';
  */
 const ALWAYS_STRIPPED = new Set([
   'ask_user',            // bots never ask questions mid-run
+  'ask_owner',           // nor hand the owner tasks: unattended (ADR-048)
   'approve_scope',       // would persist scopes into the GLOBAL permissions.yaml
   'approve_command',     // same global-state mutation hazard
   'update_plan',         // plan UI has no bot surface

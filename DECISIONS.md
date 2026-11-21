@@ -813,3 +813,26 @@
   - mammoth or markdownify (under 1 MB) only for Word or HTML input;
   - matplotlib (about 100 MB) only for display formulas. It is optional: without it, formulas render as text.
 - **An exception to "Mercury's own tools only".** This skill needs Python 3.8+. Without Python it falls back to the `documents` skill.
+
+## ADR-048: Owner tasks: Mercury hands the owner what only a human can do, and waits
+
+- **Status**: Accepted (2026-11-21)
+- **Context**: Some steps only the owner can do: reading a CAPTCHA, giving a one-time or 2FA code, finishing a step on a website. `ask_user` offered only multiple choice in the current chat, with no image, no typed answer and no way to reach a phone. The CAPTCHA plugin needed a last-resort human fallback, and that need is not CAPTCHA-specific.
+- **Decision**:
+  - **A core primitive, not a plugin feature.** `src/security/owner-tasks.ts` holds the task: title, prompt, who asks, an optional link, an image or audio clip (≤ 5 MB, saved to `~/.mercury/owner-tasks/`), and a five-letter code. It returns the answer, a decline, a cancel (when the asker stops), or a timeout. It never returns a guess.
+  - **Delivery reuses the approval paths** (`wireOwnerTasks` in agent.ts). Each task goes to:
+    - every connected messaging channel, as text with the media attached;
+    - the terminal, with a path to open the media;
+    - every app (`owner_task` event);
+    - the phones, as a notification through reach (ADR-046).
+  - **Answers.** The owner answers with `<code> <answer>` or `decline <code>` in a chat (admins only), `/answer …` in the terminal, or `POST /api/owner/tasks/:id` from an app. The first answer wins, and every answer is audited (`owner.task`).
+  - **Who can ask.**
+    - **The model:** through the `ask_owner` tool (image or audio file, link, `text` or `done` answer, 1–30 minutes).
+    - **Plugins:** through `ctx.owner.ask` (Plugin API 1.3, behind `permissions.askOwner`, shown before install).
+    - **Never:** bots, which are unattended, or chat members, so a member's message can't send the owner a request for a code.
+  - **Plugins can also use the owner's own models**, through `ctx.models.lookAt` (behind `permissions.useModels`). It works with whatever providers are set up, default first in Mercury's fallback order, skipping models that can't see images. The plugin never sees a key.
+  - **Every task message warns never to send a password or bank PIN this way.**
+- **Consequences**:
+  - **One owner-in-the-loop path for CAPTCHAs, codes and manual steps**, on every device the owner uses.
+  - **Out-of-process plugins** don't get `owner.ask` or `models.lookAt` yet; that needs a host JSON-RPC method.
+  - **Desktop and the phone apps** receive `owner_task` events and the API. Their answer screens come next; until then, the owner answers from a chat or the terminal.

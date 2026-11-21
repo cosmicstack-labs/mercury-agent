@@ -39,7 +39,7 @@ export interface CallResult {
   text: string;
 }
 
-export type ReachSource = 'agent' | 'scheduled' | 'trigger' | 'test';
+export type ReachSource = 'agent' | 'scheduled' | 'trigger' | 'test' | 'owner-task';
 
 export interface CallRequest {
   reason: string;
