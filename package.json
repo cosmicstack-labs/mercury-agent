@@ -26,6 +26,8 @@
     "eval": "vitest run src/eval",
     "vendor:ink": "node scripts/vendor-ink.cjs",
     "vendor:ink:check": "node scripts/vendor-ink.cjs --check",
+    "skills:bundle": "node scripts/gen-bundled-skills.cjs",
+    "skills:bundle:check": "node scripts/gen-bundled-skills.cjs --check",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

@@ -802,3 +802,14 @@
   - Bots no longer wait on the owner.
   - A refused action is reported in the run instead of stalling it, and the bot's rules tell it not to look for workarounds.
   - The classifier is conservative: a false refusal costs a step, a false approval could cost data. Unknown requests and every MCP call remain refused.
+
+### ADR-040 amendment (2026-11-21): built-in skills may ship their own files, and install heavy dependencies on first use
+
+- **Built-in skills with files.** A built-in skill can now ship scripts and references. They live in `src/skills/bundled/<name>/`, are compiled into the bundle by `scripts/gen-bundled-skills.cjs` (`npm run skills:bundle`; a test fails when it's stale), and are installed once, like the other defaults.
+- **Safe upgrades.** `.bundled.json` in the skill folder records what Mercury wrote. A later version upgrades only files the owner never edited, and puts back files that went missing. A skill the owner deleted stays deleted.
+- **First: `any-to-pdf`.** It wraps lovstudio/any2pdf (MIT, vendored unchanged at a92111d, audited: no exec, network only for emoji and the document's own images) with a launcher that accepts Markdown, text, Word, HTML, CSV, code and images. It adds about 27 KB gzipped to the package.
+- **Dependencies install on first use** into `~/.mercury/cache/any2pdf/pyXY` with `pip --target`, never into the system Python:
+  - reportlab (about 20 MB with Pillow) on the first run;
+  - mammoth or markdownify (under 1 MB) only for Word or HTML input;
+  - matplotlib (about 100 MB) only for display formulas. It is optional: without it, formulas render as text.
+- **An exception to "Mercury's own tools only".** This skill needs Python 3.8+. Without Python it falls back to the `documents` skill.
