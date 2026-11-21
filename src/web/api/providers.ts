@@ -176,7 +176,8 @@ providers.post('/api/providers/:name/check', async (c) => {
   const started = Date.now();
   try {
     const { fetchProviderModelCatalog } = await import('../../utils/provider-models.js');
-    const catalog = await fetchProviderModelCatalog(name, pc, { limit: 5000 });
+    const options = name === 'chatgptWeb' ? { limit: 5000, forceRefresh: true } : { limit: 5000 };
+    const catalog = await fetchProviderModelCatalog(name, pc, options);
     const models = [...new Set([catalog.recommendedModel, ...catalog.models].filter(Boolean))];
     return c.json({ ok: true, models, recommendedModel: catalog.recommendedModel, ms: Date.now() - started });
   } catch (err) {

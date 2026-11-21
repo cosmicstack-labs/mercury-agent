@@ -1,102 +1,82 @@
 import type { ProviderModelCatalog } from '../utils/provider-models.js';
-import { CHATGPT_BACKEND_API } from './chatgpt-session.js';
+import { CHATGPT_BACKEND_API, type ChatGPTSession } from './chatgpt-session.js';
 
-// Models available to ChatGPT Plus/Pro subscribers via OAuth.
-// Sorted by preference (newest/best first).
-// Only models supported on the ChatGPT codex/responses endpoint.
-// IMPORTANT (2026-09): the codex backend validates the slug against the
-// account's LIVE entitlements and rejects everything else with HTTP 400
-// "The 'X' model is not supported when using Codex with a ChatGPT account."
-// Plain dotted slugs only — hyphenated web-app slugs (gpt-5-6-thinking) and
-// -thinking/-codex variants are NOT supported, and gpt-5.4*/gpt-5.3*/gpt-5.2
-// have been dropped. The authoritative list comes from
-// GET /backend-api/codex/models?client_version=1.0.0 (entitled for the plan).
-const CHATGPT_PREFERRED_MODELS = [
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.5',
-  'gpt-6-astra',
-  'gpt-5.6-luna',
-] as const;
+const CATALOG_TTL_MS = 10 * 60_000;
+const RETRY_MS = 30_000;
 
-/**
- * Build headers for ChatGPT backend-api/codex requests (OAuth-based).
- */
-export function getChatGPTHeaders(accessToken: string, accountId: string): Record<string, string> {
-  return {
-    Authorization: `Bearer ${accessToken}`,
-    'Content-Type': 'application/json',
-    'ChatGPT-Account-Id': accountId,
-    'User-Agent': `mercury-agent/1.0 (${process.platform} ${process.arch})`,
-  };
+interface CatalogLookup {
+  sessionKey: string;
+  expiresAt: number;
+  result: Promise<ProviderModelCatalog>;
 }
 
-/**
- * Fetches the account's live-entitled Codex model slugs.
- *
- * Endpoint: GET /backend-api/codex/models?client_version=1.0.0 — this is the
- * list the codex/responses endpoint actually accepts for the account's plan.
- * Do NOT use /backend-api/models: that is the ChatGPT WEB-APP model list
- * (hyphenated slugs like `gpt-5-6-thinking`) which the codex/responses
- * endpoint rejects with HTTP 400 for every request.
- */
-export async function fetchChatGPTModels(
-  accessToken: string,
-  accountId: string,
+let lastLookup: CatalogLookup | undefined;
+
+export function fetchChatGPTModels(
+  session: ChatGPTSession,
+  { forceRefresh = false } = {},
 ): Promise<ProviderModelCatalog> {
-  try {
-    const response = await fetch(`${CHATGPT_BACKEND_API}/codex/models?client_version=1.0.0`, {
-      headers: getChatGPTHeaders(accessToken, accountId),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (response.ok) {
-      const data = (await response.json()) as Record<string, any>;
-      const models = (Array.isArray(data.models) ? data.models : [])
-        .map((m: any) => (m.slug?.trim() ?? m.id?.trim() ?? '') as string)
-        .filter((slug: string) => slug.length > 0);
-
-      if (models.length > 0) {
-        return buildCatalog(models);
-      }
-    }
-  } catch {
-    // Fall through to hardcoded list
+  const sessionKey = JSON.stringify([session.accountId, session.authenticatedAt]);
+  if (lastLookup?.sessionKey === sessionKey &&
+      (lastLookup.expiresAt === Infinity || (!forceRefresh && Date.now() < lastLookup.expiresAt))) {
+    return lastLookup.result;
   }
 
-  // Fallback: return the known models for ChatGPT Plus/Pro
-  return buildCatalog([...CHATGPT_PREFERRED_MODELS]);
-}
-
-function buildCatalog(models: string[]): ProviderModelCatalog {
-  const preferredSet = new Set<string>(CHATGPT_PREFERRED_MODELS);
-
-  // Pick the recommended model
-  let recommendedModel = models[0]!;
-  for (const preferred of CHATGPT_PREFERRED_MODELS) {
-    if (models.includes(preferred)) {
-      recommendedModel = preferred;
-      break;
-    }
-  }
-
-  // Prioritize preferred models, then the rest
-  const preferredMatches = CHATGPT_PREFERRED_MODELS.filter((m) =>
-    models.includes(m),
-  ) as unknown as string[];
-  const others = models
-    .filter((m) => m !== recommendedModel && !preferredSet.has(m))
-    .sort();
-
-  const allModels = [
-    ...preferredMatches.filter((m) => m !== recommendedModel),
-    ...others,
-  ].slice(0, 10);
-
-  return {
-    recommendedModel,
-    models: allModels,
+  const lookup: CatalogLookup = {
+    sessionKey,
+    expiresAt: Infinity,
+    result: requestCatalog(session),
   };
+  lastLookup = lookup;
+  void lookup.result.then(
+    () => { lookup.expiresAt = Date.now() + CATALOG_TTL_MS; },
+    () => { lookup.expiresAt = Date.now() + RETRY_MS; },
+  );
+  return lookup.result;
 }
 
-export { CHATGPT_BACKEND_API };
+interface CodexModel {
+  slug?: unknown;
+  id?: unknown;
+  visibility?: unknown;
+  priority?: unknown;
+}
+
+async function requestCatalog(session: ChatGPTSession): Promise<ProviderModelCatalog> {
+  // The Codex catalog and Responses requests use the same account. The
+  // ChatGPT web catalog and the public OpenAI API have different model IDs.
+  let response: Response;
+  try {
+    response = await fetch(`${CHATGPT_BACKEND_API}/codex/models?client_version=1.0.0`, {
+      headers: {
+        Authorization: `Bearer ${session.accessToken}`,
+        'ChatGPT-Account-Id': session.accountId,
+        'User-Agent': `mercury-agent/1.0 (${process.platform} ${process.arch})`,
+      },
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new Error('Could not reach the ChatGPT model catalog.');
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new Error('ChatGPT rejected the model catalog request. Check your ChatGPT sign-in.');
+  }
+  if (!response.ok) {
+    throw new Error(`ChatGPT model catalog is unavailable (HTTP ${response.status}).`);
+  }
+  const data = await response.json().catch(() => null) as { models?: Array<CodexModel | null> } | null;
+  const entries = (Array.isArray(data?.models) ? data.models : []).flatMap((model) => {
+    if (!model || (model.visibility !== undefined && model.visibility !== 'list')) return [];
+    const id = typeof model.slug === 'string' ? model.slug.trim() : '';
+    const slug = id || (typeof model.id === 'string' ? model.id.trim() : '');
+    const priority = typeof model.priority === 'number' && Number.isFinite(model.priority)
+      ? model.priority
+      : Infinity;
+    return slug ? [{ slug, priority }] : [];
+  });
+  entries.sort((a, b) => a.priority === b.priority ? 0 : a.priority - b.priority);
+  const [recommendedModel, ...models] = new Set(entries.map(({ slug }) => slug));
+  if (!recommendedModel) throw new Error('ChatGPT returned no selectable models for this account.');
+  return { recommendedModel, models };
+}
