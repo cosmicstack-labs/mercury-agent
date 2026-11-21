@@ -58,7 +58,7 @@ Install it in one line. Talk to it from anywhere. It is still there tomorrow, an
 | **Install** | One-line installer with no Node.js required, or `npm i -g @cosmicstack/mercury-agent` on Node.js 22+ |
 | **Runs on** | macOS, Linux, Windows, and Android via Termux |
 | **Talk to it from** | Terminal UI, Telegram, Discord, Slack, Signal, and a local web dashboard |
-| **Models** | DeepSeek, OpenAI, Anthropic, Grok, Ollama (cloud and local), LM Studio, any OpenAI-compatible endpoint, Mercury Cloud, and more, with automatic fallback |
+| **Models** | DeepSeek, OpenAI, Anthropic, Amazon Bedrock, Grok, Ollama (cloud and local), LM Studio, any OpenAI-compatible endpoint, Mercury Cloud, and more, with automatic fallback |
 | **Safety** | Shell blocklist, per-folder read/write scopes, approval prompts, SSRF-guarded fetches, secret redaction in logs |
 | **Memory** | Second Brain: typed, deduplicated facts in SQLite with full-text search, all on your disk |
 | **Tools** | About 50 built in (files, shell, git, GitHub, web, scheduler, memory, sub-agents) plus installable skills |
@@ -246,6 +246,7 @@ Mercury tries your default provider first and falls back to the others if it fai
 | DeepSeek | `deepseek-chat` | `DEEPSEEK_API_KEY` |
 | OpenAI | `gpt-4o-mini` | `OPENAI_API_KEY` |
 | Anthropic | `claude-sonnet-4` | `ANTHROPIC_API_KEY` |
+| Amazon Bedrock | `us.anthropic.claude-sonnet-4-6` | your AWS credentials (SSO profile, env keys, or role), or `AWS_BEARER_TOKEN_BEDROCK` |
 | Grok (xAI) | `grok-4` | `GROK_API_KEY` |
 | Atlas Cloud | `qwen/qwen3.5-flash` | `ATLASCLOUD_API_KEY` |
 | Runcrate | `deepseek-ai/DeepSeek-V4.1-Flash` | `RUNCRATE_API_KEY` |
@@ -258,6 +259,8 @@ Mercury tries your default provider first and falls back to the others if it fai
 | OpenAI-compatible | any | `OPENAI_COMPAT_API_KEY` and `OPENAI_COMPAT_BASE_URL` |
 
 LiteLLM and GitHub Copilot endpoints are also available through `mercury doctor`.
+
+Amazon Bedrock signs requests inside Mercury with the standard AWS credential chain, so an IAM Identity Center (SSO) profile works directly and `aws sso login` renewals are picked up without a restart. Set `BEDROCK_ENABLED=true`, `BEDROCK_REGION`, and optionally `BEDROCK_AWS_PROFILE` (otherwise `AWS_PROFILE` and the rest of the chain apply). Model IDs are Bedrock inference profile IDs such as `us.anthropic.claude-sonnet-4-6`; the model picker lists the ones your account can call.
 
 A server behind a reverse proxy with a username and password (for example Ollama behind nginx) works with Ollama Local, OpenAI-compatible, LM Studio, LiteLLM and Atomic Chat. Set `username` and `password` on the provider in `mercury.yaml`; Mercury then sends `Authorization: Basic ...` instead of the API key. Use `https://` for any server that is not on your own machine. Behind Cloudflare, set SSL/TLS mode to Full (strict): in Flexible mode the hop from Cloudflare to your server is plain http.
 

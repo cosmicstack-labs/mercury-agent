@@ -13,6 +13,9 @@ export async function createProvider(pc: ProviderConfig, tokenStore?: import('..
   } else if (pc.name === 'deepseek') {
     const { DeepSeekProvider } = await import('./deepseek.js');
     return new DeepSeekProvider(pc);
+  } else if (pc.name === 'bedrock') {
+    const { BedrockProvider } = await import('./bedrock.js');
+    return new BedrockProvider(pc);
   } else if (pc.name === 'ollamaLocal' || pc.name === 'atomicChat') {
     // Route through OpenAI-compatible provider — local Ollama exposes
     // /v1/chat/completions since v0.1.14. The ollama-ai-provider package
@@ -87,6 +90,7 @@ export class ProviderRegistry {
       config.providers.githubCopilot,
       config.providers.litellm,
       config.providers.lmStudio,
+      config.providers.bedrock,
     ];
 
     // Load only configured providers in parallel
