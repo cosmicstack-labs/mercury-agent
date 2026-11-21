@@ -29,6 +29,8 @@ export async function lookWithOwnModels(input: {
   /** How many models to try at most (default 3). */
   maxModels?: number;
   maxOutputTokens?: number;
+  /** Providers not to use (e.g. the one that already answered, for a second opinion). */
+  exclude?: string[];
   signal?: AbortSignal;
 }): Promise<LookResult | null> {
   if (!registry || !registry.hasProviders()) return null;
@@ -36,7 +38,7 @@ export async function lookWithOwnModels(input: {
   let tried = 0;
   for (const provider of registry.getFallbackIterator()) {
     if (tried >= tries || input.signal?.aborted) break;
-    if (!registry.isUsable(provider.name) || !visionCapable(provider)) continue;
+    if (input.exclude?.includes(provider.name) || !registry.isUsable(provider.name) || !visionCapable(provider)) continue;
     tried++;
     const timeout = AbortSignal.timeout(PER_PROVIDER_MS);
     try {

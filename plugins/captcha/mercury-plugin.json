@@ -1,0 +1,156 @@
+{
+  "manifestVersion": 1,
+  "id": "captcha",
+  "name": "CAPTCHA Solver",
+  "version": "0.1.0",
+  "description": "Solves CAPTCHAs Mercury runs into on your tasks: your own models read simple ones, a solving service (2Captcha, CapSolver, Anti-Captcha or CapMonster, your key) handles reCAPTCHA, Turnstile and GeeTest, and anything left comes to you.",
+  "kind": "in-process",
+  "author": "Cosmic Stack",
+  "homepage": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/plugins/captcha",
+  "license": "MIT",
+  "engines": {
+    "mercury": ">=1.5.5 <2.0.0",
+    "pluginApi": "^1.3.0"
+  },
+  "entry": "index.mjs",
+  "contributes": {
+    "tools": [
+      {
+        "name": "solve",
+        "description": "Solve a CAPTCHA blocking the owner's task. type 'image' (letters/numbers in a picture: pass image_path), 'recaptcha_v2', 'recaptcha_v3', 'turnstile', 'geetest', 'funcaptcha' (pass site_key and page_url, from captcha__detect), 'hcaptcha' or 'audio'. Tries the owner's own models first (images), then the solving service, then asks the owner. Returns the text or token, how it was solved and the cost; for tokens, an `inject` script to run in the page.",
+        "readOnly": false,
+        "timeoutMs": 300000
+      },
+      {
+        "name": "detect",
+        "description": "Find CAPTCHAs in a page's HTML (pass html or html_path, and page_url): which kind, its site key and the exact captcha__solve arguments to use.",
+        "readOnly": true,
+        "timeoutMs": 10000
+      },
+      {
+        "name": "balance",
+        "description": "Show the solving service's remaining balance and today's solves against the daily limit.",
+        "readOnly": true,
+        "timeoutMs": 20000
+      }
+    ]
+  },
+  "settings": {
+    "version": 1,
+    "fields": {
+      "service": {
+        "type": "enum",
+        "label": "Which solving service?",
+        "description": "Used for reCAPTCHA, Turnstile, GeeTest and images your models can't read. Bring your own key. You can switch anytime.",
+        "options": [
+          "2captcha",
+          "capsolver",
+          "anticaptcha",
+          "capmonster",
+          "none"
+        ],
+        "default": "2captcha",
+        "setup": true,
+        "optionLabels": {
+          "2captcha": "2Captcha: the widest coverage, most consistent",
+          "capsolver": "CapSolver: AI-first, cheapest on tokens",
+          "anticaptcha": "Anti-Captcha: strong on image CAPTCHAs, also FunCaptcha",
+          "capmonster": "CapMonster Cloud",
+          "none": "No service: only my own models, then ask me"
+        }
+      },
+      "twocaptchaKey": {
+        "type": "secret",
+        "secret": "TWOCAPTCHA_API_KEY",
+        "label": "2Captcha API key",
+        "description": "From 2captcha.com → Dashboard.",
+        "setup": true,
+        "when": {
+          "service": [
+            "2captcha"
+          ]
+        }
+      },
+      "capsolverKey": {
+        "type": "secret",
+        "secret": "CAPSOLVER_API_KEY",
+        "label": "CapSolver API key",
+        "description": "From dashboard.capsolver.com.",
+        "setup": true,
+        "when": {
+          "service": [
+            "capsolver"
+          ]
+        }
+      },
+      "anticaptchaKey": {
+        "type": "secret",
+        "secret": "ANTICAPTCHA_API_KEY",
+        "label": "Anti-Captcha API key",
+        "description": "From anti-captcha.com → Settings → API.",
+        "setup": true,
+        "when": {
+          "service": [
+            "anticaptcha"
+          ]
+        }
+      },
+      "capmonsterKey": {
+        "type": "secret",
+        "secret": "CAPMONSTER_API_KEY",
+        "label": "CapMonster Cloud API key",
+        "description": "From capmonster.cloud → Dashboard.",
+        "setup": true,
+        "when": {
+          "service": [
+            "capmonster"
+          ]
+        }
+      },
+      "useOwnModels": {
+        "type": "boolean",
+        "label": "Try my own models first on image CAPTCHAs?",
+        "description": "Your Mercury models (any provider you set up that can see images) read simple text CAPTCHAs for free before the paid service is used.",
+        "default": true,
+        "optionLabels": {
+          "true": "Yes: free when they can read it",
+          "false": "No: go straight to the service"
+        }
+      },
+      "askMe": {
+        "type": "boolean",
+        "label": "Ask me when nothing else works?",
+        "description": "Sends the CAPTCHA to your phone, chats and Mercury Desktop and waits for your answer. Bots never ask.",
+        "default": true
+      },
+      "askTimeoutMinutes": {
+        "type": "number",
+        "label": "How long to wait for me (minutes)",
+        "description": "1 to 4: one solve can take at most 5 minutes in all. For longer, Mercury asks you itself with ask_owner.",
+        "default": 3
+      },
+      "dailyLimit": {
+        "type": "number",
+        "label": "Paid solves per day (most)",
+        "description": "Stops using the paid service after this many solves in a day (your time zone). 0 = no paid solves.",
+        "default": 50
+      }
+    }
+  },
+  "permissions": {
+    "network": [
+      "api.2captcha.com",
+      "api.capsolver.com",
+      "api.anti-captcha.com",
+      "api.capmonster.cloud"
+    ],
+    "secrets": [
+      "TWOCAPTCHA_API_KEY",
+      "CAPSOLVER_API_KEY",
+      "ANTICAPTCHA_API_KEY",
+      "CAPMONSTER_API_KEY"
+    ],
+    "askOwner": true,
+    "useModels": true
+  }
+}

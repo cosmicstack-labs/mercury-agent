@@ -21,6 +21,7 @@ import { PLUGIN_API_VERSION, providerSecretNames, type PluginManifest, type Plug
 import type { Disposable, PluginCommandDefinition, PluginContext, PluginModule, PluginOwnerAnswer, PluginOwnerAsk, PluginToolDefinition } from '../sdk.js';
 import { ownerTasks } from '../../security/owner-tasks.js';
 import { lookWithOwnModels } from '../../core/look-with-models.js';
+import { currentPluginCall } from '../call-context.js';
 import { publishCommand, publishTool,
   screenshotContract, unpublishPlugin } from '../tool-bridge.js';
 import type { PluginRuntime, RuntimeDeps } from './types.js';
@@ -259,16 +260,18 @@ export class InProcessRuntime implements PluginRuntime {
         },
       }),
       models: Object.freeze({
-        lookAt: async (req: { prompt: string; image: { mimeType: string; data: Uint8Array }; maxModels?: number; signal?: AbortSignal }) => {
+        lookAt: async (req: { prompt: string; image: { mimeType: string; data: Uint8Array }; maxModels?: number; exclude?: string[]; signal?: AbortSignal }) => {
           if (!m.permissions.useModels) throw new Error(`${m.name} didn't declare permissions.useModels, so it can't use your models.`);
           if (!/^image\/(png|jpeg|gif|webp)$/i.test(req.image.mimeType)) throw new Error('lookAt takes a png, jpeg, gif or webp image.');
           if (req.image.data.byteLength > 5 * 1024 * 1024) throw new Error('lookAt images must be 5 MB or smaller.');
-          return lookWithOwnModels({ prompt: req.prompt.slice(0, 2000), image: req.image, maxModels: req.maxModels, signal: req.signal ? AbortSignal.any([signal, req.signal]) : signal });
+          return lookWithOwnModels({ prompt: req.prompt.slice(0, 2000), image: req.image, maxModels: req.maxModels, exclude: Array.isArray(req.exclude) ? req.exclude.slice(0, 20).map(String) : undefined, signal: req.signal ? AbortSignal.any([signal, req.signal]) : signal });
         },
       }),
       owner: Object.freeze({
         ask: async (req: PluginOwnerAsk): Promise<PluginOwnerAnswer> => {
           if (!m.permissions.askOwner) throw new Error(`${m.name} didn't declare permissions.askOwner, so it can't hand the owner tasks.`);
+          // A bot's run: nobody is there to answer, so nobody is asked.
+          if (currentPluginCall()?.unattended) return { status: 'unavailable' };
           const minutes = Math.min(30, Math.max(1, Math.round(req.timeoutMinutes ?? 5)));
           const mime = req.media?.mimeType.toLowerCase();
           const task = ownerTasks().request({

@@ -100,7 +100,7 @@ export interface PluginContext {
    * Null when no model could answer. Throws without the permission.
    */
   readonly models: {
-    lookAt(request: { prompt: string; image: { mimeType: string; data: Uint8Array }; maxModels?: number; signal?: AbortSignal }): Promise<{ text: string; provider: string; model: string } | null>;
+    lookAt(request: { prompt: string; image: { mimeType: string; data: Uint8Array }; maxModels?: number; /** Provider names to skip, e.g. for a second opinion. */ exclude?: string[]; signal?: AbortSignal }): Promise<{ text: string; provider: string; model: string } | null>;
   };
   /** Aborted when the plugin is being disabled, updated or uninstalled. */
   readonly signal: AbortSignal;
@@ -126,7 +126,9 @@ export interface PluginOwnerAsk {
 
 export type PluginOwnerAnswer =
   | { status: 'answered'; answer: string }
-  | { status: 'declined' | 'expired' | 'cancelled' };
+  | { status: 'declined' | 'expired' | 'cancelled' }
+  /** Nobody can be asked: the call came from an unattended bot run. */
+  | { status: 'unavailable' };
 
 export interface PluginModule {
   activate(ctx: PluginContext): void | Promise<void>;
