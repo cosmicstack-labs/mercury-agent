@@ -225,6 +225,8 @@ export interface BotRunRecord {
   toolCalls?: number;
   /** Largest single-step prompt the provider saw. */
   peakInputTokens?: number;
+  /** Input tokens served from the provider's prompt cache (part of tokensIn). */
+  tokensCached?: number;
   /** What the run did: deliverable | action | delegated | message | quiet | failed | none. */
   outcome?: string;
   /** How the bot closed the run (Bots 2.0): result | no_update | failure. */

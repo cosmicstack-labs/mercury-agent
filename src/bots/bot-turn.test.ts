@@ -257,7 +257,7 @@ describe('runBotTurn live thinking events', () => {
 
 // ── ADR-020: governor, compaction, failure classes, outcome gate ──────────
 
-import { compactMessages, computeOutcome, wrapBotTools, isReadOnlyCommand, isTransientFailure, DEFAULT_TURN_LIMITS } from './bot-turn.js';
+import { compactMessages, computeOutcome, wrapBotTools, isReadOnlyCommand, isTransientFailure, DEFAULT_TURN_LIMITS, STUB_BATCH, turnCost, botCacheOptions } from './bot-turn.js';
 
 /** The streamText options the turn loop passes, as the mocks see them. */
 type MockOpts = {
@@ -298,23 +298,43 @@ describe('classifyFailure (ADR-020)', () => {
 
 describe('compactMessages', () => {
   const toolMsg = (id: string, value: string) => ({ role: 'tool', content: [{ type: 'tool-result', toolCallId: id, toolName: 'read_file', output: { type: 'text', value } }] });
-  it('keeps the newest results (capped) and stubs older ones', () => {
+  it('keeps the newest results (capped) and stubs older ones, a whole batch at a time', () => {
     const big = 'x'.repeat(30_000);
+    const olds = Array.from({ length: STUB_BATCH }, (_, i) => toolMsg(`o${i}`, 'old '.repeat(300)));
     const msgs = [
       { role: 'user', content: 'go' },
-      toolMsg('a', 'old '.repeat(300)),
+      ...olds,
       toolMsg('b', big),
       toolMsg('c', 'recent'),
     ];
     const out = compactMessages(msgs as never, { keepRecentToolResults: 2, maxToolResultChars: 1000 }) as unknown as Array<{ content: Array<{ output: { value: string } }> }>;
     expect(out[0]).toBe(msgs[0]);
-    expect(out[1].content[0].output.value).toContain('more chars trimmed from an earlier step');
-    expect(out[1].content[0].output.value.length).toBeLessThan(600);
-    expect(out[2].content[0].output.value).toContain('[…truncated');
-    expect(out[2].content[0].output.value.length).toBeLessThan(1100);
-    expect(out[3].content[0].output.value).toBe('recent');
+    for (let i = 1; i <= STUB_BATCH; i++) {
+      expect(out[i].content[0].output.value).toContain('more chars trimmed from an earlier step');
+      expect(out[i].content[0].output.value.length).toBeLessThan(600);
+    }
+    const b = out[STUB_BATCH + 1].content[0].output.value;
+    expect(b).toContain('[…truncated');
+    expect(b.length).toBeLessThan(1100);
+    expect(out[STUB_BATCH + 2].content[0].output.value).toBe('recent');
     // Never mutates the originals.
-    expect((msgs[2] as { content: Array<{ output: { value: string } }> }).content[0].output.value).toBe(big);
+    expect((msgs[STUB_BATCH + 1] as { content: Array<{ output: { value: string } }> }).content[0].output.value).toBe(big);
+  });
+  // A prompt cache only hits when the request starts exactly like an earlier
+  // one. Stubbing one more old result per step changed the start every step.
+  it('keeps the start of the request identical from step to step until a batch is due', () => {
+    const limits = { keepRecentToolResults: 8, maxToolResultChars: 24_000 };
+    const results = Array.from({ length: 8 + 2 * STUB_BATCH }, (_, i) => toolMsg(`t${i}`, `result ${i} `.repeat(100)));
+    const send = (n: number) => JSON.stringify(compactMessages([{ role: 'user', content: 'go' }, ...results.slice(0, n)] as never, limits));
+    let boundaryMoves = 0;
+    for (let n = 2; n <= results.length; n++) {
+      const prev = send(n - 1);
+      const next = send(n);
+      // The previous request minus its closing bracket is a prefix of the next one…
+      if (!next.startsWith(prev.slice(0, -1))) boundaryMoves++;
+    }
+    // …except when a whole batch is stubbed: twice in 2 batches' worth of steps, not every step.
+    expect(boundaryMoves).toBe(2);
   });
   it('is a no-op without tool results', () => {
     const msgs = [{ role: 'user', content: 'hi' }];
@@ -339,6 +359,60 @@ describe('compactMessages', () => {
     const out = compactMessages(msgs as never, { keepRecentToolResults: 2, maxToolResultChars: 1000 }) as unknown as Array<{ content: Array<{ output: { value: string } }> }>;
     expect(out[0].content[0].output.value).toBe('output');
     expect(JSON.stringify({ content: out[0].content[0].output.value })).not.toMatch(/\\u[dD][89abAB]/);
+  });
+});
+
+describe('prompt cache', () => {
+  it('cache hits count at a tenth toward the per-turn cap', () => {
+    expect(turnCost(100_000, 0, 1_000)).toBe(101_000);
+    expect(turnCost(100_000, 90_000, 1_000)).toBe(10_000 + 9_000 + 1_000);
+    // A provider reporting more cached than sent never makes spend negative.
+    expect(turnCost(100, 500, 0)).toBe(10);
+  });
+  it('a stable per-bot cache key goes only to OpenAI and ChatGPT, never to other OpenAI-shaped servers', () => {
+    expect(botCacheOptions('openai', 'scout')).toEqual({ openai: { promptCacheKey: 'mercury-bot-scout' } });
+    expect(botCacheOptions('chatgptWeb', 'scout')).toEqual({ openai: { promptCacheKey: 'mercury-bot-scout' } });
+    for (const name of ['deepseek', 'ollamaCloud', 'aimlapi', 'anthropic', 'openaiCompat', 'mercuryCloud']) {
+      expect(botCacheOptions(name, 'scout')).toBeUndefined();
+    }
+  });
+});
+
+describe('prompt cache in a turn', () => {
+  it('records cache hits, and a cached turn is not cut off by tokens it barely paid for', async () => {
+    const recorded: unknown[] = [];
+    mockedStreamText.mockImplementation(impl((opts) => {
+      // 400k sent, 360k of it from cache: 76k counted against the 300k cap.
+      opts.onStepFinish?.({ usage: { inputTokens: 200_000, outputTokens: 10, inputTokenDetails: { cacheReadTokens: 180_000 } } as never, toolCalls: [], toolResults: [] });
+      opts.onStepFinish?.({ usage: { inputTokens: 200_000, outputTokens: 10, inputTokenDetails: { cacheReadTokens: 180_000 } } as never, toolCalls: [], toolResults: [] });
+      return finished('done');
+    }));
+    const out = await runBotTurn(turnInput({ tokenBudget: { recordUsage: (u: unknown) => recorded.push(u), getRemaining: () => 100000 } }));
+    expect(out.status).toBe('completed');
+    expect(out.tokensIn).toBe(400_000);
+    expect(out.tokensCached).toBe(360_000);
+    expect(recorded[0]).toMatchObject({ inputTokens: 400_000, cachedInputTokens: 360_000 });
+  });
+
+  it('sends the per-bot cache key to ChatGPT and nothing extra to other providers', async () => {
+    const seen: unknown[] = [];
+    mockedStreamText.mockImplementation(impl((opts) => { seen.push((opts as { providerOptions?: unknown }).providerOptions); return finished('done'); }));
+    await runBotTurn(turnInput({ provider: { name: 'chatgptWeb', getModel: () => 'm', getModelInstance: () => ({}) } }));
+    await runBotTurn(turnInput({ provider: { name: 'deepseek', getModel: () => 'm', getModelInstance: () => ({}) } }));
+    expect(seen).toEqual([{ openai: { promptCacheKey: 'mercury-bot-tester' } }, undefined]);
+  });
+
+  it('Anthropic: each step marks the newest messages, so the next step reads them from cache', async () => {
+    let shaped: Array<{ role: string; providerOptions?: unknown }> = [];
+    mockedStreamText.mockImplementation(impl((opts) => {
+      const prepare = (opts as unknown as { prepareStep: (a: { messages: unknown[] }) => { messages: typeof shaped } }).prepareStep;
+      shaped = prepare({ messages: opts.messages }).messages;
+      return finished('done');
+    }));
+    await runBotTurn(turnInput({ provider: { name: 'anthropic', getModel: () => 'm', getModelInstance: () => ({ provider: 'anthropic.messages' }) } }));
+    const marker = { anthropic: { cacheControl: { type: 'ephemeral' } } };
+    expect(shaped[0]).toMatchObject({ role: 'system', providerOptions: marker });
+    expect(shaped[shaped.length - 1]).toMatchObject({ role: 'user', providerOptions: marker });
   });
 });
 

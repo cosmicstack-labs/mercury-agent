@@ -16,6 +16,7 @@ import { stepsExhaustedPrompt } from '../core/completion-verdict.js';
 import { isFailedToolResult } from '../core/execute-guard.js';
 import { MAX_AUTOMATIC_CONTINUATIONS } from '../core/execution-limits.js';
 import { formatToolStep } from '../utils/tool-label.js';
+import { isAnthropicModel, shapeStepMessages } from '../core/payload-policy.js';
 import { logger } from '../utils/logger.js';
 import { stripLoneSurrogates, truncateText } from '../utils/text-safe.js';
 import type { BotManifest, BotTrigger } from './types.js';
@@ -223,6 +224,8 @@ export interface BotTurnOutput {
   toolCalls: number;
   /** Largest single-step prompt the provider saw — the context-growth meter. */
   peakInputTokens: number;
+  /** Input tokens the provider served from its prompt cache (part of tokensIn). */
+  tokensCached: number;
   outcome: BotOutcome;
   /** The bot's own close of the run, when it gave one. */
   report?: BotRunReport;
@@ -236,6 +239,32 @@ export interface BotTurnOutput {
 }
 
 const MAX_STEPS_DEFAULT = 25;
+
+/**
+ * Cache hits count at this weight toward the per-turn token cap: they cost
+ * about a tenth of fresh input, and the cap guards against runaway cost.
+ */
+const CACHED_TURN_WEIGHT = 0.1;
+
+/**
+ * Old tool results are shortened in batches of this many, never one per step.
+ * Shortening one result changes the request from that point on, so every
+ * provider's prompt cache misses from there; batching keeps the start of the
+ * request identical for this many steps in a row.
+ */
+export const STUB_BATCH = 8;
+
+/** Providers on OpenAI's own API (Responses), where `prompt_cache_key` routes repeat prompts to the same cache. */
+const PROMPT_CACHE_KEY_PROVIDERS = new Set(['openai', 'chatgptWeb']);
+
+/**
+ * Per-request provider options for a bot's prompt cache. The key is stable per
+ * bot, so every run of the bot (same system prompt, same tools) shares a cache.
+ */
+export function botCacheOptions(providerName: string, botId: string): Record<string, Record<string, string>> | undefined {
+  if (!PROMPT_CACHE_KEY_PROVIDERS.has(providerName)) return undefined;
+  return { openai: { promptCacheKey: `mercury-bot-${botId}` } };
+}
 
 /** Said to the model when a run resumes from its checkpoint. */
 const RESUME_NOTE = '[Resumed] This run was interrupted (an error, a pause or a restart) and continues here. '
@@ -353,6 +382,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
   let tokensIn = 0;
   let tokensOut = 0;
   let peakInputTokens = 0;
+  let tokensCached = 0;
   let lastResult: { text: string; finishReason: unknown } | null = null;
   let stepsRemaining = maxSteps;
   let budgetContinuations = 0;
@@ -409,7 +439,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
   const baseOutput = () => ({
     ...(taintOf() ? { taint: taintOf() } : {}),
     tokensIn, tokensOut, toolsUsed: [...toolsUsed], startedAt, steps: stepIndex, toolCalls: trace.length,
-    peakInputTokens, deliverables: [...deliveries], outcomeNudged, trace: [...trace], ...(report ? { report } : {}),
+    peakInputTokens, tokensCached, deliverables: [...deliveries], outcomeNudged, trace: [...trace], ...(report ? { report } : {}),
   });
   const outcomeNow = (text: string): BotOutcome => computeOutcome({ trace, deliveries, expects, text, sandbox: input.sandbox, report });
 
@@ -426,8 +456,12 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
       // is unchanged.
       let streamError: unknown = null;
       noteTurnModel(provider.getModel());
+      const model = provider.getModelInstance();
+      const anthropicCache = isAnthropicModel(model);
+      const cacheOptions = botCacheOptions(provider.name, manifest.id);
       const stream = streamText({
-        model: provider.getModelInstance(),
+        model,
+        ...(cacheOptions ? { providerOptions: cacheOptions } : {}),
         messages,
         tools,
         stopWhen: stepCountIs(stepsRemaining),
@@ -435,8 +469,13 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
         experimental_include: { requestBody: false },
         // Context compaction: every step re-sends the whole conversation, so
         // 25 steps of 60KB tool results is a multi-megatoken prompt. Keep
-        // the newest results verbatim (capped), stub the rest.
-        prepareStep: ({ messages: stepMessages }: { messages: ModelMessage[] }) => ({ messages: compactMessages(stepMessages, limits) }),
+        // the newest results verbatim (capped), stub the rest — in batches,
+        // so the prompt cache keeps hitting. Anthropic also gets cache
+        // breakpoints on the newest messages (ADR-039's payload policy), so
+        // each step reads the previous step's conversation from cache.
+        prepareStep: ({ messages: stepMessages }: { messages: ModelMessage[] }) => ({
+          messages: shapeStepMessages(compactMessages(stepMessages, limits), { anthropicCache }),
+        }),
         experimental_onStepStart: () => {
           stepIndex++;
           emit({ kind: 'step', stepIndex, label: `step ${stepIndex}` });
@@ -456,7 +495,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
             elapsedMs: typeof durationMs === 'number' ? durationMs : undefined,
           });
         },
-        onStepFinish: ({ usage, toolCalls, toolResults, response }: { usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[]; response?: { messages?: unknown[] } }) => {
+        onStepFinish: ({ usage, toolCalls, toolResults, response }: { usage?: { inputTokens?: number; outputTokens?: number; inputTokenDetails?: { cacheReadTokens?: number }; cachedInputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[]; response?: { messages?: unknown[] } }) => {
           if (governor.signal.aborted) return;
           stepsRemaining--;
           if (Array.isArray(response?.messages)) {
@@ -467,14 +506,17 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
             tokensIn += usage.inputTokens ?? 0;
             tokensOut += usage.outputTokens ?? 0;
             peakInputTokens = Math.max(peakInputTokens, usage.inputTokens ?? 0);
+            const cached = usage.inputTokenDetails?.cacheReadTokens ?? usage.cachedInputTokens ?? 0;
+            if (typeof cached === 'number' && Number.isFinite(cached) && cached > 0) tokensCached += Math.min(cached, usage.inputTokens ?? cached);
           }
           for (const tc of (toolCalls ?? []) as Array<{ toolName?: string; toolCallId?: string }>) {
             if (tc?.toolName) toolsUsed.add(String(tc.toolName));
             trace.push(traceEntry(tc, ((toolResults ?? []) as Array<{ toolCallId?: string; output?: ToolOutput }>).find((r) => r?.toolCallId !== undefined && r.toolCallId === tc?.toolCallId)));
           }
           const kIn = Math.round(tokensIn / 100) / 10;
-          emit({ kind: 'step', stepIndex, label: `step ${stepIndex} · ${kIn}k tok in` });
-          if (tokensIn + tokensOut > limits.maxTokensPerTurn) trip('turn_budget');
+          const cachedPct = tokensIn > 0 ? Math.round((tokensCached / tokensIn) * 100) : 0;
+          emit({ kind: 'step', stepIndex, label: `step ${stepIndex} · ${kIn}k tok in${cachedPct > 0 ? ` (${cachedPct}% cached)` : ''}` });
+          if (turnCost(tokensIn, tokensCached, tokensOut) > limits.maxTokensPerTurn) trip('turn_budget');
         },
       });
 
@@ -624,6 +666,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
       inputTokens: tokensIn,
       outputTokens: tokensOut,
       totalTokens: tokensIn + tokensOut,
+      cachedInputTokens: tokensCached,
       channelType: 'bot',
     });
 
@@ -676,6 +719,7 @@ function governedFailure(
     inputTokens: base.tokensIn,
     outputTokens: base.tokensOut,
     totalTokens: base.tokensIn + base.tokensOut,
+    cachedInputTokens: base.tokensCached,
     channelType: 'bot',
   });
   emit({ kind: 'turn-end', stepIndex, label: `stopped — ${what}`, status: 'error' });
@@ -930,7 +974,11 @@ export function compactMessages(messages: ModelMessage[], limits: Pick<BotTurnLi
     });
   });
   if (resultRefs.length === 0) return sanitizeModelMessages(messages);
-  const stubBefore = Math.max(0, resultRefs.length - limits.keepRecentToolResults);
+  // Stub in whole batches: the boundary moves only every STUB_BATCH results,
+  // so between moves each step's request starts exactly like the last one's
+  // and the provider's prompt cache hits. Up to keep + STUB_BATCH - 1 results
+  // stay verbatim.
+  const stubBefore = Math.floor(Math.max(0, resultRefs.length - limits.keepRecentToolResults) / STUB_BATCH) * STUB_BATCH;
   const out = messages.slice();
   resultRefs.forEach(({ mi, pi }, idx) => {
     const content = out[mi].content as unknown as ToolResultPart[];
@@ -1159,4 +1207,10 @@ Fleet protocol:
   volatile += `\n\nToken budget remaining: ${input.tokenBudget.getRemaining()}`;
 
   return { stable: prompt, volatile: `This run:${volatile}` };
+}
+
+/** A turn's spend for its cap: cache hits at CACHED_TURN_WEIGHT, everything else in full. */
+export function turnCost(tokensIn: number, tokensCached: number, tokensOut: number): number {
+  const cached = Math.min(tokensIn, Math.max(0, tokensCached));
+  return tokensIn - cached + cached * CACHED_TURN_WEIGHT + tokensOut;
 }

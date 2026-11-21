@@ -1055,6 +1055,7 @@ export class BotManager {
         steps: output.steps,
         toolCalls: output.toolCalls,
         peakInputTokens: output.peakInputTokens,
+        ...(output.tokensCached > 0 ? { tokensCached: output.tokensCached } : {}),
         outcome: output.outcome,
         ...(output.deliverables.length > 0 ? { deliverables: output.deliverables } : {}),
         ...(output.claimedWithoutAction ? { claimedWithoutAction: true } : {}),
