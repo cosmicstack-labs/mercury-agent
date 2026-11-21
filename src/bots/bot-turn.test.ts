@@ -257,7 +257,7 @@ describe('runBotTurn live thinking events', () => {
 
 // ── ADR-020: governor, compaction, failure classes, outcome gate ──────────
 
-import { compactMessages, computeOutcome, wrapBotTools, isReadOnlyCommand, isTransientFailure, DEFAULT_TURN_LIMITS, STUB_BATCH, turnCost, botCacheOptions } from './bot-turn.js';
+import { compactMessages, computeOutcome, wrapBotTools, isReadOnlyCommand, isTransientFailure, DEFAULT_TURN_LIMITS, STUB_BATCH, turnCost, botCacheOptions, WRAP_UP_NOTE, MAX_IDENTICAL_FAILURES, buildBotSystemPrompt } from './bot-turn.js';
 
 /** The streamText options the turn loop passes, as the mocks see them. */
 type MockOpts = {
@@ -413,6 +413,90 @@ describe('prompt cache in a turn', () => {
     const marker = { anthropic: { cacheControl: { type: 'ephemeral' } } };
     expect(shaped[0]).toMatchObject({ role: 'system', providerOptions: marker });
     expect(shaped[shaped.length - 1]).toMatchObject({ role: 'user', providerOptions: marker });
+  });
+});
+
+describe('fewer wasted steps', () => {
+  it('near the token cap the run is asked to wrap up, with only the closing tools, and closes instead of being cut off', async () => {
+    const steps: Array<{ note: boolean; active?: string[] }> = [];
+    mockedStreamText.mockImplementation(impl((opts) => {
+      const o = opts as unknown as { prepareStep: (a: { messages: unknown[] }) => { messages: Array<{ content: unknown }>; activeTools?: string[] } };
+      // Step 1: 250k of a 300k cap (over 80%).
+      let p = o.prepareStep({ messages: opts.messages });
+      steps.push({ note: false, active: p.activeTools });
+      opts.onStepFinish?.({ usage: { inputTokens: 250_000, outputTokens: 10 }, toolCalls: [{ toolName: 'read_file', toolCallId: 'a', input: { path: 'x' } }], toolResults: [{ toolCallId: 'a', output: { type: 'text', value: 'ok' } }] });
+      // Step 2: wrap-up — note appended, closers only; the bot reports.
+      p = o.prepareStep({ messages: opts.messages });
+      steps.push({ note: p.messages[p.messages.length - 1]?.content === WRAP_UP_NOTE, active: p.activeTools });
+      void opts.tools.bot_report.execute?.({ summary: 'Half done: drafted the intro, outline is in the workspace.' }, {});
+      opts.onStepFinish?.({ usage: { inputTokens: 20_000, outputTokens: 10 }, toolCalls: [{ toolName: 'bot_report', toolCallId: 'b', input: {} }], toolResults: [] });
+      return finished('');
+    }));
+    const out = await runBotTurn(turnInput({ trigger: 'mailbox', manifest: { id: 't', name: 'T', enabled: true, autonomy: { maxSteps: 5 } } }));
+    expect(steps[0]).toEqual({ note: false, active: undefined });
+    expect(steps[1].note).toBe(true);
+    expect(steps[1].active).toEqual(['bot_report', 'bot_no_update', 'bot_report_failure']);
+    expect(out.status).toBe('completed');
+    expect(out.report?.summary).toContain('Half done');
+  });
+
+  it('a step that jumps past the cap still gets its wrap-up step; a closed run is never cut off', async () => {
+    const wrapped: boolean[] = [];
+    mockedStreamText.mockImplementation(impl((opts) => {
+      const o = opts as unknown as { prepareStep: (a: { messages: unknown[] }) => { activeTools?: string[] } };
+      o.prepareStep({ messages: opts.messages });
+      // 0 → 110% of the cap in one step: not tripped yet.
+      opts.onStepFinish?.({ usage: { inputTokens: 330_000, outputTokens: 10 }, toolCalls: [], toolResults: [] });
+      expect(opts.abortSignal?.aborted).toBe(false);
+      wrapped.push(Boolean(o.prepareStep({ messages: opts.messages }).activeTools));
+      void opts.tools.bot_report.execute?.({ summary: 'Wrapped up.' }, {});
+      opts.onStepFinish?.({ usage: { inputTokens: 40_000, outputTokens: 10 }, toolCalls: [], toolResults: [] });
+      expect(opts.abortSignal?.aborted).toBe(false);
+      return finished('');
+    }));
+    const out = await runBotTurn(turnInput({ manifest: { id: 't', name: 'T', enabled: true, autonomy: { maxSteps: 5 } } }));
+    expect(wrapped).toEqual([true]);
+    expect(out.status).toBe('completed');
+  });
+
+  it('the run stops as soon as it is closed, with no extra step to say "done"', async () => {
+    let stop: Array<(a: unknown) => boolean> = [];
+    mockedStreamText.mockImplementation(impl((opts) => {
+      stop = (opts as unknown as { stopWhen: Array<(a: unknown) => boolean> }).stopWhen;
+      void opts.tools.bot_report.execute?.({ summary: 'Done.' }, {});
+      return finished('');
+    }));
+    await runBotTurn(turnInput());
+    expect(Array.isArray(stop)).toBe(true);
+    expect(stop.some((cond) => cond({ steps: [] }))).toBe(true);
+  });
+
+  it('a call that failed the same way twice is not run a third time; a different call still runs', async () => {
+    let runs = 0;
+    const tools = wrapBotTools({
+      read_file: { execute: async () => { runs++; return 'Error: file not found: brief.md'; } } as never,
+    }, { sandbox: { workspace: '/w', shared: '/s' }, limits: DEFAULT_TURN_LIMITS, onDelivered: () => {} });
+    const call = (path: string) => (tools.read_file as { execute: (a: unknown, o: unknown) => Promise<string> }).execute({ path }, {});
+    for (let i = 0; i < MAX_IDENTICAL_FAILURES; i++) await call('brief.md');
+    const third = await call('brief.md');
+    expect(runs).toBe(MAX_IDENTICAL_FAILURES);
+    expect(third).toContain('It was not run again');
+    expect(third).toContain('file not found');
+    await call('other.md');
+    expect(runs).toBe(MAX_IDENTICAL_FAILURES + 1);
+  });
+
+  it('a call that succeeds is never blocked, however often it repeats', async () => {
+    let runs = 0;
+    const tools = wrapBotTools({ list_dir: { execute: async () => { runs++; return 'a.md\nb.md'; } } as never },
+      { sandbox: { workspace: '/w', shared: '/s' }, limits: DEFAULT_TURN_LIMITS, onDelivered: () => {} });
+    for (let i = 0; i < 5; i++) await (tools.list_dir as { execute: (a: unknown, o: unknown) => Promise<string> }).execute({ path: '.' }, {});
+    expect(runs).toBe(5);
+  });
+
+  it('the rules ask for independent calls in one step', () => {
+    const { stable } = buildBotSystemPrompt(turnInput());
+    expect(stable).toContain('make independent tool calls together in ONE step');
   });
 });
 
