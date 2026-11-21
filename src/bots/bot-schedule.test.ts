@@ -21,6 +21,16 @@ describe('bot_schedule (bot self-scheduling)', () => {
     tool = createBotScheduleTool(scheduler, 'publisher');
   });
 
+  it('advertises the scheduling limits to the model', async () => {
+    expect(tool.description).toContain('at least 10 minutes');
+    expect(tool.description).toContain('30 minutes');
+    expect(tool.description).toContain('3 routines');
+    const schema = await tool.inputSchema.jsonSchema;
+    expect(schema.properties.delayMinutes.description).toContain('10..43200');
+    expect(schema.properties.cron.description).toContain('30 minutes');
+    expect(schema.properties.cron.description).toContain('3 routines');
+  });
+
   it('schedules a one-shot delayed run that survives restart (executeAt persisted)', async () => {
     const reply = await tool.execute({ prompt: 'post the follow-up thread', delayMinutes: 60 });
     expect(reply).toContain('60 min');

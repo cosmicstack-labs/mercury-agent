@@ -2262,12 +2262,13 @@ export class BotManager {
       lines.push(`- **${m.name}** (\`${m.id}\`)${desc}${fleetTag} [${state}]`);
     }
     lines.push(`Bot control (never route bot work through this main conversation):
-- \`/bot <id> <message>\` or \`@<id> <message>\` — dispatch a task to a bot; the result lands ONLY in the bot's own thread (\`/bots open <id>\`), never in this chat.
+- \`/bot <id> <message>\` or \`@<id> <message>\` — dispatch a task to a bot. Its reply lands in its own thread (\`/bots open <id>\`), never in this chat.
 - \`/bots open <id>\` — open the bot's own chat; \`/bots\` — roster with live states.
+- Solo bots and fleet leads deliver files to named folders under \`${this.store.deliverablesRoot()}\`. Crew work lives under the lead's \`work/\` folder. \`/bots outputs [id]\` lists delivered files and \`/bots folder <id>\` opens the folder.
 - \`/bots create <id> "Name" "Description"\` — onboard; \`/bots persona <id> <text>\` — set its character.
 - \`/bots export <id> [path]\` — shareable bundle (manifests + personas + permissions + skills; a lead's bundle carries its whole crew); \`/bots import <path>\` — recreate bots from a bundle (imported bots start disabled). Sandbox, journals, and .env never travel.
 - \`/bots journal <id>\` — recent runs; \`/bots dlq\` — failed jobs (replayable); \`/bots stop|start|enable|disable <id>\`; \`/bots run <id> [routine]\` — fire a routine now (or a bare wake).
-- Bots share data through the fleet-shared folder (\`${this.store.sharedSandboxDir()}\`); each also has a private sandbox next to its persona. Their outputs land in their own threads.
+- Bots share data through the fleet-shared folder (\`${this.store.sharedSandboxDir()}\`); each also has a private sandbox next to its persona.
 - The dispatch_bot tool lets you hand a task to a bot mid-conversation and continue talking; the result is delivered when the bot finishes.`);
     return lines.join('\n');
   }

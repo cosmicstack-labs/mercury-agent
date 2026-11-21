@@ -458,6 +458,15 @@ describe('Main-agent bots awareness (system prompt section)', () => {
     expect(section).toContain('never in this chat');
   });
 
+  it('tells the main agent where to find delivered files', () => {
+    seedBot(store, 'researcher');
+    const section = manager.getSystemPromptSection();
+    expect(section).toContain(store.deliverablesRoot());
+    expect(section).toContain('`work/`');
+    expect(section).toContain('`/bots outputs [id]`');
+    expect(section).toContain('`/bots folder <id>`');
+  });
+
   it('empty fleet produces NO prompt section (zero drift for botless users)', () => {
     const section = manager.getSystemPromptSection();
     expect(section).toBe('');
