@@ -776,3 +776,29 @@
   - Calls and notifications reach a phone only while the app is open or still alive in the background. On iOS that is seconds to minutes after leaving the app (longer during a call or audio). On Android it is while the process and its activity stream live: on screen, while a chat works, or with "Stay connected" on.
   - Otherwise WhatsApp (when linked) and the owner's messaging channel carry the call or message, and the app shows a missed call next time it opens.
   - Nothing passes through a third party, and nothing new holds a token for the phone.
+
+## ADR-047: Bots decide permission asks themselves: reversible goes ahead, irreversible is refused
+
+- **Status**: Accepted (2026-11-21)
+- **Context**: Bots run unattended. When a bot needed something outside its grants (a command, a file outside its folders, a privileged action after reading web content), the run asked the owner and waited up to `bots.approvalWaitMinutes` (default 10), then took silence as a no. The owner is rarely there, so runs stalled for minutes and then failed anyway.
+- **Decision**:
+  - **Auto mode is the default** (`bots.approvals: auto`, per bot `autonomy.approvals`). An ask is decided at once by `src/bots/auto-approve.ts`, and the run never waits.
+  - **The rule is reversibility.**
+    - What can be undone goes ahead: reading ordinary files, writing files, everyday commands, and posting or sending through tools whose result can be deleted.
+    - An existing file is copied to `bots/<id>/backups/<time>/` before it is overwritten, by a write or a `>`/`mv`/`cp` onto it. Backups are kept 14 days. Files over 50 MB can't be backed up, so overwriting them is refused.
+  - **What can't be undone is refused**:
+    - deleting (`rm`, `find -delete`, `delete`/`destroy`/`prune`/`drop` subcommands, `DROP TABLE`, HTTP `DELETE`);
+    - force-pushing, `git reset --hard`, `git clean`, and discarding changes;
+    - publishing packages and sending email;
+    - killing processes, `sudo`, and running downloaded or `eval`'d code;
+    - inline interpreter code that deletes or spawns commands;
+    - reading or writing credentials, and writing system or login files.
+  - **What auto mode doesn't recognise is refused.**
+  - **ADR-044 still holds.** After untrusted content, an action goes ahead only when no hidden instructions were found and no data would leave in an address or command. `install_skill`, `approve_*` and `forget_memory` are always refused.
+  - **Decisions are per call.** Nothing is written to `permissions.yaml`. Each decision appears in the bot's activity and in the audit log (`bot.auto.allowed` / `bot.auto.refused`).
+  - **The global blocked list, the permission tier's tool gate and the injection scanner still run first.** Auto mode only answers what would have asked.
+  - **`approvals: ask` keeps the old behaviour.**
+- **Consequences**:
+  - Bots no longer wait on the owner.
+  - A refused action is reported in the run instead of stalling it, and the bot's rules tell it not to look for workarounds.
+  - The classifier is conservative: a false refusal costs a step, a false approval could cost data. Unknown requests and every MCP call remain refused.

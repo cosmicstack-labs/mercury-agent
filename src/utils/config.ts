@@ -264,8 +264,14 @@ export interface MercuryConfig {
     fleetDailyTokenBudget?: number;
     /** Fewest minutes between two runs of any bot routine (default 15). */
     routineMinGapMinutes?: number;
-    /** How long a bot waits for the owner to answer its question before it's a no (default 10, max 60). */
+    /** How long a bot waits for the owner to answer its question before it's a no (default 10, max 60). Only in `approvals: ask`. */
     approvalWaitMinutes?: number;
+    /**
+     * What happens when a bot needs something outside its grants (ADR-047).
+     * auto (default): decided at once — anything that can be undone goes ahead,
+     * anything that can't is refused. ask: the owner is asked and the run waits.
+     */
+    approvals?: 'auto' | 'ask';
     /** Owner-visible folder for finished results (default: ~/Documents/Mercury). */
     deliverablesDir?: string;
     retention: {

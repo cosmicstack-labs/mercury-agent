@@ -141,6 +141,8 @@ export const DEFAULT_TURN_LIMITS: BotTurnLimits = {
 };
 
 export interface BotTurnInput {
+  /** How asks outside the bot's grants are answered (ADR-047); auto when unset. */
+  approvals?: 'auto' | 'ask';
   manifest: BotManifest;
   trigger: BotTrigger;
   /** Durable job id — correlates activity events with the run. */
@@ -1200,7 +1202,9 @@ export function buildBotSystemPrompt(input: BotTurnInput): { stable: string; vol
 
   prompt += `\n\nOperating rules:
 - You run unattended: NEVER ask the user questions or wait for confirmation. If a required input is missing, state the assumption you are proceeding with.
-- Actions you lack permission for are denied automatically (fail-closed). Do not attempt workarounds; report what you could not do.
+${input.approvals === 'ask'
+    ? '- Actions you lack permission for are denied automatically (fail-closed). Do not attempt workarounds; report what you could not do.'
+    : "- Outside your grants, Mercury decides at once, without the owner: what can be undone goes ahead (a file you overwrite is backed up first); what can't — deleting, force-pushing, discarding changes, publishing packages, sending email, dropping data, touching credentials or system files — is refused. Never look for a workaround to a refusal: find another way to reach the goal, or report what you couldn't do."}
 - Stay in your specialty; say so plainly when a request falls outside it.
 - Work, don't narrate: a run is judged by what it delivered or changed, not by what it wrote about itself. Do not write records, receipts, logs or status files about your own runs — Mercury keeps the journal.
 - Every step re-sends this whole conversation, so take fewer, bigger steps: make independent tool calls together in ONE step (several fetches, searches or reads at once), and don't re-read what you already have.

@@ -37,6 +37,8 @@ import { mergePathScopes } from './registry-factory.js';
 import { synthesizeSkill, MIN_TOOLS_FOR_SYNTHESIS } from './skill-synthesis.js';
 import { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
+import { audit } from '../security/audit.js';
+import { botApprovalMode, decideBotApproval } from './auto-approve.js';
 import { resolveToolPath, type CwdSource } from '../capabilities/filesystem/resolve-path.js';
 import type {
   BotLiveState,
@@ -633,16 +635,29 @@ export class BotManager {
   }
 
   /**
-   * A bot wants something outside its grants. The question goes to the
-   * owner's inbox (and their phone, if an alert channel is set up) and the run
-   * waits for the answer; no answer in `bots.approvalWaitMinutes` (default 10)
-   * is a no. "Always" goes into this bot's own permissions file, never the
-   * global one.
+   * A bot wants something outside its grants. In auto mode (the default,
+   * ADR-047) it's decided at once: what can be undone goes ahead (an
+   * overwritten file is backed up first), what can't is refused — the run
+   * never waits. In ask mode the question goes to the owner's inbox (and
+   * their phone, if an alert channel is set up) and the run waits for the
+   * answer; no answer in `bots.approvalWaitMinutes` (default 10) is a no.
+   * "Always" goes into this bot's own permissions file, never the global one.
    */
   private async askOwner(botId: string, prompt: string): Promise<string> {
     const manifest = this.store.get(botId);
     const runId = [...(this.running.get(botId) ?? [])][0];
     if (!manifest || !runId) return 'no';
+    if (botApprovalMode(manifest, this.config) === 'auto') {
+      const d = decideBotApproval(prompt, { cwd: this.store.sandboxDir(botId), backupDir: join(this.store.botDir(botId), 'backups') });
+      const what = prompt.split('\n')[0].slice(0, 100);
+      this.emitBotActivity({
+        botId, jobId: runId, kind: 'step', stepIndex: 0, elapsedMs: 0,
+        label: d.answer === 'yes' ? `Auto-approved: ${d.reason}` : `Refused (can't be undone): ${d.reason}`,
+      });
+      audit(d.answer === 'yes' ? 'bot.auto.allowed' : 'bot.auto.refused', { who: `bot:${botId}`, by: 'auto', detail: `${what} — ${d.reason}${d.backup ? ` (backup: ${d.backup})` : ''}` });
+      logger.info({ botId, runId, answer: d.answer, what, reason: d.reason, backup: d.backup }, 'Bot approval decided automatically');
+      return d.answer;
+    }
     const minutes = Math.max(1, Math.min(60, this.config.bots?.approvalWaitMinutes ?? 10));
     const { approval, answer } = this.approvals.ask({ botId, botName: manifest.name, runId, prompt }, minutes * 60_000);
     const what = prompt.split('\n')[0];
@@ -1397,6 +1412,7 @@ export class BotManager {
     return {
       input: {
         manifest,
+        approvals: botApprovalMode(manifest, this.config),
         trigger: job.trigger,
         prompt: job.prompt,
         attachments: job.attachments,

@@ -69,6 +69,8 @@ export interface BotScheduleConfig {
 }
 
 export interface BotAutonomyConfig {
+  /** This bot's answer to asks outside its grants; overrides config bots.approvals (ADR-047). */
+  approvals?: 'auto' | 'ask';
   maxConcurrent?: number;
   maxSteps?: number;
   /** Hard daily token cap. Exceeded → the bot pauses until the next day.
