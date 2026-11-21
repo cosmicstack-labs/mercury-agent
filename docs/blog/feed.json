@@ -27,7 +27,7 @@
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant",
             "title": "What Is a Personal AI Assistant? 10 Real Tasks in 2026",
-            "summary": "An AI personal assistant acts for one person across their accounts, files, apps and connected services. Here is what it is, ten tasks it can handle, and the permissions each one needs.",
+            "summary": "A personal AI assistant acts for one person across accounts, files, apps and services. What it is, ten tasks it handles, and the permissions each needs.",
             "date_modified": "2026-11-11T00:00:00.000Z",
             "author": {
                 "name": "Tashir Khan",
@@ -44,8 +44,8 @@
             "id": "https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work",
-            "title": "9 Safest, Most Secure, and Permission-Aware AI Agents for Real-World Tasks",
-            "summary": "Grok, ChatGPT Work, Mercury, OpenClaw, Manus, Gemini agent for work, Devin, Claude Cowork and Comet compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.",
+            "title": "9 AI Agents Compared for Real Work: Memory and Permissions",
+            "summary": "Nine AI agents compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.",
             "date_modified": "2026-11-05T00:00:00.000Z",
             "author": {
                 "name": "Tashir Khan",
@@ -113,7 +113,7 @@
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/running-an-agent-overnight",
             "title": "Running an agent overnight: what breaks first",
-            "summary": "We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.",
+            "summary": "We read Mercury's scheduler and budget code and reproduced one behaviour to find what fails in long unattended runs: skipped tasks and quiet errors.",
             "date_modified": "2026-10-27T00:00:00.000Z",
             "author": {
                 "name": "Tashir Khan",
@@ -144,8 +144,8 @@
             "id": "https://mercuryagent.sh/blog/mercury-1-4",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/mercury-1-4",
-            "title": "Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk",
-            "summary": "Mercury 1.4 adds isolated plugins and two official ones: WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.",
+            "title": "Mercury 1.4: plugins, WhatsApp calls, and Optimus",
+            "summary": "Mercury 1.4 adds isolated plugins, WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.",
             "date_modified": "2026-10-23T00:00:00.000Z",
             "author": {
                 "name": "Salman Qureshi",
@@ -161,8 +161,8 @@
             "id": "https://mercuryagent.sh/blog/ai-coding-verification-bottleneck",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/ai-coding-verification-bottleneck",
-            "title": "The new bottleneck in AI coding isn't code generation. It's verification.",
-            "summary": "A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.",
+            "title": "AI coding's bottleneck is verification, not generation",
+            "summary": "A Harvard working paper finds coding agents raised output while review time rose 49%. Why verification should decide whether an agent is useful.",
             "date_modified": "2026-10-20T00:00:00.000Z",
             "author": {
                 "name": "Tashir Khan",
@@ -194,7 +194,7 @@
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/mercury-bots",
             "title": "Mercury Bots: an agent fleet that runs on your machine",
-            "summary": "Always-on agents shipped everywhere this autumn. How Mercury Bots work, what we measured, how they compare with Grok Bot, OpenAI dots, Meta Muse, OpenClaw and Hermes Agent, and the commits behind it.",
+            "summary": "How Mercury Bots work, what we measured, how they compare with other always-on agents, and the commits behind them, as the work was done.",
             "date_modified": "2026-10-16T00:00:00.000Z",
             "author": {
                 "name": "Salman Qureshi",
@@ -211,7 +211,7 @@
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/the-wizard-that-quit-at-the-menu",
             "title": "The setup wizard that quit at the first menu",
-            "summary": "For six releases, a brand-new Mercury install asked for your name, showed one menu, and exited without an error. A walkthrough of a one-tick race between two readers of the same terminal, and the test that now keeps it from coming back.",
+            "summary": "A new Mercury install asked for your name, showed one menu, then quit with no error. How a one-tick race caused it, and the test that stops it returning.",
             "date_modified": "2026-10-15T00:00:00.000Z",
             "author": {
                 "name": "Mercury Engineering",
@@ -227,7 +227,7 @@
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/we-were-running-mercury-twice",
             "title": "We were running Mercury twice and didn't know it",
-            "summary": "Typing felt sluggish on every machine, and the terminal renderer took the blame. The real cause was a second full copy of the agent, started quietly by the launcher. How we found it, and why the fix was an architecture change rather than a performance tweak.",
+            "summary": "Typing felt sluggish everywhere. The cause was a second full copy of the agent, started quietly by the launcher. How we found it and fixed it.",
             "date_modified": "2026-10-14T00:00:00.000Z",
             "author": {
                 "name": "Salman Qureshi",
@@ -244,7 +244,7 @@
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/mercury-1-3",
             "title": "Mercury 1.3: an agent you can actually leave running",
-            "summary": "One background runtime that every terminal attaches to, bots that deliver real files and stay online, and a fleet you can run from Telegram. What changed in the 1.3 line and why.",
+            "summary": "Mercury 1.3's shared background runtime, bots that deliver real files and stay online, and a fleet you run from Telegram. What changed and why.",
             "date_modified": "2026-10-12T00:00:00.000Z",
             "author": {
                 "name": "Salman Qureshi",
@@ -261,7 +261,7 @@
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/asks-before-it-acts",
             "title": "Asks before it acts: how Mercury's permission model works",
-            "summary": "An agent with a shell, a file system and network access is only useful if you can trust what it will do with them. A tour of the layers between the model and your machine: scopes, approvals, a blocklist nothing can override, an SSRF guard, and tiers for unattended bots.",
+            "summary": "How Mercury's permission model works: scopes, approvals, a blocklist nothing overrides, an SSRF guard, and the limits that apply to unattended bots.",
             "date_modified": "2026-10-09T00:00:00.000Z",
             "author": {
                 "name": "Mercury Engineering",

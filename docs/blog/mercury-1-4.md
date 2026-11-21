@@ -1,6 +1,6 @@
-# Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk
+# Mercury 1.4: plugins, WhatsApp calls, and Optimus
 
-> Mercury 1.4 adds isolated plugins and two official ones: WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.
+> Mercury 1.4 adds isolated plugins, WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.
 
 Published 2026-10-23 by Salman Qureshi. Tags: news, releases, product.
 Canonical: https://mercuryagent.sh/blog/mercury-1-4

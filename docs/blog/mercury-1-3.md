@@ -1,6 +1,6 @@
 # Mercury 1.3: an agent you can actually leave running
 
-> One background runtime that every terminal attaches to, bots that deliver real files and stay online, and a fleet you can run from Telegram. What changed in the 1.3 line and why.
+> Mercury 1.3's shared background runtime, bots that deliver real files and stay online, and a fleet you run from Telegram. What changed and why.
 
 Published 2026-10-12 by Salman Qureshi. Tags: news, releases, runtime.
 Canonical: https://mercuryagent.sh/blog/mercury-1-3
