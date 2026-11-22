@@ -236,6 +236,19 @@ export function ownerTaskText(t: OwnerTask, now = Date.now()): string {
   return lines.join('\n');
 }
 
+const CHANNEL_NAMES: Record<string, string> = { telegram: 'Telegram', whatsapp: 'WhatsApp', signal: 'Signal', discord: 'Discord', slack: 'Slack', cli: 'the terminal', web: 'the app' };
+
+/** The follow-up every chat gets once a task is over, wherever it was answered. */
+export function ownerTaskSettledText(t: OwnerTask): string {
+  const by = t.answeredBy ? CHANNEL_NAMES[t.answeredBy] ?? t.answeredBy : ''; // a channel, or the app's device name ("Salman's iPhone")
+  switch (t.status) {
+    case 'answered': return `✅ ${t.code} answered${by ? ` on ${by}` : ''}: ${t.title}. Nothing more to do.`;
+    case 'declined': return `Skipped ${t.code}${by ? ` on ${by}` : ''}: ${t.title}.`;
+    case 'expired': return `⌛ ${t.code} expired: nobody answered in time (${t.title}).`;
+    default: return `${t.code} is no longer needed: ${t.title}.`;
+  }
+}
+
 let shared: OwnerTasks | null = null;
 export function ownerTasks(): OwnerTasks {
   shared ??= new OwnerTasks();

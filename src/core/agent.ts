@@ -17,7 +17,7 @@ import { ArtifactCollector } from '../artifacts/collector.js';
 import { artifactStore, type Artifact } from '../artifacts/store.js';
 import { chatFoldersFor, outputRoot, researchDir, type ChatFolders } from '../artifacts/output-dir.js';
 import { ownerApprovals } from '../security/owner-approvals.js';
-import { ownerTasks, ownerTaskText, parseOwnerTaskReply } from '../security/owner-tasks.js';
+import { ownerTasks, ownerTaskSettledText, ownerTaskText, parseOwnerTaskReply } from '../security/owner-tasks.js';
 import { reachService } from '../reach/service.js';
 import { approvalAnsweredText, approvalRequestText, isOwnerSender, newLocationText, parseApprovalReply } from '../security/approval-messages.js';
 import { audit } from '../security/audit.js';
@@ -1002,7 +1002,12 @@ export class Agent {
     ownerTasks().onChange((t, change) => {
       const web = this.channels.get('web');
       if (web instanceof WebChannel) web.sendOwnerTask(t, change);
-      if (change !== 'new') return;
+      if (change === 'settled') {
+        // Every chat that got the task hears it's over, so nobody answers a finished one.
+        const done = ownerTaskSettledText(t);
+        for (const ch of messaging()) void ch.send(done).catch((e) => logger.warn({ e, channel: ch.type }, 'Owner task: settle note failed'));
+        return;
+      }
       const text = ownerTaskText(t);
       for (const ch of messaging()) {
         void ch.send(text)

@@ -140,3 +140,15 @@ describe('owner task API', () => {
     delete process.env.MERCURY_HOME;
   });
 });
+
+describe('ownerTaskSettledText', () => {
+  it('tells every chat how the task ended, and where', async () => {
+    const { ownerTaskSettledText } = await import('./owner-tasks.js');
+    const base = { id: 'x', code: 'K7Q2M', title: 'Solve this CAPTCHA', prompt: 'p', who: 'Mercury', answerKind: 'text' as const, at: 0, expiresAt: 1 };
+    expect(ownerTaskSettledText({ ...base, status: 'answered', answeredBy: 'telegram' })).toBe('✅ K7Q2M answered on Telegram: Solve this CAPTCHA. Nothing more to do.');
+    expect(ownerTaskSettledText({ ...base, status: 'answered', answeredBy: "Salman's iPhone" })).toContain("on Salman's iPhone");
+    expect(ownerTaskSettledText({ ...base, status: 'declined', answeredBy: 'whatsapp' })).toBe('Skipped K7Q2M on WhatsApp: Solve this CAPTCHA.');
+    expect(ownerTaskSettledText({ ...base, status: 'expired', answeredBy: 'timeout' })).toContain('nobody answered in time');
+    expect(ownerTaskSettledText({ ...base, status: 'cancelled', answeredBy: 'asker' })).toContain('no longer needed');
+  });
+});
