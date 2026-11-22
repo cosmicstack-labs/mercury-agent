@@ -17,7 +17,7 @@ import { sessionCount } from '../auth.js';
  * owner can ask how its own question stands.
  *
  *   GET    /api/security/status                  settings, devices, waiting questions, last remote request, check
- *   PUT    /api/security/remote                  { enabled?, allowIps?, allowShell?, maxDevices?, idleDays? }
+ *   PUT    /api/security/remote                  { enabled?, allowIps?, allowShell?, maxDevices?, idleDays?, passwordSignIn? }
  *   GET    /api/security/approvals               questions waiting for the owner
  *   POST   /api/security/approvals/:id           { decision: "allow" | "deny" } (id or code)
  *   GET    /api/security/approvals/:id/status    the asking device's own question
@@ -60,6 +60,7 @@ security.put('/api/security/remote', async (c) => {
   if (typeof body.allowShell === 'boolean') patch.allowShell = body.allowShell;
   if (typeof body.maxDevices === 'number') patch.maxDevices = body.maxDevices;
   if (typeof body.idleDays === 'number') patch.idleDays = body.idleDays;
+  if (typeof body.passwordSignIn === 'boolean') patch.passwordSignIn = body.passwordSignIn;
   if (Array.isArray(body.allowIps)) {
     const bad = body.allowIps.find((r) => !parseIpRule(String(r)));
     if (bad !== undefined) return c.json({ error: `“${bad}” is not an address or range (e.g. 203.0.113.7 or 100.64.0.0/10).` }, 400);

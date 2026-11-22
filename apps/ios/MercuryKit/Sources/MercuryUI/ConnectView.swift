@@ -36,13 +36,13 @@ private struct Welcome: View {
         Text("Mercury runs on your computer or a server. This app is how you reach it from anywhere.")
           .font(.system(size: 15)).foregroundStyle(Theme.ink2).multilineTextAlignment(.center).frame(maxWidth: 300)
       }
-      Button { model.step = .signIn } label: {
+      Button { model.step = .token } label: {
         HStack(alignment: .top, spacing: 14) {
           Image(systemName: "desktopcomputer").font(.system(size: 18)).foregroundStyle(Theme.accent)
             .frame(width: 40, height: 40).background(Theme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
           VStack(alignment: .leading, spacing: 4) {
             Text("Your own Mercury").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.ink)
-            Text("On your computer or a server. Sign in, then approve this phone with a short code.")
+            Text("On your computer or a server. Make a device token there, then paste it here.")
               .font(.system(size: 14)).foregroundStyle(Theme.ink2).multilineTextAlignment(.leading)
           }
           Spacer(minLength: 0)
@@ -55,8 +55,8 @@ private struct Welcome: View {
       .buttonStyle(.plain)
       Spacer()
       VStack(spacing: 12) {
-        Button("Sign in to your Mercury") { model.step = .signIn }.buttonStyle(PrimaryButtonStyle())
-        Button("I have a device token") { model.step = .token }
+        Button("Connect with a device token") { model.step = .token }.buttonStyle(PrimaryButtonStyle())
+        Button("Sign in with a password") { model.step = .signIn }
           .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.accent).frame(minHeight: 44)
       }
     }
@@ -78,7 +78,7 @@ private struct SignIn: View {
       VStack(alignment: .leading, spacing: 18) {
         BackButton { model.step = .welcome }
         Text("Sign in to your Mercury").font(.system(size: 26, weight: .bold)).tracking(-0.4)
-        Text("Use the address you reach Mercury at, and the username and password you set for it.")
+        Text("Use the address you reach Mercury at, and the username and password you set for it. This works only if password sign-in is on for your Mercury (/server password on); it's off by default.")
           .font(.system(size: 15)).foregroundStyle(Theme.ink2)
         Field(label: "Address") {
           TextField("mercury.example.com", text: $model.address)
@@ -121,7 +121,7 @@ private struct PasteToken: View {
     VStack(alignment: .leading, spacing: 18) {
       BackButton { model.step = .welcome }
       Text("Connect with a token").font(.system(size: 26, weight: .bold)).tracking(-0.4)
-      Text("Paste a device token (it starts with mdt_) made for this phone on your Mercury.")
+      Text("On the computer Mercury runs on, type /server token <phone name> (or run mercury devices add <name>), then paste the token here. It starts with mdt_.")
         .font(.system(size: 15)).foregroundStyle(Theme.ink2)
       Field(label: "Address") {
         TextField("mercury.example.com", text: $model.address).autocorrectionDisabled()

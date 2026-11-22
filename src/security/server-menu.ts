@@ -69,6 +69,7 @@ export function statusText(s: ServerStatus): string {
     `**Remote access** ${r.enabled ? 'on' : 'off'}${r.enabled ? (r.allowIps.length ? ` · only from ${r.allowIps.join(', ')}` : ' · from any address') : ''}`,
     `**Devices** ${s.devices.length} of ${r.maxDevices}${r.idleDays ? ` · unused ones expire after ${r.idleDays} days` : ' · never expire'}`,
     ...s.devices.map((d) => `  · ${deviceLine(d)}`),
+    `**Password sign-in** ${r.passwordSignIn ? 'on (other devices may sign in with the password; you still approve each one)' : 'off (devices connect with a device token)'}`,
     `**Remote terminal** ${r.allowShell ? 'on (each command asks you)' : 'off'}`,
     `**Approvals reach you on** ${s.approvalRoutes.join(', ')}`,
     s.lastRemote ? `**Last remote request** ${ago(new Date(s.lastRemote.at).toISOString())}${s.lastRemote.proxied ? ' through a tunnel' : ''}${s.lastRemote.clientIpKnown ? ` from ${s.lastRemote.ip}` : ' (the tunnel did not say from where)'}` : '**Last remote request** none since Mercury started',
@@ -169,6 +170,14 @@ export async function runServerCommand(args: string, ops: ServerOps, ui: ServerU
       await ui.say(arg === 'on' ? 'Remote devices may use the terminal; each command asks you first.' : 'The terminal is off for remote devices.');
       return true;
     }
+    case 'password': {
+      if (arg !== 'on' && arg !== 'off') { await ui.say('Usage: /server password on|off'); return true; }
+      await ops.setRemote({ passwordSignIn: arg === 'on' });
+      await ui.say(arg === 'on'
+        ? 'Other devices may sign in with the username and password again (you still approve each new one). Turn it off with /server password off.'
+        : 'Password sign-in is off for other devices. They connect with a device token: /server token <name>.');
+      return true;
+    }
     case 'expire': {
       const days = arg === 'never' ? 0 : Number(arg);
       if (!Number.isFinite(days) || days < 0) { await ui.say('Usage: /server expire <days> | never'); return true; }
@@ -204,6 +213,7 @@ export const SERVER_HELP = [
   '  /server devices         paired devices · /server revoke <id|name> · /server revoke-all',
   '  /server token <name>    make a token for a device by hand (shown once)',
   '  /server allow-ip <ip|range> · remove-ip <ip|range> · allow-any',
+  '  /server password on|off sign-in with the password from other devices (off: device tokens only)',
   '  /server shell on|off    the terminal for remote devices (each command still asks you)',
   '  /server expire <days>|never · /server limit <n>',
   '  /server check           the security check · /server log  the security log',
@@ -219,6 +229,7 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
       { value: 'devices', label: `Devices (${s.devices.length})` },
       { value: 'toggle', label: r.enabled ? 'Turn remote access off' : 'Turn remote access on' },
       { value: 'ips', label: `Allowed addresses: ${r.allowIps.length ? r.allowIps.join(', ') : 'any'}` },
+      { value: 'password', label: `Password sign-in from other devices: ${r.passwordSignIn ? 'on' : 'off'}` },
       { value: 'shell', label: `Terminal for remote devices: ${r.allowShell ? 'on' : 'off'}` },
       { value: 'check', label: `Security check: ${s.check.summary}` },
       { value: 'log', label: 'Security log' },
@@ -230,6 +241,14 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
     if (pick === 'toggle') await runServerCommand(r.enabled ? 'off' : 'on', ops, ui);
     if (pick === 'check') await ui.say(findingsText(s.check.findings));
     if (pick === 'log') await ui.say(auditText(await ops.audit(20)));
+    if (pick === 'password') {
+      const v = await ui.choose('Password sign-in from other devices', [
+        { value: 'off', label: `Off${!r.passwordSignIn ? ' (now)' : ''} — devices connect with a device token made here` },
+        { value: 'on', label: `On${r.passwordSignIn ? ' (now)' : ''} — the apps may also sign in with the username and password` },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (v === 'on' || v === 'off') await runServerCommand(`password ${v}`, ops, ui);
+    }
     if (pick === 'shell') {
       const v = await ui.choose('The terminal for remote devices', [
         { value: 'off', label: `Off${!r.allowShell ? ' (now)' : ''} — remote devices can't run commands` },

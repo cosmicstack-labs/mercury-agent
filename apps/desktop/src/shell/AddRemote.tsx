@@ -9,10 +9,11 @@ import { desktop } from "./tauri";
 import { newConnectionId, useConnections } from "./connections";
 
 /**
- * Pair with a runtime that is not on this computer: sign in with the
- * dashboard password (the runtime mints a device token for this app), or
- * paste a token made there with `mercury devices add`. Only the token is
- * kept, in the OS keychain.
+ * Pair with a runtime that is not on this computer: paste a device token
+ * made there (`/server token <name>`, `mercury devices add`), or — when its
+ * owner turned password sign-in on (`/server password on`; off by default) —
+ * sign in with the password and the runtime mints a token for this app.
+ * Only the token is kept, in the OS keychain.
  */
 /** Another machine over plain http (a tailnet address is encrypted by the VPN itself). */
 export function insecureRemote(baseUrl: string): boolean {
@@ -29,7 +30,7 @@ export function insecureRemote(baseUrl: string): boolean {
 }
 
 export function AddRemote({ onAdded }: { onAdded: () => void }) {
-  const [mode, setMode] = useState<"password" | "token">("password");
+  const [mode, setMode] = useState<"password" | "token">("token");
   const [url, setUrl] = useState("");
   const [username, setUsername] = useState("mercury");
   const [password, setPassword] = useState("");
@@ -130,14 +131,15 @@ export function AddRemote({ onAdded }: { onAdded: () => void }) {
       <Field label="Address" htmlFor="remote-url">
         <Input id="remote-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://mercury.tail1234.ts.net" mono />
       </Field>
-      <Segmented value={mode} onChange={setMode} options={[{ value: "password", label: "Sign in" }, { value: "token", label: "Device token" }]} />
+      <Segmented value={mode} onChange={setMode} options={[{ value: "token", label: "Device token" }, { value: "password", label: "Password" }]} />
       {mode === "password" ? (
         <>
+          <p className="text-xs text-ink3">Works only if that Mercury's owner turned password sign-in on (/server password on). It's off by default.</p>
           <Field label="Username" htmlFor="remote-user"><Input id="remote-user" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" /></Field>
           <Field label="Password" htmlFor="remote-pass"><Input id="remote-pass" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></Field>
         </>
       ) : (
-        <Field label="Device token" htmlFor="remote-token" hint="Made on that machine with: /server token <name>  (or mercury devices add)">
+        <Field label="Device token" htmlFor="remote-token" hint="Make one on that machine: /server token <name>  (or mercury devices add <name>)">
           <Input id="remote-token" type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" mono />
         </Field>
       )}

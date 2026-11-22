@@ -99,8 +99,8 @@ describe('remote access switch and allow-list', () => {
   });
 
   it('keeps settings sane whatever is in the file', () => {
-    writeFileSync(join(home, 'remote.json'), JSON.stringify({ enabled: 'yes', allowIps: ['1.2.3.4', 'nonsense', '10.0.0.0/8'], maxDevices: 9999, idleDays: -5 }));
-    expect(readRemoteSettings()).toEqual({ enabled: true, allowIps: ['1.2.3.4', '10.0.0.0/8'], allowShell: false, maxDevices: 200, idleDays: 0 });
+    writeFileSync(join(home, 'remote.json'), JSON.stringify({ enabled: 'yes', allowIps: ['1.2.3.4', 'nonsense', '10.0.0.0/8'], maxDevices: 9999, idleDays: -5, passwordSignIn: 'yes' }));
+    expect(readRemoteSettings()).toEqual({ enabled: true, allowIps: ['1.2.3.4', '10.0.0.0/8'], allowShell: false, maxDevices: 200, idleDays: 0, passwordSignIn: false });
     writeFileSync(join(home, 'remote.json'), '{ broken');
     expect(readRemoteSettings().enabled).toBe(true);
   });
