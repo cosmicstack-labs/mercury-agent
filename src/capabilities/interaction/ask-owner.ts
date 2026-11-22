@@ -1,7 +1,7 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, isAbsolute, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, resolve } from 'node:path';
 import type { PermissionManager } from '../permissions.js';
 import { OWNER_TASK_MAX_MEDIA_BYTES, ownerTasks, type OwnerTaskResult } from '../../security/owner-tasks.js';
 
@@ -48,7 +48,7 @@ export function createAskOwnerTool(deps: { permissions: PermissionManager; cwd: 
         const type = MEDIA_TYPES[extname(path).toLowerCase()];
         if (!type) return 'Not sent: attach an image (png, jpg, gif, webp) or audio (mp3, wav, ogg, webm, m4a).';
         const access = await deps.permissions.checkFsAccess(path, 'read');
-        if (!access.allowed) return `Not sent: ${access.reason ?? `no read access to ${file}`}`;
+        if (!access.allowed) return `Not sent: ${access.reason ?? `no read access to ${file}`}. Ask for access with approve_scope (path="${dirname(path)}", mode="read"), or copy the file into the working folder, then try again.`;
         const info = await stat(path).catch(() => null);
         if (!info?.isFile()) return `Not sent: ${file} doesn't exist.`;
         if (info.size > OWNER_TASK_MAX_MEDIA_BYTES) return `Not sent: ${file} is larger than ${OWNER_TASK_MAX_MEDIA_BYTES / 1048576} MB.`;

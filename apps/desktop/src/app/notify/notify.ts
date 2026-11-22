@@ -276,6 +276,15 @@ export function useNotifications(enabled: boolean): void {
           } catch { /* ignore a bad line */ }
           return;
         }
+        if (event === "owner_task") {
+          // Something only the owner can do (a CAPTCHA, a code): sent to every connected app.
+          try {
+            const data = JSON.parse(raw) as Record<string, unknown>;
+            void import("~/components/OwnerTasks").then(({ onOwnerTaskEvent }) => onOwnerTaskEvent(data));
+            if (data.change === "new" && !windowFocused()) tell("needs", "owner-task", `${String(data.who ?? "Mercury")} needs you`, `${String(data.title ?? "")} · code ${String(data.code ?? "")}`);
+          } catch { /* ignore a bad line */ }
+          return;
+        }
         if (event !== "activity") return;
         try { handleActivity(JSON.parse(raw) as ActivityEvent); } catch { /* ignore a bad line */ }
       },

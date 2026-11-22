@@ -25,6 +25,7 @@ import { CallLayer } from "~/views/call/Call";
 import { useNotifications } from "~/app/notify/notify";
 import { Alerts } from "~/components/Alerts";
 import { OwnerApprovalCards, WaitingForOwner } from "~/components/OwnerApprovals";
+import { OwnerTaskCards } from "~/components/OwnerTasks";
 
 registerBuiltinStatusItems();
 
@@ -74,6 +75,7 @@ export function Workspace({ connection, health, onSwitchConnection }: { connecti
       <Alerts />
       <WaitingForOwner />
       <OwnerApprovalCards local={localConnection} />
+      <OwnerTaskCards connectionId={connection.id} />
     </div>
   );
 }

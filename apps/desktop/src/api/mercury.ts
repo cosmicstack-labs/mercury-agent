@@ -8,7 +8,7 @@ import type { ChatEffort, ImageIntent, MediaModelsResponse, TurnsInfo, VoiceRepl
 import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
   BotActivityEvent, BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
-  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, PluginItem, ReasoningChoice, Skill, DeviceSummary,
+  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, OwnerTask, PluginItem, ReasoningChoice, Skill, DeviceSummary,
 } from "./types";
 
 export const health = {
@@ -59,6 +59,13 @@ export const auth = {
   devices: () => http.get<{ devices: DeviceSummary[]; current: string | null }>("/api/auth/devices"),
   revokeDevice: (id: string) => http.delete<{ success: boolean }>(`/api/auth/devices/${encodeURIComponent(id)}`),
   revokeSelf: () => http.post<{ success: boolean }>("/api/auth/token/revoke"),
+};
+
+/** Owner tasks (ADR-048): what only the owner can do, answered from any of their apps. */
+export const ownerTasks = {
+  pending: () => http.get<{ pending: OwnerTask[] }>("/api/owner/tasks").then((r) => r.pending),
+  answer: (id: string, answer: string) => http.post<{ task: OwnerTask }>(`/api/owner/tasks/${encodeURIComponent(id)}`, { answer }),
+  decline: (id: string) => http.post<{ task: OwnerTask }>(`/api/owner/tasks/${encodeURIComponent(id)}`, { decline: true }),
 };
 
 /** The owner's security questions, on the runtime's own computer. */
