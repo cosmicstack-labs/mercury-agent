@@ -56,6 +56,9 @@ final class Notifier {
         // Mercury ringing or notifying this phone (ADR-046) comes on the same stream.
         if e.name != "activity" {
           if let r = ReachEvent.parse(name: e.name, data: e.data) { PhoneRinger.shared.handle(r) }
+          // So does what only the owner can do (ADR-048). Mercury also sends the phone a `notify`
+          // for each new task, so nothing more is posted here.
+          else if let t = OwnerTaskEvent.parse(name: e.name, data: e.data) { OwnerTasksModel.shared.apply(t) }
           continue
         }
         guard let data = e.data.data(using: .utf8), let a = try? JSONDecoder().decode(ActivityEvent.self, from: data) else { continue }
@@ -123,8 +126,13 @@ final class Notifier {
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-      let id = response.notification.request.content.userInfo["sessionId"] as? String
-      await MainActor.run { Notifier.shared.open = id }
+      let content = response.notification.request.content
+      let id = content.userInfo["sessionId"] as? String
+      // Mercury's notification for an owner task carries no chat: it opens the task instead.
+      let task = id == nil && OwnerTasksModel.isTaskNotice(title: content.title, body: content.body)
+      await MainActor.run {
+        if task { OwnerTasksModel.shared.show() } else { Notifier.shared.open = id }
+      }
     }
   }
 }

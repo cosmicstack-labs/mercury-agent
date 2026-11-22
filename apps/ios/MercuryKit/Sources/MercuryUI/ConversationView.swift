@@ -131,9 +131,10 @@ struct ConversationView: View {
           VStack(spacing: 8) {
             if let plan = model.plan { PlanCard(plan: plan, busy: model.busy, threadId: model.threadId) }
             if !model.prompts.isEmpty { NeedsYouCard(prompts: model.prompts) { p, v in await model.answer(p, v) } }
+            OwnerTasksRow(model: OwnerTasksModel.shared)
           }
           .padding(.horizontal, 16)
-          .padding(.top, model.plan != nil || !model.prompts.isEmpty ? 6 : 0)
+          .padding(.top, model.plan != nil || !model.prompts.isEmpty || OwnerTasksModel.shared.waitingInChat ? 6 : 0)
           .animation(.snappy, value: model.prompts.map(\.id))
           Composer(model: model, focus: $composing, onCall: startCall)
         }

@@ -23,6 +23,7 @@ struct MainView: View {
   @State var adding = false
   @State var quickActions = HomeScreenActions.shared
   @State var ringer = PhoneRinger.shared
+  @State var ownerTasks = OwnerTasksModel.shared
   @Environment(\.scenePhase) var scenePhase
 
   enum Route: Hashable { case bots, artifacts, brain, settings }
@@ -107,6 +108,12 @@ struct MainView: View {
       )
     }
     .sheet(isPresented: $adding) { ConnectView(store: store) }
+    // What only the owner can do (ADR-048): up over whatever is on screen when one arrives.
+    .sheet(isPresented: Binding(get: { ownerTasks.presented && !ownerTasks.live.isEmpty && !adding },
+                                set: { if !$0 { ownerTasks.presented = false } })) {
+      OwnerTasksSheet(model: ownerTasks)
+    }
+    .task(id: connection.id) { await ownerTasks.connect(store.client(for: connection), scope: connection.id) }
     .onChange(of: store.connections.count) { adding = false }
     .onChange(of: path.count) { dismissKeyboard() }
     .task { await chats.load(); chats.listen() }
@@ -122,7 +129,7 @@ struct MainView: View {
     .task(id: connection.id) { notifier.start(store.client(for: connection)) }
     // Mercury can ring and notify this phone (ADR-046): tell it how, and show what was missed.
     .task(id: connection.id) { await ringer.connect(store.client(for: connection)) }
-    .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await ringer.catchUp() } } }
+    .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await ringer.catchUp(); await ownerTasks.refresh() } } }
     // Mercury rang and the owner answered: the call starts here, and Mercury says why it called.
     .onChange(of: ringer.answered, initial: true) { _, invite in
       guard let invite else { return }
