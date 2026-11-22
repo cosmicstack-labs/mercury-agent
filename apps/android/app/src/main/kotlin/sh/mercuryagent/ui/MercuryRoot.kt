@@ -8,6 +8,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
@@ -55,6 +58,7 @@ import sh.mercuryagent.ui.media.LocalMediaLoader
 import sh.mercuryagent.ui.media.MediaLoader
 import sh.mercuryagent.ui.more.SettingsNav
 import sh.mercuryagent.ui.more.settingsGraph
+import sh.mercuryagent.ui.owner.OwnerTaskCards
 
 // Routes (type-safe Navigation Compose). The app is one chat at a time with a drawer, as in the
 // ChatGPT and Grok apps; Bots, Artifacts, Brain and Settings open over it and back returns to the chat.
@@ -131,7 +135,8 @@ private fun Home(container: AppContainer, connection: Connection) {
   LaunchedEffect(container) {
     container.openChat.collect { key ->
       drawer.close()
-      if (key.startsWith("bot:")) nav.navigate(BotsRoute) else nav.openChat(key)
+      // An owner task's card is on every screen: opening the app is enough.
+      if (key.startsWith("bot:")) nav.navigate(BotsRoute) else if (!key.startsWith("task:")) nav.openChat(key)
     }
   }
 
@@ -209,6 +214,7 @@ private fun Home(container: AppContainer, connection: Connection) {
               onNewChat = { nav.openChat(null) },
               onDeleted = { nav.openChat(null) },
               onVoiceSettings = { nav.navigate(SettingsNav.Voice) },
+              ownerTasks = { OwnerTaskCards(container.ownerTasks, client) },
             )
           }
           composable<BotsRoute> {
@@ -244,6 +250,13 @@ private fun Home(container: AppContainer, connection: Connection) {
             ConnectScreen(vm, onClose = { nav.popBackStack() })
           }
         }
+      }
+      // Owner tasks (ADR-048) on the screens without a message box; a chat pins them above its own.
+      if (!onChat) {
+        OwnerTaskCards(
+          container.ownerTasks, client,
+          Modifier.align(androidx.compose.ui.Alignment.BottomCenter).imePadding().navigationBarsPadding().padding(12.dp),
+        )
       }
       // A voice call covers everything until it's closed (back leaves it running in the background).
       container.calls.current?.let { call ->

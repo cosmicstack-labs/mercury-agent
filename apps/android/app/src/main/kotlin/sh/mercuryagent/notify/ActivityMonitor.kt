@@ -45,6 +45,8 @@ class ActivityMonitor(
 
   /** Mercury ringing or notifying this phone (ADR-046): `ring`, `ring_end`, `notify` on the activity stream. */
   var onReach: (sh.mercuryagent.core.ReachEvent) -> Unit = {}
+  /** Owner tasks (ADR-048): `owner_task` on the activity stream, a new one or one settled anywhere. */
+  var onOwnerTask: (sh.mercuryagent.core.OwnerTaskEvent) -> Unit = {}
   /** The streams (re)opened to this Mercury: register this phone and catch up on what it missed. */
   var onStreamsStarted: (sh.mercuryagent.core.MercuryClient) -> Unit = {}
 
@@ -94,6 +96,8 @@ class ActivityMonitor(
         client.events("/api/chat/activity").collect { e ->
           if (e.name != "activity") {
             sh.mercuryagent.core.ReachEvent.parse(e.name, e.data)?.let(onReach)
+            // Its notification comes as a reach `notify` (Notifier.postReach); the card takes it from here.
+            sh.mercuryagent.core.OwnerTaskEvent.parse(e.name, e.data)?.let(onOwnerTask)
             return@collect
           }
           val a = runCatching { MercuryJson.decodeFromString(ActivityEvent.serializer(), e.data) }.getOrNull() ?: return@collect

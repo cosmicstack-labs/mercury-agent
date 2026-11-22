@@ -119,6 +119,8 @@ fun ConversationScreen(
   onDeleted: () -> Unit,
   /** Settings → Voice (from the model picker). */
   onVoiceSettings: () -> Unit = {},
+  /** Owner tasks (ADR-048: a CAPTCHA, a code), pinned above the message box with "Needs you". */
+  ownerTasks: @Composable () -> Unit = {},
 ) {
   val ui by vm.ui.collectAsStateWithLifecycle()
   val welcome by vm.welcome.collectAsStateWithLifecycle()
@@ -274,6 +276,7 @@ fun ConversationScreen(
       Column(Modifier.imePadding().navigationBarsPadding()) {
         Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
           ui.plan?.let { PlanCard(it, ui.busy, ui.threadId) }
+          ownerTasks()
           NeedsYouCard(ui.prompts, answer = { p, v -> vm.answer(p, v) })
         }
         Composer(

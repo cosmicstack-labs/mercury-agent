@@ -7,12 +7,15 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import sh.mercuryagent.core.ConnectionStore
 import sh.mercuryagent.core.KeystoreSecretStore
 import sh.mercuryagent.core.PrefsKeyValueStore
 import sh.mercuryagent.core.ackMissed
 import sh.mercuryagent.core.missed
+import sh.mercuryagent.core.ownerTasks
 import sh.mercuryagent.core.registerReach
 import sh.mercuryagent.core.reportRing
 import kotlinx.coroutines.launch
@@ -37,6 +40,8 @@ class AppContainer(context: Context) {
   val notifier = sh.mercuryagent.notify.Notifier(app)
   val notifyPrefs = sh.mercuryagent.notify.NotifyPrefsStore(app)
   val monitor = sh.mercuryagent.notify.ActivityMonitor(app, connections, notifyPrefs, notifier, scope)
+  /** Owner tasks waiting on the active Mercury (ADR-048): CAPTCHAs, codes, steps only the owner can do. */
+  val ownerTasks = sh.mercuryagent.ui.owner.OwnerTaskStore()
   /** Voice calls (one at a time) and each Mercury's voice capabilities. */
   val calls = sh.mercuryagent.call.CallManager(app)
 
@@ -78,6 +83,10 @@ class AppContainer(context: Context) {
 
   /** The streams opened: tell Mercury how to reach this phone, and show what it missed. */
   private fun reachConnected(c: sh.mercuryagent.core.MercuryClient) {
+    // Owner tasks already waiting (the stream only tells what changes after it opens).
+    scope.launch {
+      runCatching { c.ownerTasks() }.onSuccess { ownerTasks.replace(it) }
+    }
     scope.launch {
       registerReach(c)
       val items = runCatching { c.missed() }.getOrNull() ?: return@launch
@@ -111,6 +120,11 @@ class AppContainer(context: Context) {
     ringTelecom.callRunning = { calls.running }
     monitor.onReach = { ringer.handle(it) }
     monitor.onStreamsStarted = { reachConnected(it) }
+    monitor.onOwnerTask = { ownerTasks.apply(it) }
+    // Another Mercury: the last one's tasks aren't this one's.
+    scope.launch {
+      connections.state.map { it.active?.id }.distinctUntilChanged().collect { ownerTasks.clear() }
+    }
   }
 
   private fun openApp() {

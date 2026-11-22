@@ -24,7 +24,7 @@ import sh.mercuryagent.R
  * Android's side of notifications: one channel per kind, so each can be tuned in the system's
  * settings ("Needs you" is urgent and pops up; "Finished" and "Failed" are normal), one
  * notification per chat that updates in place (the launcher's badge counts them), and a tap opens
- * that chat (mercury://chat/<id>) or the bots.
+ * that chat (mercury://chat/<id>), the bots, or the app where an owner task's card waits.
  */
 class Notifier(private val context: Context) {
   private val manager = NotificationManagerCompat.from(context)
@@ -69,7 +69,10 @@ class Notifier(private val context: Context) {
 
   fun cancel(key: String) = manager.cancel(key, ID)
 
-  /** A notification Mercury sent this phone (ADR-046), or a missed call; a tap opens its chat when it has one. */
+  /**
+   * A notification Mercury sent this phone (ADR-046), or a missed call; a tap opens its chat when it
+   * has one, or the owner-task card when it is one (Mercury sends every owner task this way).
+   */
   fun postReach(n: sh.mercuryagent.core.ReachNotice) {
     if (!canPost) return
     val b = NotificationCompat.Builder(context, CH_MERCURY)
@@ -79,7 +82,8 @@ class Notifier(private val context: Context) {
       .setStyle(NotificationCompat.BigTextStyle().bigText(n.body))
       .setAutoCancel(true)
       .setSilent(n.silent)
-      .setContentIntent(openIntent(context, n.threadId))
+      // An owner task's (ADR-048): a tap opens the app, where its card waits, not a chat.
+      .setContentIntent(openIntent(context, sh.mercuryagent.core.ownerTaskCode(n.title, n.body)?.let { "task:$it" } ?: n.threadId))
       .setCategory(if (n.kind == "missed-call") NotificationCompat.CATEGORY_MISSED_CALL else if (n.kind == "alert") NotificationCompat.CATEGORY_ALARM else NotificationCompat.CATEGORY_MESSAGE)
       .setPriority(if (n.urgency == "high" || n.urgency == "critical") NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
     try { manager.notify(n.id, ID, b.build()) } catch (_: SecurityException) { /* permission revoked meanwhile */ }
@@ -110,7 +114,7 @@ class Notifier(private val context: Context) {
     const val ID = 1
     const val EXTRA_KEY = "sh.mercuryagent.KEY"
 
-    /** Opens the chat ([key] a thread id) or the bots ("bot:<id>"); null just opens the app. */
+    /** Opens the chat ([key] a thread id), the bots ("bot:<id>") or an owner task ("task:<id>"); null just opens the app. */
     fun openIntent(context: Context, key: String?): PendingIntent {
       val i = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_VIEW)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -118,14 +122,17 @@ class Notifier(private val context: Context) {
       return PendingIntent.getActivity(context, key?.hashCode() ?: 0, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
-    fun deepLink(key: String): String =
-      if (key.startsWith("bot:")) "mercury://bot/${Uri.encode(key.removePrefix("bot:"))}" else "mercury://chat/${Uri.encode(key)}"
+    fun deepLink(key: String): String = when {
+      key.startsWith("bot:") -> "mercury://bot/${Uri.encode(key.removePrefix("bot:"))}"
+      key.startsWith("task:") -> "mercury://task/${Uri.encode(key.removePrefix("task:"))}"
+      else -> "mercury://chat/${Uri.encode(key)}"
+    }
 
-    /** mercury://chat/<id> → the id; mercury://bot/<id> → "bot:<id>". */
+    /** mercury://chat/<id> → the id; mercury://bot/<id> → "bot:<id>"; mercury://task/<id> → "task:<id>". */
     fun keyOf(uri: Uri?): String? {
       if (uri?.scheme != "mercury") return null
       val id = uri.pathSegments.firstOrNull()?.takeIf { it.isNotEmpty() } ?: return null
-      return when (uri.host) { "chat" -> id; "bot" -> "bot:$id"; else -> null }
+      return when (uri.host) { "chat" -> id; "bot" -> "bot:$id"; "task" -> "task:$id"; else -> null }
     }
   }
 }
