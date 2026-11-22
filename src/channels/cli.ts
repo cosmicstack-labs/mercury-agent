@@ -2006,15 +2006,16 @@ export class CLIChannel extends BaseChannel {
 
   showPrompt(): void {}
 
-  async withMenu<T>(runner: (select: (title: string, options: Array<{ value: string; label: string }>) => Promise<string>) => Promise<T>): Promise<T | undefined> {
+  async withMenu<T>(runner: (select: (title: string, options: Array<{ value: string; label: string }>) => Promise<string>, input: (title: string, helperText?: string) => Promise<string>) => Promise<T>): Promise<T | undefined> {
     this.menuDepth += 1;
-    const { selectWithArrowKeys } = await import('../utils/arrow-select.js');
+    const { selectWithArrowKeys, inputWithKeys } = await import('../utils/arrow-select.js');
     this.menuAbortController = new AbortController();
 
     try {
-      return await runner((title, options) => selectWithArrowKeys(title, options, {
-        signal: this.menuAbortController?.signal,
-      }));
+      return await runner(
+        (title, options) => selectWithArrowKeys(title, options, { signal: this.menuAbortController?.signal }),
+        (title, helperText) => inputWithKeys(title, { helperText, signal: this.menuAbortController?.signal }),
+      );
     } catch (error) {
       if (error instanceof Error && error.name === 'ArrowSelectCancelledError') {
         return undefined;

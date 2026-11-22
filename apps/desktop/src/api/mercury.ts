@@ -68,6 +68,28 @@ export const ownerTasks = {
   decline: (id: string) => http.post<{ task: OwnerTask }>(`/api/owner/tasks/${encodeURIComponent(id)}`, { decline: true }),
 };
 
+export interface RemoteSettings { enabled: boolean; allowIps: string[]; allowShell: boolean; maxDevices: number; idleDays: number; passwordSignIn: boolean }
+export interface SecurityFinding { level: "ok" | "info" | "warn" | "risk"; title: string; detail?: string; fix?: string }
+export interface PairedDevice { id: string; name: string; platform: string; createdAt: string; lastSeenAt: string | null; lastIp?: string; approvedBy?: string; expiresAt?: string | null }
+export interface SecurityStatus {
+  remote: RemoteSettings;
+  devices: PairedDevice[];
+  browsers: number;
+  pending: OwnerApproval[];
+  approvalRoutes: string[];
+  lastRemote: { at: number; proxied: boolean; clientIpKnown: boolean; ip: string } | null;
+  check: { summary: string; findings: SecurityFinding[] };
+}
+
+/** Remote access and its security (/server), on the runtime's own computer only. */
+export const server = {
+  status: () => http.get<SecurityStatus>("/api/security/status"),
+  setRemote: (patch: Partial<RemoteSettings>) => http.put<unknown>("/api/security/remote", patch),
+  createDevice: (name: string) => http.post<{ token: string; device: PairedDevice }>("/api/security/devices", { name, platform: "manual" }),
+  revokeDevice: (id: string) => http.delete<{ success: boolean }>(`/api/security/devices/${encodeURIComponent(id)}`),
+  revokeAll: () => http.delete<{ revoked: number }>("/api/security/devices"),
+};
+
 /** The owner's security questions, on the runtime's own computer. */
 export const security = {
   approvals: () => http.get<{ pending: OwnerApproval[]; routes: string[] }>("/api/security/approvals"),

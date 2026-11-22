@@ -54,7 +54,7 @@ export function securityCheck(ctx: CheckContext = {}): SecurityFinding[] {
   if (!remote.enabled) {
     out.push({ level: 'ok', title: 'Remote access is off', detail: 'Only this computer can use Mercury.' });
   } else {
-    out.push({ level: 'info', title: `Remote access is on · ${devices.length} device${devices.length === 1 ? '' : 's'}`, detail: remote.allowIps.length ? `Only from: ${remote.allowIps.join(', ')}` : 'From any address (with an approved device or the password).', fix: devices.length ? undefined : 'Turn it off with /server if you never connect from elsewhere.' });
+    out.push({ level: 'info', title: `Remote access is on · ${devices.length} device${devices.length === 1 ? '' : 's'}`, detail: remote.allowIps.length ? `Only from: ${remote.allowIps.join(', ')}` : `From any address, with a device token${remote.passwordSignIn ? ' or the password (password sign-in is on)' : ''}.`, fix: devices.length ? undefined : 'Turn it off with /server if you never connect from elsewhere.' });
     const stale = devices.filter((d) => now - Date.parse(d.lastSeenAt ?? d.createdAt) > 30 * 86_400_000);
     if (stale.length) out.push({ level: 'warn', title: `${stale.length} device${stale.length === 1 ? '' : 's'} not used in 30 days`, detail: stale.map((d) => d.name).join(', '), fix: 'Revoke the ones you no longer use: /server → Devices' });
     if (remote.idleDays === 0 && devices.length) out.push({ level: 'warn', title: 'Unused devices never expire', fix: 'Set an idle limit: /server → Devices' });
