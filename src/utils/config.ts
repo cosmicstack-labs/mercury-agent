@@ -417,7 +417,7 @@ export function getDefaultConfig(): MercuryConfig {
         name: 'anthropic',
         apiKey: getEnv('ANTHROPIC_API_KEY', ''),
         baseUrl: getEnv('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'),
-        model: getEnv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
+        model: getEnv('ANTHROPIC_MODEL', 'claude-sonnet-5-5'),
         enabled: getEnvBool('ANTHROPIC_ENABLED', true),
       },
       deepseek: {
