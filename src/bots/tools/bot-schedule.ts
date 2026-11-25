@@ -62,11 +62,12 @@ export function createBotScheduleTool(scheduler: BotScheduler, botId: string) {
   return tool({
     description:
       'Schedule work for yourself in the future. Use when a task needs a follow-up later (e.g. "post the follow-up in one hour") ' +
-      'or a recurring routine. One-shot: delayMinutes (or executeAt ISO date). Recurring: cron (5 fields). ' +
+      'or a recurring routine. One-shot: delayMinutes (at least 10) or executeAt ISO date. ' +
+      `Recurring: cron (5 fields), at most every ${MIN_ROUTINE_GAP_MINUTES} minutes, at most ${MAX_SELF_ROUTINES} routines (reuse a name to replace one). ` +
       'The scheduled run starts fresh with your persona and tools; results are delivered like any other run.',
     inputSchema: zodSchema(z.object({
       prompt: z.string().min(1).max(4000).describe('What you should do on the future run — self-contained, include all needed context'),
-      delayMinutes: z.number().min(1).max(MAX_DELAY_MINUTES).optional().describe('One-shot: run again after this many minutes (1..43200)'),
+      delayMinutes: z.number().min(1).max(MAX_DELAY_MINUTES).optional().describe(`One-shot: run again after this many minutes (${MIN_ONESHOT_DELAY_MINUTES}..${MAX_DELAY_MINUTES})`),
       executeAt: z.string().optional().describe('One-shot alternative: ISO timestamp to run at'),
       cron: z.string().optional().describe('Recurring: 5-field cron expression, e.g. "0 9 * * 1"'),
       name: z.string().max(40).optional().describe('Label for recurring routines (required with cron)'),

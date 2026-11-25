@@ -2267,7 +2267,7 @@ export class BotManager {
 - \`/bots create <id> "Name" "Description"\` — onboard; \`/bots persona <id> <text>\` — set its character.
 - \`/bots export <id> [path]\` — shareable bundle (manifests + personas + permissions + skills; a lead's bundle carries its whole crew); \`/bots import <path>\` — recreate bots from a bundle (imported bots start disabled). Sandbox, journals, and .env never travel.
 - \`/bots journal <id>\` — recent runs; \`/bots dlq\` — failed jobs (replayable); \`/bots stop|start|enable|disable <id>\`; \`/bots run <id> [routine]\` — fire a routine now (or a bare wake).
-- Bots share data through the fleet-shared folder (\`${this.store.sharedSandboxDir()}\`); each also has a private sandbox next to its persona. Their outputs land in their own threads.
+- Bots share data through the fleet-shared folder (\`${this.store.sharedSandboxDir()}\`); each also has a private sandbox next to its persona. Their replies land in their own threads; finished deliverables also go to the owner's deliverables folder (\`${this.store.deliverablesRoot()}/<Bot name>/\`, crew work under \`work/\`). \`/bots outputs [id]\` lists them, \`/bots folder <id>\` opens one.
 - The dispatch_bot tool lets you hand a task to a bot mid-conversation and continue talking; the result is delivered when the bot finishes.`);
     return lines.join('\n');
   }
