@@ -219,6 +219,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'atlascloud', label: 'Atlas Cloud' },
   { key: 'runcrate', label: 'Runcrate' },
   { key: 'cloudgpu', label: 'CloudGPU' },
+  { key: 'teamorouter', label: 'TeamoRouter' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
   { key: 'atomicChat', label: 'Atomic Chat' },
@@ -1532,6 +1533,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.cloudgpu.apiKey = result.apiKey;
           config.providers.cloudgpu.model = result.model;
           config.providers.cloudgpu.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'teamorouter') {
+        const mask = isReconfig && config.providers.teamorouter.apiKey ? ` [${maskKey(config.providers.teamorouter.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'teamorouter',
+          'TeamoRouter',
+          chalk.white(`  TeamoRouter API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.teamorouter.apiKey = result.apiKey;
+          config.providers.teamorouter.model = result.model;
+          config.providers.teamorouter.enabled = true;
         }
         continue;
       }

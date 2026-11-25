@@ -33,7 +33,7 @@ const VALID: readonly ReasoningLevel[] = ['off', 'low', 'medium', 'high', 'xhigh
 
 /** Providers Mercury reaches over OpenAI Chat Completions (registry.ts). */
 export const COMPAT_CHAT_PROVIDERS: ReadonlySet<string> = new Set([
-  'ollamaLocal', 'ollamaCloud', 'atomicChat', 'aimlapi', 'atlascloud', 'runcrate', 'cloudgpu', 'openaiCompat', 'litellm', 'lmStudio',
+  'ollamaLocal', 'ollamaCloud', 'atomicChat', 'aimlapi', 'atlascloud', 'runcrate', 'cloudgpu', 'teamorouter', 'openaiCompat', 'litellm', 'lmStudio',
 ]);
 
 let caps: Record<string, ReasoningCaps> | null = null;

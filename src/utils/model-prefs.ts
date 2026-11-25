@@ -378,6 +378,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   atlascloud: 'Atlas Cloud',
   runcrate: 'Runcrate',
   cloudgpu: 'CloudGPU',
+  teamorouter: 'TeamoRouter',
   mimo: 'MiMo',
   mimoTokenPlan: 'MiMo Token Plan',
   githubCopilot: 'GitHub Copilot',
