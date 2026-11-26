@@ -14,7 +14,12 @@ data class Connection(
   val deviceId: String? = null,
   @Serializable(with = InstantIso::class) val createdAt: Instant = Instant.now(),
   @Serializable(with = InstantIso::class) val lastUsedAt: Instant? = null,
+  /** Which of the Mercury logos this one wears ([ConnectionLogos.ids]); null in records saved before logos. */
+  val logo: String? = null,
 ) {
+  /** The logo to draw: the saved one, else the first. */
+  val logoId: String get() = logo?.takeIf { it in ConnectionLogos.ids } ?: ConnectionLogos.ids[0]
+
   companion object {
     /** 12 random hex characters, like Mercury Desktop's connection ids. */
     fun newId(): String {
@@ -32,6 +37,8 @@ data class Health(
   val apiVersion: Int? = null,
   val features: List<String>? = null,
   val setupRequired: Boolean? = null,
+  /** The computer's host name (newer runtimes, only to a signed-in device): the friendly name's first guess. */
+  val host: String? = null,
 )
 
 @Serializable

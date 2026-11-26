@@ -56,7 +56,7 @@ Bots are Mercury instances with their own persona, tools and sandbox that run on
 
 ## Brain
 
-**Brain** shows what Mercury knows. Memories lists what it has learned about you and how you work, and you can correct anything that's wrong. People shows the people it knows from your conversations. Map groups your notes into topics, and Graph shows how people and notes connect.
+**Brain** shows what Mercury knows. Memory lists what it has learned about you and how you work, and you can correct anything that's wrong. Persons shows the people it knows from your conversations. Goals lists your goals and projects, and Graph shows how people and notes connect.
 
 ## Plugins and voice
 

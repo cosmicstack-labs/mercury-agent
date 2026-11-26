@@ -8,7 +8,7 @@ import type { ChatEffort, ImageIntent, MediaModelsResponse, TurnsInfo, VoiceRepl
 import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
   BotActivityEvent, BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
-  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, PluginItem, ReasoningChoice, Skill, DeviceSummary, PairShown, PairStatus,
+  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, OwnerTask, PluginItem, ReasoningChoice, Skill, DeviceSummary, PairShown, PairStatus,
 } from "./types";
 
 export const health = {
@@ -59,6 +59,35 @@ export const auth = {
   devices: () => http.get<{ devices: DeviceSummary[]; current: string | null }>("/api/auth/devices"),
   revokeDevice: (id: string) => http.delete<{ success: boolean }>(`/api/auth/devices/${encodeURIComponent(id)}`),
   revokeSelf: () => http.post<{ success: boolean }>("/api/auth/token/revoke"),
+};
+
+/** Owner tasks (ADR-048): what only the owner can do, answered from any of their apps. */
+export const ownerTasks = {
+  pending: () => http.get<{ pending: OwnerTask[] }>("/api/owner/tasks").then((r) => r.pending),
+  answer: (id: string, answer: string) => http.post<{ task: OwnerTask }>(`/api/owner/tasks/${encodeURIComponent(id)}`, { answer }),
+  decline: (id: string) => http.post<{ task: OwnerTask }>(`/api/owner/tasks/${encodeURIComponent(id)}`, { decline: true }),
+};
+
+export interface RemoteSettings { enabled: boolean; allowIps: string[]; allowShell: boolean; maxDevices: number; idleDays: number; passwordSignIn: boolean }
+export interface SecurityFinding { level: "ok" | "info" | "warn" | "risk"; title: string; detail?: string; fix?: string }
+export interface PairedDevice { id: string; name: string; platform: string; createdAt: string; lastSeenAt: string | null; lastIp?: string; approvedBy?: string; expiresAt?: string | null }
+export interface SecurityStatus {
+  remote: RemoteSettings;
+  devices: PairedDevice[];
+  browsers: number;
+  pending: OwnerApproval[];
+  approvalRoutes: string[];
+  lastRemote: { at: number; proxied: boolean; clientIpKnown: boolean; ip: string } | null;
+  check: { summary: string; findings: SecurityFinding[] };
+}
+
+/** Remote access and its security (/server), on the runtime's own computer only. */
+export const server = {
+  status: () => http.get<SecurityStatus>("/api/security/status"),
+  setRemote: (patch: Partial<RemoteSettings>) => http.put<unknown>("/api/security/remote", patch),
+  createDevice: (name: string) => http.post<{ token: string; device: PairedDevice }>("/api/security/devices", { name, platform: "manual" }),
+  revokeDevice: (id: string) => http.delete<{ success: boolean }>(`/api/security/devices/${encodeURIComponent(id)}`),
+  revokeAll: () => http.delete<{ revoked: number }>("/api/security/devices"),
 };
 
 /** The owner's security questions, on the runtime's own computer. */

@@ -50,7 +50,7 @@ interface PendingInteraction {
 }
 
 export interface ChatEvent {
-  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'progress' | 'phase' | 'media_ready' | 'media_pending' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'queue_dropped' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
+  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'progress' | 'phase' | 'media_ready' | 'media_pending' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'queue_dropped' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval' | 'owner_task';
   data?: Record<string, unknown>;
 }
 
@@ -158,6 +158,16 @@ export class WebChannel extends BaseChannel {
   sendOwnerApproval(a: { id: string; code: string; kind: string; title: string; detail?: string; who: string; ip?: string; expiresAt: number; status: string }, change: 'new' | 'decided'): void {
     const out: ChatEvent = { type: 'owner_approval', data: { change, id: a.id, code: a.code, kind: a.kind, title: a.title, detail: a.detail, who: a.who, ip: a.ip, expiresAt: a.expiresAt, status: a.status } };
     for (const id of this.localActivityClients) this.activityClients.get(id)?.send(out);
+  }
+
+  /**
+   * An owner task (ADR-048) to every connected app — Mercury Desktop and the
+   * paired phones — since answering one is something the owner does from any
+   * of their devices. The media itself is fetched from /api/owner/tasks/:id/media.
+   */
+  sendOwnerTask(t: { id: string; code: string; title: string; prompt: string; who: string; link?: string; media?: { kind: string; mimeType: string }; answerKind: string; expiresAt: number; status: string; answer?: string }, change: 'new' | 'settled'): void {
+    const out: ChatEvent = { type: 'owner_task', data: { change, id: t.id, code: t.code, title: t.title, prompt: t.prompt, who: t.who, link: t.link, media: t.media ? { kind: t.media.kind, mimeType: t.media.mimeType, url: `/api/owner/tasks/${t.id}/media` } : undefined, answerKind: t.answerKind, expiresAt: t.expiresAt, status: t.status } };
+    for (const [, client] of this.activityClients) client.send(out);
   }
 
   removeActivityClient(id: string): void {

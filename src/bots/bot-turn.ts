@@ -16,6 +16,7 @@ import { stepsExhaustedPrompt } from '../core/completion-verdict.js';
 import { isFailedToolResult } from '../core/execute-guard.js';
 import { MAX_AUTOMATIC_CONTINUATIONS } from '../core/execution-limits.js';
 import { formatToolStep } from '../utils/tool-label.js';
+import { isAnthropicModel, shapeStepMessages } from '../core/payload-policy.js';
 import { logger } from '../utils/logger.js';
 import { stripLoneSurrogates, truncateText } from '../utils/text-safe.js';
 import type { BotManifest, BotTrigger } from './types.js';
@@ -132,12 +133,16 @@ export interface BotTurnLimits {
 export const DEFAULT_TURN_LIMITS: BotTurnLimits = {
   maxTokensPerTurn: 300_000,
   maxTurnMinutes: 20,
-  keepRecentToolResults: 8,
+  // With STUB_BATCH 8, between 4 and 11 results stay verbatim (7.5 on
+  // average) — about what a fixed 8 kept, while the prompt cache keeps hitting.
+  keepRecentToolResults: 4,
   maxToolResultChars: 24_000,
   sharedWrites: { softFiles: 2, softBytes: 32 * 1024, hardFiles: 6, hardBytes: 128 * 1024 },
 };
 
 export interface BotTurnInput {
+  /** How asks outside the bot's grants are answered (ADR-047); auto when unset. */
+  approvals?: 'auto' | 'ask';
   manifest: BotManifest;
   trigger: BotTrigger;
   /** Durable job id — correlates activity events with the run. */
@@ -223,6 +228,8 @@ export interface BotTurnOutput {
   toolCalls: number;
   /** Largest single-step prompt the provider saw — the context-growth meter. */
   peakInputTokens: number;
+  /** Input tokens the provider served from its prompt cache (part of tokensIn). */
+  tokensCached: number;
   outcome: BotOutcome;
   /** The bot's own close of the run, when it gave one. */
   report?: BotRunReport;
@@ -236,6 +243,50 @@ export interface BotTurnOutput {
 }
 
 const MAX_STEPS_DEFAULT = 25;
+
+/**
+ * Cache hits count at this weight toward the per-turn token cap: they cost
+ * about a tenth of fresh input, and the cap guards against runaway cost.
+ */
+const CACHED_TURN_WEIGHT = 0.1;
+
+/**
+ * Old tool results are shortened in batches of this many, never one per step.
+ * Shortening one result changes the request from that point on, so every
+ * provider's prompt cache misses from there; batching keeps the start of the
+ * request identical for this many steps in a row.
+ */
+export const STUB_BATCH = 8;
+
+/** Share of the per-turn token cap after which the run is asked to wrap up. */
+export const WRAP_UP_AT = 0.8;
+
+/**
+ * A step can jump past the cap before the wrap-up starts. Such a run still
+ * gets its wrap-up step; the hard stop is this far past the cap.
+ */
+export const HARD_STOP_AT = 1.25;
+
+/** Tools a wrapping-up run keeps: hand over what exists, then close. */
+const WRAP_UP_TOOLS = ['bot_deliver', 'bot_state', 'bot_report', 'bot_no_update', 'bot_report_failure'];
+
+/** Said on every step once a run is wrapping up (appended, so the cached start is untouched). */
+export const WRAP_UP_NOTE = 'This run has used most of its token budget. Start no new work: deliver what you already have (bot_deliver), then close the run with bot_report — say what is done and what is left for the next run. If nothing is finished, use bot_report_failure.';
+
+/** An identical call that already failed this many times in a run is not run again. */
+export const MAX_IDENTICAL_FAILURES = 2;
+
+/** Providers on OpenAI's own API (Responses), where `prompt_cache_key` routes repeat prompts to the same cache. */
+const PROMPT_CACHE_KEY_PROVIDERS = new Set(['openai', 'chatgptWeb']);
+
+/**
+ * Per-request provider options for a bot's prompt cache. The key is stable per
+ * bot, so every run of the bot (same system prompt, same tools) shares a cache.
+ */
+export function botCacheOptions(providerName: string, botId: string): Record<string, Record<string, string>> | undefined {
+  if (!PROMPT_CACHE_KEY_PROVIDERS.has(providerName)) return undefined;
+  return { openai: { promptCacheKey: `mercury-bot-${botId}` } };
+}
 
 /** Said to the model when a run resumes from its checkpoint. */
 const RESUME_NOTE = '[Resumed] This run was interrupted (an error, a pause or a restart) and continues here. '
@@ -353,6 +404,11 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
   let tokensIn = 0;
   let tokensOut = 0;
   let peakInputTokens = 0;
+  let tokensCached = 0;
+  // Set once the turn nears its token cap: from then on every step is asked
+  // to deliver and close, with only the closing tools available.
+  let wrapping = false;
+  let wrapSteps = 0;
   let lastResult: { text: string; finishReason: unknown } | null = null;
   let stepsRemaining = maxSteps;
   let budgetContinuations = 0;
@@ -409,7 +465,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
   const baseOutput = () => ({
     ...(taintOf() ? { taint: taintOf() } : {}),
     tokensIn, tokensOut, toolsUsed: [...toolsUsed], startedAt, steps: stepIndex, toolCalls: trace.length,
-    peakInputTokens, deliverables: [...deliveries], outcomeNudged, trace: [...trace], ...(report ? { report } : {}),
+    peakInputTokens, tokensCached, deliverables: [...deliveries], outcomeNudged, trace: [...trace], ...(report ? { report } : {}),
   });
   const outcomeNow = (text: string): BotOutcome => computeOutcome({ trace, deliveries, expects, text, sandbox: input.sandbox, report });
 
@@ -426,17 +482,38 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
       // is unchanged.
       let streamError: unknown = null;
       noteTurnModel(provider.getModel());
+      const model = provider.getModelInstance();
+      const anthropicCache = isAnthropicModel(model);
+      const cacheOptions = botCacheOptions(provider.name, manifest.id);
       const stream = streamText({
-        model: provider.getModelInstance(),
+        model,
+        ...(cacheOptions ? { providerOptions: cacheOptions } : {}),
         messages,
         tools,
-        stopWhen: stepCountIs(stepsRemaining),
+        // A closed run stops at once: the step after bot_report used to
+        // re-send the whole conversation just for the model to say "done".
+        stopWhen: [stepCountIs(stepsRemaining), () => report !== undefined],
         abortSignal: governor.signal,
         experimental_include: { requestBody: false },
         // Context compaction: every step re-sends the whole conversation, so
         // 25 steps of 60KB tool results is a multi-megatoken prompt. Keep
-        // the newest results verbatim (capped), stub the rest.
-        prepareStep: ({ messages: stepMessages }: { messages: ModelMessage[] }) => ({ messages: compactMessages(stepMessages, limits) }),
+        // the newest results verbatim (capped), stub the rest — in batches,
+        // so the prompt cache keeps hitting. Anthropic also gets cache
+        // breakpoints on the newest messages (ADR-039's payload policy), so
+        // each step reads the previous step's conversation from cache.
+        prepareStep: ({ messages: stepMessages }: { messages: ModelMessage[] }) => {
+          const shaped = shapeStepMessages(compactMessages(stepMessages, limits), { anthropicCache });
+          if (!wrapping && turnCost(tokensIn, tokensCached, tokensOut) >= limits.maxTokensPerTurn * WRAP_UP_AT) {
+            wrapping = true;
+            emit({ kind: 'step', stepIndex, label: 'near the token cap — wrapping up' });
+          }
+          if (!wrapping) return { messages: shaped };
+          wrapSteps++;
+          return {
+            messages: [...shaped, { role: 'user', content: WRAP_UP_NOTE } as ModelMessage],
+            activeTools: WRAP_UP_TOOLS.filter((t) => t in tools) as never,
+          };
+        },
         experimental_onStepStart: () => {
           stepIndex++;
           emit({ kind: 'step', stepIndex, label: `step ${stepIndex}` });
@@ -456,7 +533,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
             elapsedMs: typeof durationMs === 'number' ? durationMs : undefined,
           });
         },
-        onStepFinish: ({ usage, toolCalls, toolResults, response }: { usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[]; response?: { messages?: unknown[] } }) => {
+        onStepFinish: ({ usage, toolCalls, toolResults, response }: { usage?: { inputTokens?: number; outputTokens?: number; inputTokenDetails?: { cacheReadTokens?: number }; cachedInputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[]; response?: { messages?: unknown[] } }) => {
           if (governor.signal.aborted) return;
           stepsRemaining--;
           if (Array.isArray(response?.messages)) {
@@ -467,14 +544,24 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
             tokensIn += usage.inputTokens ?? 0;
             tokensOut += usage.outputTokens ?? 0;
             peakInputTokens = Math.max(peakInputTokens, usage.inputTokens ?? 0);
+            const cached = usage.inputTokenDetails?.cacheReadTokens ?? usage.cachedInputTokens ?? 0;
+            if (typeof cached === 'number' && Number.isFinite(cached) && cached > 0) tokensCached += Math.min(cached, usage.inputTokens ?? cached);
           }
           for (const tc of (toolCalls ?? []) as Array<{ toolName?: string; toolCallId?: string }>) {
             if (tc?.toolName) toolsUsed.add(String(tc.toolName));
             trace.push(traceEntry(tc, ((toolResults ?? []) as Array<{ toolCallId?: string; output?: ToolOutput }>).find((r) => r?.toolCallId !== undefined && r.toolCallId === tc?.toolCallId)));
           }
           const kIn = Math.round(tokensIn / 100) / 10;
-          emit({ kind: 'step', stepIndex, label: `step ${stepIndex} · ${kIn}k tok in` });
-          if (tokensIn + tokensOut > limits.maxTokensPerTurn) trip('turn_budget');
+          const cachedPct = tokensIn > 0 ? Math.round((tokensCached / tokensIn) * 100) : 0;
+          emit({ kind: 'step', stepIndex, label: `step ${stepIndex} · ${kIn}k tok in${cachedPct > 0 ? ` (${cachedPct}% cached)` : ''}` });
+          // Over the cap: stop — unless the run hasn't had its wrap-up step
+          // yet, which it gets first (up to HARD_STOP_AT), so its work is
+          // handed over instead of lost.
+          const cost = turnCost(tokensIn, tokensCached, tokensOut);
+          // A run that has closed is finished, not over budget.
+          if (report) return;
+          if (cost > limits.maxTokensPerTurn * HARD_STOP_AT) trip('turn_budget');
+          else if (cost > limits.maxTokensPerTurn && wrapSteps > 0) trip('turn_budget');
         },
       });
 
@@ -544,8 +631,8 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
       // the budget redoing the first 25 steps. The per-turn token cap is the
       // runaway guard; past the continuation bound the paused return below
       // still applies.
-      if (stepsRemaining <= 0 && lastResult?.finishReason === 'tool-calls') {
-        if (!governor.signal.aborted && budgetContinuations < MAX_AUTOMATIC_CONTINUATIONS) {
+      if (stepsRemaining <= 0 && lastResult?.finishReason === 'tool-calls' && !report) {
+        if (!governor.signal.aborted && !wrapping && budgetContinuations < MAX_AUTOMATIC_CONTINUATIONS) {
           budgetContinuations++;
           logger.warn(
             { botId: manifest.id, rounds: budgetContinuations, budget: maxSteps },
@@ -560,7 +647,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
 
       // Consume newly arrived mailbox messages before finishing, so a
       // handoff delivered mid-turn is not lost to the next scheduling gap.
-      if (!governor.signal.aborted && stepsRemaining > 0 && !report) {
+      if (!governor.signal.aborted && stepsRemaining > 0 && !report && !wrapping) {
         const fresh = input.pollMail();
         if (fresh.length > 0) {
           for (const m of fresh) {
@@ -575,7 +662,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
       // A run expected to produce work that only read and wrote notes gets
       // exactly one nudge — deliver now, or say plainly that nothing was
       // done. Bounded like the execute guard; never a loop.
-      if (!governor.signal.aborted && expects === 'work' && !outcomeNudged && !report
+      if (!governor.signal.aborted && expects === 'work' && !outcomeNudged && !report && !wrapping
         && outcomeNow(result.text) === 'none') {
         outcomeNudged = true;
         emit({ kind: 'step', stepIndex, label: 'no deliverable yet — asking for one' });
@@ -596,7 +683,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
     // Step budget exhausted with tool calls still pending — pause, never
     // report success on half-done work (sub-agent completion contract).
     // Last resort only: reached past the in-process continuation bound.
-    if (stepsRemaining <= 0 && lastResult?.finishReason === 'tool-calls') {
+    if (stepsRemaining <= 0 && lastResult?.finishReason === 'tool-calls' && !report) {
       emit({ kind: 'turn-end', stepIndex, label: 'paused — step budget', status: 'done' });
       return {
         status: 'paused',
@@ -624,6 +711,7 @@ async function runBotTurnInScope(input: BotTurnInput): Promise<BotTurnOutput> {
       inputTokens: tokensIn,
       outputTokens: tokensOut,
       totalTokens: tokensIn + tokensOut,
+      cachedInputTokens: tokensCached,
       channelType: 'bot',
     });
 
@@ -676,6 +764,7 @@ function governedFailure(
     inputTokens: base.tokensIn,
     outputTokens: base.tokensOut,
     totalTokens: base.tokensIn + base.tokensOut,
+    cachedInputTokens: base.tokensCached,
     channelType: 'bot',
   });
   emit({ kind: 'turn-end', stepIndex, label: `stopped — ${what}`, status: 'error' });
@@ -930,7 +1019,11 @@ export function compactMessages(messages: ModelMessage[], limits: Pick<BotTurnLi
     });
   });
   if (resultRefs.length === 0) return sanitizeModelMessages(messages);
-  const stubBefore = Math.max(0, resultRefs.length - limits.keepRecentToolResults);
+  // Stub in whole batches: the boundary moves only every STUB_BATCH results,
+  // so between moves each step's request starts exactly like the last one's
+  // and the provider's prompt cache hits. Up to keep + STUB_BATCH - 1 results
+  // stay verbatim.
+  const stubBefore = Math.floor(Math.max(0, resultRefs.length - limits.keepRecentToolResults) / STUB_BATCH) * STUB_BATCH;
   const out = messages.slice();
   resultRefs.forEach(({ mi, pi }, idx) => {
     const content = out[mi].content as unknown as ToolResultPart[];
@@ -1008,6 +1101,34 @@ export function wrapBotTools(
       return result;
     });
   }
+
+  // The same call failing the same way again is a wasted step (re-reading a
+  // file that isn't there was the most repeated call in the journals). Past
+  // MAX_IDENTICAL_FAILURES the call isn't run; the bot is told to change course.
+  const failures = new Map<string, { count: number; last: string }>();
+  for (const name of Object.keys(out)) {
+    const inner = out[name];
+    if (!inner || typeof inner.execute !== 'function') continue;
+    const exec = inner.execute.bind(inner) as Exec;
+    out[name] = {
+      ...inner,
+      execute: async (args: ToolArgs, options: unknown) => {
+        let key: string;
+        try { key = `${name}\u0000${JSON.stringify(args ?? {})}`; } catch { return exec(args, options); }
+        const seen = failures.get(key);
+        if (seen && seen.count >= MAX_IDENTICAL_FAILURES) {
+          return `Error: this exact ${name} call has already failed ${seen.count} times in this run (last error: ${seen.last.slice(0, 300)}). It was not run again. Try something different, or report what is blocking you.`;
+        }
+        const result = await exec(args, options);
+        if (typeof result === 'string' && isFailedToolResult(result)) {
+          failures.set(key, { count: (seen?.count ?? 0) + 1, last: result });
+        } else if (seen) {
+          failures.delete(key);
+        }
+        return result;
+      },
+    } as Tool;
+  }
   return out;
 }
 
@@ -1081,9 +1202,12 @@ export function buildBotSystemPrompt(input: BotTurnInput): { stable: string; vol
 
   prompt += `\n\nOperating rules:
 - You run unattended: NEVER ask the user questions or wait for confirmation. If a required input is missing, state the assumption you are proceeding with.
-- Actions you lack permission for are denied automatically (fail-closed). Do not attempt workarounds; report what you could not do.
+${input.approvals === 'ask'
+    ? '- Actions you lack permission for are denied automatically (fail-closed). Do not attempt workarounds; report what you could not do.'
+    : "- Outside your grants, Mercury decides at once, without the owner: what can be undone goes ahead (a file you overwrite is backed up first); what can't — deleting, force-pushing, discarding changes, publishing packages, sending email, dropping data, touching credentials or system files — is refused. Never look for a workaround to a refusal: find another way to reach the goal, or report what you couldn't do."}
 - Stay in your specialty; say so plainly when a request falls outside it.
 - Work, don't narrate: a run is judged by what it delivered or changed, not by what it wrote about itself. Do not write records, receipts, logs or status files about your own runs — Mercury keeps the journal.
+- Every step re-sends this whole conversation, so take fewer, bigger steps: make independent tool calls together in ONE step (several fetches, searches or reads at once), and don't re-read what you already have.
 - END EVERY RUN WITH EXACTLY ONE of: bot_report (a result or finding for the owner; deliver files first), bot_no_update (nothing new — recorded quietly, nobody is notified), bot_report_failure (you couldn't do it, and why). Then stop.`;
 
   // Sandbox: the bot's always-granted work areas (rw+x, no permission ask).
@@ -1159,4 +1283,10 @@ Fleet protocol:
   volatile += `\n\nToken budget remaining: ${input.tokenBudget.getRemaining()}`;
 
   return { stable: prompt, volatile: `This run:${volatile}` };
+}
+
+/** A turn's spend for its cap: cache hits at CACHED_TURN_WEIGHT, everything else in full. */
+export function turnCost(tokensIn: number, tokensCached: number, tokensOut: number): number {
+  const cached = Math.min(tokensIn, Math.max(0, tokensCached));
+  return tokensIn - cached + cached * CACHED_TURN_WEIGHT + tokensOut;
 }

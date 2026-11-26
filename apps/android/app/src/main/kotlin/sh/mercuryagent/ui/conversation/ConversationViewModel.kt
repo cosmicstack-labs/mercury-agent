@@ -25,6 +25,8 @@ import sh.mercuryagent.core.ChatThread
 import sh.mercuryagent.core.MediaAvailability
 import sh.mercuryagent.core.MediaIntent
 import sh.mercuryagent.core.MercuryClient
+import sh.mercuryagent.core.permissionMode
+import sh.mercuryagent.core.setPermissionMode
 import sh.mercuryagent.core.OutgoingAttachment
 import sh.mercuryagent.core.SentAttachment
 import sh.mercuryagent.core.Suggestion
@@ -99,6 +101,13 @@ class ConversationViewModel(
   val attachments = MutableStateFlow<List<OutgoingAttachment>>(emptyList())
   val composer = MutableStateFlow(ComposerState())
   val welcome = MutableStateFlow(WelcomeState())
+  /** The owner's go-ahead for a change an older Mercury gates (Allow All). */
+  val gate = sh.mercuryagent.ui.more.OwnerGate(client)
+  /** Ask Me / Allow All: the model sheet's Permissions and the indicator by the model pill. */
+  val permissions = sh.mercuryagent.core.PermissionSwitch(
+    load = { client.permissionMode() },
+    save = { m -> gate.run { approval -> client.setPermissionMode(m, approval) } },
+  )
   /** Set while a voice call runs in this conversation: what's sent is said on that call. */
   var callId: String? = null
   /** A voice call listens for each turn's end (with its reply, when there was one). */
@@ -160,6 +169,8 @@ class ConversationViewModel(
   }
 
   fun handle(event: String, raw: String) {
+    // The runtime's live status: Ask Me / Allow All changed anywhere (Desktop, a terminal, a phone).
+    if (event == "status") permissions.applyStatus(raw)
     val r = ConversationEvents.reduce(_ui.value, event, raw)
     _ui.value = r.state
     if (r.changed) onChange()
@@ -393,6 +404,12 @@ class ConversationViewModel(
       }
     }
   }
+
+  /** Reads Ask Me / Allow All again (the screen appeared, or the app came back). */
+  fun refreshPermissions() { viewModelScope.launch { permissions.refresh() } }
+
+  /** Ask Me or Allow All, at once; put back with a message when Mercury refuses. */
+  fun setPermission(mode: sh.mercuryagent.core.PermissionMode) { viewModelScope.launch { permissions.set(mode) } }
 
   /** The model's efforts and which media this Mercury can make, for the composer's sheet. */
   suspend fun loadComposerInfo() {

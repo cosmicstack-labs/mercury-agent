@@ -2,9 +2,11 @@ import SwiftUI
 import MercuryCore
 
 /// The side panel, laid out like Grok's (and Android's ChatDrawer): at the top the connected
-/// Mercury (tap: switch or add another) and a » button that closes the panel; Call Mercury, Bots,
-/// Artifacts and Saved; "Conversations" (or "Results", or "Saved") over one flat list of chats, newest first,
-/// each row the title alone; pinned at the bottom over a fade, Settings, Search (filters live on
+/// Mercury, its logo and friendly name (tap: the switcher, to switch, rename, pick a logo or add
+/// another) and a » button that closes the panel; Call Mercury, Bots, Artifacts, Brain (the mind
+/// map) and Saved; "Conversations" (or "Results", or "Saved") over the chats, newest first, each row
+/// the title alone, with small day labels between them ("Today", "3 days ago", "October"). All of it
+/// is one scrolling list; pinned at the bottom over a fade, Settings, Search (filters live on
 /// titles and messages) and a white New chat button. Better than Grok, quietly: a dot before a
 /// title only when the chat works (green, pulsing), needs you (amber) or failed (red); unread
 /// titles semibold with a dot at the end; matches emphasised; swipe for Delete (with Undo) or
@@ -22,6 +24,8 @@ struct ChatDrawer: View {
   var onCall: () -> Void = {}
   var onBots: () -> Void = {}
   var onArtifacts: () -> Void = {}
+  /// Brain: the second brain's mind map.
+  var onBrain: () -> Void = {}
   var onSettings: () -> Void = {}
   var onClose: () -> Void = {}
   var onSwitch: (String) -> Void = { _ in }
@@ -29,45 +33,28 @@ struct ChatDrawer: View {
   /// Snapshots: laid out directly (the renderer can't draw lists or text fields), this many rows.
   var still = false
   var stillLimit = 10
+  var stillScroll: CGFloat = 0
+  /// For the switcher's Edit (rename, logo); nil in Snapshots.
+  var store: ConnectionStore?
+  @State private var switching = false
   @State private var renaming: ChatThread?
   @State private var newTitle = ""
   @FocusState private var searching: Bool
 
   var body: some View {
     ZStack(alignment: .bottom) {
-      VStack(alignment: .leading, spacing: 0) {
-        header.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 10)
-        DrawerNavRow(icon: "phone", label: "Call Mercury", action: onCall)
-        DrawerNavRow(icon: "sparkles", label: "Bots", action: onBots)
-        DrawerNavRow(icon: "folder", label: "Artifacts", action: onArtifacts)
-        DrawerNavRow(icon: model.savedOnly ? "bookmark.fill" : "bookmark", label: "Saved", selected: model.savedOnly) {
-          withAnimation(.snappy) { model.savedOnly.toggle() }
-        }
-        HStack {
-          Text(history.label).font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.ink3).accessibilityAddTraits(.isHeader)
-          Spacer()
-          if model.anyUnread && history.query.isEmpty {
-            Button { model.markAllRead() } label: { Image(systemName: "checkmark.circle").font(.system(size: 16)).foregroundStyle(Theme.ink3) }
-              .buttonStyle(.plain).accessibilityLabel("Mark all as read")
-          }
-        }
-        .padding(.leading, 24).padding(.trailing, 20).padding(.top, 18).padding(.bottom, 4)
-        Group {
-          if !model.loaded && model.threads.isEmpty {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-          } else if let e = model.error, model.threads.isEmpty {
-            LoadError(message: e) { Task { await model.load() } }
-          } else if still {
-            VStack(alignment: .leading, spacing: 0) { stillRows }.frame(maxHeight: .infinity, alignment: .top).clipped()
-          } else {
-            list
-          }
-        }
-        .frame(maxHeight: .infinity)
-      }
+      if still { stillPanel } else { list }
       bottomBar
     }
     .background(Theme.bg)
+    // The status bar's strip stays the panel's ground while the list scrolls under it.
+    .overlay(alignment: .top) { Color.clear.frame(height: 0).background(Theme.bg.ignoresSafeArea(edges: .top)) }
+    .sheet(isPresented: $switching) {
+      if let store {
+        MercurySwitcher(store: store, current: connection.id, onSwitch: onSwitch, onAdd: onAddMercury)
+          .presentationDetents([.medium, .large])
+      }
+    }
     .alert("Rename chat", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
       TextField("Chat name", text: $newTitle)
       Button("Save") { if let t = renaming { Task { await model.rename(t, to: newTitle) } } }
@@ -76,21 +63,35 @@ struct ChatDrawer: View {
     } message: { Text("Up to 120 characters. Mercury keeps the name you choose.") }
   }
 
+  /// The panel's top, which scrolls with the chats: the Mercury, the nav rows, the list's label.
+  @ViewBuilder private var top: some View {
+    header.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 10)
+    DrawerNavRow(icon: "phone", label: "Call Mercury", action: onCall)
+    DrawerNavRow(icon: "sparkles", label: "Bots", action: onBots)
+    DrawerNavRow(icon: "folder", label: "Artifacts", action: onArtifacts)
+    DrawerNavRow(icon: "brain", label: "Brain", action: onBrain)
+    DrawerNavRow(icon: model.savedOnly ? "bookmark.fill" : "bookmark", label: "Saved", selected: model.savedOnly) {
+      withAnimation(.snappy) { model.savedOnly.toggle() }
+    }
+    HStack {
+      Text(history.label).font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.ink3).accessibilityAddTraits(.isHeader)
+      Spacer()
+      if model.anyUnread && history.query.isEmpty {
+        Button { model.markAllRead() } label: { Image(systemName: "checkmark.circle").font(.system(size: 16)).foregroundStyle(Theme.ink3) }
+          .buttonStyle(.plain).accessibilityLabel("Mark all as read")
+      }
+    }
+    .padding(.leading, 24).padding(.trailing, 20).padding(.top, 18).padding(.bottom, 4)
+  }
+
   // MARK: The header
 
+  /// The connected Mercury, its logo and friendly name (tap: the switcher), and » to close the panel.
   private var header: some View {
     HStack(spacing: 10) {
-      Menu {
-        ForEach(connections) { c in
-          Button { if c.id != connection.id { onSwitch(c.id) } } label: {
-            if c.id == connection.id { Label(c.name, systemImage: "checkmark") } else { Text(c.name) }
-          }
-        }
-        Divider()
-        Button(action: onAddMercury) { Label("Add another Mercury", systemImage: "plus") }
-      } label: {
+      Button { switching = true } label: {
         HStack(spacing: 12) {
-          MercuryMark().padding(9).frame(width: 44, height: 44).background(Theme.surface2, in: Circle())
+          LogoBadge(id: connection.logoId, size: 44)
           VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 4) {
               Text(connection.name).font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
@@ -101,8 +102,8 @@ struct ChatDrawer: View {
         }
         .contentShape(Rectangle())
       }
-      .menuStyle(.button).buttonStyle(.plain)
-      .accessibilityHint("Switch Mercury or add another")
+      .buttonStyle(PressButtonStyle())
+      .accessibilityHint("Switch Mercury, rename it, or add another")
       Spacer(minLength: 8)
       RoundIconButton(icon: "chevron.right.2", label: "Close chats", action: onClose)
     }
@@ -157,16 +158,28 @@ struct ChatDrawer: View {
 
   private var history: ChatHistory { model.history }
 
+  /// One list from the top of the panel to the last chat (Grok's panel scrolls as a whole); only
+  /// the bottom bar stays put. Chats are lazy rows with stable ids, so 590 of them scroll smoothly.
   private var list: some View {
     let h = history
     return List {
-      if let e = model.error {
-        InlineError(message: e) { Task { await model.load() } }.plainRow()
-      }
-      ForEach(h.threads) { row($0, h) }
-      if model.loaded && h.isEmpty {
-        Text(h.query.isEmpty ? (h.savedOnly ? "No saved chats yet. Long-press a chat to save it." : "No chats yet. Ask Mercury anything.") : "No chats match “\(h.query)”.")
-          .font(.system(size: 14)).foregroundStyle(Theme.ink3).padding(.horizontal, 24).padding(.vertical, 12).plainRow()
+      top.plainRow()
+      if !model.loaded && model.threads.isEmpty {
+        ProgressView().frame(maxWidth: .infinity).padding(.vertical, 40).plainRow()
+      } else if let e = model.error, model.threads.isEmpty {
+        LoadError(message: e) { Task { await model.load() } }.plainRow()
+      } else {
+        if let e = model.error {
+          InlineError(message: e) { Task { await model.load() } }.plainRow()
+        }
+        ForEach(h.sections, id: \.title) { section in
+          if let title = section.title { DayLabel(title: title).plainRow() }
+          ForEach(section.threads) { row($0, h) }
+        }
+        if model.loaded && h.isEmpty {
+          Text(h.query.isEmpty ? (h.savedOnly ? "No saved chats yet. Long-press a chat to save it." : "No chats yet. Ask Mercury anything.") : "No chats match “\(h.query)”.")
+            .font(.system(size: 14)).foregroundStyle(Theme.ink3).padding(.horizontal, 24).padding(.vertical, 12).plainRow()
+        }
       }
       // Room to scroll the last chats out from under the bottom bar.
       Color.clear.frame(height: 90).plainRow()
@@ -206,18 +219,38 @@ struct ChatDrawer: View {
     }
   }
 
-  /// The same rows without a List, for the Snapshots tool.
-  @ViewBuilder private var stillRows: some View {
+  /// The same panel without a List, for the Snapshots tool (`stillScroll`: as if scrolled that far).
+  private var stillPanel: some View {
     let h = history
-    ForEach(h.threads.prefix(stillLimit)) { t in
-      HistoryLine(thread: t, look: RowLook.of(status: model.status[t.id], unread: model.isUnread(t)), query: h.query)
-        .background(t.id == current ? Theme.surface2 : .clear, in: RoundedRectangle(cornerRadius: 14))
-        .padding(.horizontal, 10)
+    return VStack(alignment: .leading, spacing: 0) {
+      top
+      if !model.loaded && model.threads.isEmpty {
+        ProgressView().frame(maxWidth: .infinity).padding(.vertical, 40)
+      } else if let e = model.error, model.threads.isEmpty {
+        LoadError(message: e) { }
+      } else {
+        let shown = Set(h.threads.prefix(stillLimit).map(\.id))
+        ForEach(h.sections, id: \.title) { section in
+          let rows = section.threads.filter { shown.contains($0.id) }
+          if !rows.isEmpty {
+            if let title = section.title { DayLabel(title: title) }
+            ForEach(rows) { t in
+              HistoryLine(thread: t, look: RowLook.of(status: model.status[t.id], unread: model.isUnread(t)), query: h.query)
+                .background(t.id == current ? Theme.surface2 : .clear, in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 10)
+            }
+          }
+        }
+        if h.isEmpty {
+          Text(h.query.isEmpty ? "No chats yet. Ask Mercury anything." : "No chats match “\(h.query)”.")
+            .font(.system(size: 14)).foregroundStyle(Theme.ink3).padding(.horizontal, 24).padding(.vertical, 12)
+        }
+      }
     }
-    if h.isEmpty {
-      Text(h.query.isEmpty ? "No chats yet. Ask Mercury anything." : "No chats match “\(h.query)”.")
-        .font(.system(size: 14)).foregroundStyle(Theme.ink3).padding(.horizontal, 24).padding(.vertical, 12)
-    }
+    .fixedSize(horizontal: false, vertical: true)
+    .offset(y: -stillScroll)
+    .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+    .clipped()
   }
 
   func rename(_ t: ChatThread) {
@@ -267,6 +300,17 @@ struct HistoryLine: View {
     case .failed: Theme.red
     case .waiting: Theme.ink3
     }
+  }
+}
+
+/// A small muted label over a day's chats: "Today", "3 days ago", "October".
+struct DayLabel: View {
+  var title: String
+  var body: some View {
+    Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink3)
+      .padding(.leading, 24).padding(.top, 14).padding(.bottom, 4)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityAddTraits(.isHeader)
   }
 }
 

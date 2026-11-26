@@ -44,8 +44,10 @@ export type PairStart = ({ ok: true } & PairCodeShown) | { ok: false; reason: Pa
 export interface ServerUi {
   choose(title: string, options: Array<{ value: string; label: string }>): Promise<string | null>;
   say(text: string): Promise<void>;
-  /** Something that must not stay in a transcript (a new token): shown until acknowledged. */
-  secret(text: string, copy?: string): Promise<void>;
+  /** Something that must not stay in a transcript (a new token): shown until acknowledged. 'copied' when it went to the clipboard. */
+  secret(text: string, copy?: string): Promise<void | 'copied' | 'ok'>;
+  /** One line of typed text (an address); '' or null when the owner backed out. Absent where nothing can be typed. */
+  ask?(title: string, hint?: string): Promise<string | null>;
   terminal?: boolean;
   waitFor?<T>(text: string, until: Promise<T>): Promise<T | null>;
 }
@@ -100,6 +102,7 @@ export function statusText(s: ServerStatus): string {
     `**Remote access** ${r.enabled ? 'on' : 'off'}${r.enabled ? (r.allowIps.length ? ` · only from ${r.allowIps.join(', ')}` : ' · from any address') : ''}`,
     `**Devices** ${s.devices.length} of ${r.maxDevices}${r.idleDays ? ` · unused ones expire after ${r.idleDays} days` : ' · never expire'}`,
     ...s.devices.map((d) => `  · ${deviceLine(d)}`),
+    `**Password sign-in** ${r.passwordSignIn ? 'on (other devices may sign in with the password; you still approve each one)' : 'off (devices connect with a device token)'}`,
     `**Remote terminal** ${r.allowShell ? 'on (each command asks you)' : 'off'}`,
     `**Approvals reach you on** ${s.approvalRoutes.join(', ')}`,
     s.lastRemote ? `**Last remote request** ${ago(new Date(s.lastRemote.at).toISOString())}${s.lastRemote.proxied ? ' through a tunnel' : ''}${s.lastRemote.clientIpKnown ? ` from ${s.lastRemote.ip}` : ' (the tunnel did not say from where)'}` : '**Last remote request** none since Mercury started',
@@ -173,7 +176,8 @@ export async function runServerCommand(args: string, ops: ServerOps, ui: ServerU
     }
     case 'token': {
       const created = await ops.createDevice(arg || 'Manual token');
-      await ui.secret(`Token for “${created.device.name}” (shown only now):\n\n${created.token}\n\nPaste it into the device (Mercury Desktop → Add a remote → Token).`, created.token);
+      const shown = await ui.secret(`Token for “${created.device.name}” (shown only now):\n\n${created.token}\n\nPaste it into the device (Mercury Desktop → Add a remote → Token).`, created.token);
+      if (shown === 'copied') await ui.say(`✓ Token for “${created.device.name}” copied. Paste it into the device (it's not shown again).`);
       return true;
     }
     case 'pair': {
@@ -226,6 +230,14 @@ export async function runServerCommand(args: string, ops: ServerOps, ui: ServerU
       await ui.say(arg === 'on' ? 'Remote devices may use the terminal; each command asks you first.' : 'The terminal is off for remote devices.');
       return true;
     }
+    case 'password': {
+      if (arg !== 'on' && arg !== 'off') { await ui.say('Usage: /server password on|off'); return true; }
+      await ops.setRemote({ passwordSignIn: arg === 'on' });
+      await ui.say(arg === 'on'
+        ? 'Other devices may sign in with the username and password again (you still approve each new one). Turn it off with /server password off.'
+        : 'Password sign-in is off for other devices. They connect with a device token: /server token <name>.');
+      return true;
+    }
     case 'expire': {
       const days = arg === 'never' ? 0 : Number(arg);
       if (!Number.isFinite(days) || days < 0) { await ui.say('Usage: /server expire <days> | never'); return true; }
@@ -262,6 +274,7 @@ export const SERVER_HELP = [
   '  /server pair [address]  show a QR code to pair a phone (a one-time code, 5 minutes)',
   '  /server token <name>    make a token for a device by hand (shown once)',
   '  /server allow-ip <ip|range> · remove-ip <ip|range> · allow-any',
+  '  /server password on|off sign-in with the password from other devices (off: device tokens only)',
   '  /server shell on|off    the terminal for remote devices (each command still asks you)',
   '  /server expire <days>|never · /server limit <n>',
   '  /server check           the security check · /server log  the security log',
@@ -278,6 +291,7 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
       { value: 'pair', label: 'Pair a phone (QR code)' },
       { value: 'toggle', label: r.enabled ? 'Turn remote access off' : 'Turn remote access on' },
       { value: 'ips', label: `Allowed addresses: ${r.allowIps.length ? r.allowIps.join(', ') : 'any'}` },
+      { value: 'password', label: `Password sign-in from other devices: ${r.passwordSignIn ? 'on' : 'off'}` },
       { value: 'shell', label: `Terminal for remote devices: ${r.allowShell ? 'on' : 'off'}` },
       { value: 'check', label: `Security check: ${s.check.summary}` },
       { value: 'log', label: 'Security log' },
@@ -290,6 +304,14 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
     if (pick === 'toggle') await runServerCommand(r.enabled ? 'off' : 'on', ops, ui);
     if (pick === 'check') await ui.say(findingsText(s.check.findings));
     if (pick === 'log') await ui.say(auditText(await ops.audit(20)));
+    if (pick === 'password') {
+      const v = await ui.choose('Password sign-in from other devices', [
+        { value: 'off', label: `Off${!r.passwordSignIn ? ' (now)' : ''} — devices connect with a device token made here` },
+        { value: 'on', label: `On${r.passwordSignIn ? ' (now)' : ''} — the apps may also sign in with the username and password` },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (v === 'on' || v === 'off') await runServerCommand(`password ${v}`, ops, ui);
+    }
     if (pick === 'shell') {
       const v = await ui.choose('The terminal for remote devices', [
         { value: 'off', label: `Off${!r.allowShell ? ' (now)' : ''} — remote devices can't run commands` },
@@ -299,15 +321,7 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
       if (v === 'on' || v === 'off') await runServerCommand(`shell ${v}`, ops, ui);
     }
     if (pick === 'ips') {
-      const v = await ui.choose(`Allowed addresses: ${r.allowIps.length ? r.allowIps.join(', ') : 'any (approved devices from anywhere)'}`, [
-        ...r.allowIps.map((ip) => ({ value: `remove:${ip}`, label: `Remove ${ip}` })),
-        ...(r.allowIps.length ? [{ value: 'any', label: 'Allow any address' }] : []),
-        { value: 'how', label: 'Add an address or range…' },
-        { value: 'back', label: 'Back' },
-      ]);
-      if (v === 'any') await runServerCommand('allow-any', ops, ui);
-      else if (v?.startsWith('remove:')) await runServerCommand(`remove-ip ${v.slice(7)}`, ops, ui);
-      else if (v === 'how') await ui.say(`Type /server allow-ip <address or range>, e.g. 203.0.113.7, or 100.64.0.0/10 for a Tailscale network.${s.lastRemote && !s.lastRemote.clientIpKnown ? '\nNote: your tunnel does not pass client addresses yet, so a list would refuse every remote device.' : ''}`);
+      await allowedAddressesMenu(ops, ui);
     }
     if (pick === 'pending') {
       const v = await ui.choose('Waiting for you', [...s.pending.map((p) => ({ value: p.id, label: `${p.title}${p.ip ? ` · ${p.ip}` : ''} · code ${p.code}` })), { value: 'back', label: 'Back' }]);
@@ -321,6 +335,44 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
       }
     }
     if (pick === 'devices') await devicesMenu(ops, ui);
+  }
+}
+
+const TAILSCALE = '100.64.0.0/10';
+
+/** Allowed addresses: see the list, remove one, add one by typing it (or a suggestion). */
+async function allowedAddressesMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
+  for (let guard = 0; guard < 100; guard++) {
+    const s = await ops.status();
+    const r = s.remote;
+    const last = s.lastRemote?.clientIpKnown ? parseIpRule(s.lastRemote.ip) : null;
+    const v = await ui.choose(`Allowed addresses: ${r.allowIps.length ? r.allowIps.join(', ') : 'any (approved devices from anywhere)'}`, [
+      ...(ui.ask ? [{ value: 'type', label: 'Add an address or range…' }] : []),
+      ...(last && !r.allowIps.includes(last) ? [{ value: `add:${last}`, label: `Add ${last} (the last remote device's address)` }] : []),
+      ...(!r.allowIps.includes(TAILSCALE) ? [{ value: `add:${TAILSCALE}`, label: `Add ${TAILSCALE} (any device on your Tailscale network)` }] : []),
+      ...r.allowIps.map((ip) => ({ value: `remove:${ip}`, label: `Remove ${ip}` })),
+      ...(r.allowIps.length ? [{ value: 'any', label: 'Allow any address again' }] : []),
+      ...(!ui.ask ? [{ value: 'how', label: 'Add another address…' }] : []),
+      { value: 'back', label: 'Back' },
+    ]);
+    if (!v || v === 'back') return;
+    if (v === 'any') await runServerCommand('allow-any', ops, ui);
+    else if (v.startsWith('remove:')) await runServerCommand(`remove-ip ${v.slice(7)}`, ops, ui);
+    else if (v.startsWith('add:')) await runServerCommand(`allow-ip ${v.slice(4)}`, ops, ui);
+    else if (v === 'how') await ui.say('Type /server allow-ip <address or range>, e.g. 203.0.113.7, or 100.64.0.0/10 for a Tailscale network.');
+    else if (v === 'type' && ui.ask) {
+      let title = 'Address or range to allow';
+      for (let tries = 0; tries < 5; tries++) {
+        const typed = (await ui.ask(title, 'An address (203.0.113.7) or a range (192.168.1.0/24). Enter to add, Esc to go back.'))?.trim();
+        if (!typed) break;
+        if (parseIpRule(typed)) { await runServerCommand(`allow-ip ${typed}`, ops, ui); break; }
+        title = `“${typed}” isn't an address or range. Try again`;
+      }
+    }
+    if (s.lastRemote && !s.lastRemote.clientIpKnown && v !== 'back') {
+      const now = await ops.status();
+      if (now.remote.allowIps.length) await ui.say('Note: your tunnel does not pass client addresses yet, so the list refuses every remote device until it does.');
+    }
   }
 }
 

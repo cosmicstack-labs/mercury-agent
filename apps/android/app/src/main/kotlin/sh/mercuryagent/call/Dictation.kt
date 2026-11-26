@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import app.mercury.voice.Dictation
 import app.mercury.voice.DictationConfig
 import app.mercury.voice.DictationEvent
+import app.mercury.voice.DictationInterface
 import app.mercury.voice.DictationListener
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +22,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import sh.mercuryagent.core.DictationRoute
 import sh.mercuryagent.core.DictationSession
 import sh.mercuryagent.core.DictationStart
 import sh.mercuryagent.core.MercuryClient
@@ -31,7 +33,10 @@ import sh.mercuryagent.core.dictationSession
  * Live dictation in the message box (iOS: DictationModel): the owner talks and the words appear as
  * they speak. The microphone is [CallAudio]'s (60 ms frames of 16 kHz PCM16); the speech to text is
  * Mercury's shared Rust engine (`Dictation`) with a short-lived token from the Mercury
- * (POST /api/mobile/voice/dictation). The mic starts on the tap, while the token and the stream
+ * (POST /api/mobile/voice/dictation) for the speech service the owner uses (Gemini, OpenAI,
+ * Deepgram or ElevenLabs: the same one Desktop's voice typing uses). With none, or a Mercury too
+ * old to dictate, the phone's own speech recognition listens ([DeviceDictation]), so the mic always
+ * works ([DictationRoute]). The mic starts on the tap, while the token and the stream
  * come up; what's said meanwhile is kept and sent once the stream is open. Partial text shows as
  * it's heard and is replaced by the final text; both go after what was already typed
  * ([DictationText]). Tap again to stop; sending, a call, or 60 s of quiet stop it too. Main thread only.
@@ -57,7 +62,11 @@ class DictationModel(
   private var text: DictationText? = null
   private var audio: CallAudio? = null
   private var relay: DictationRelay? = null
-  private var session: Dictation? = null
+  private var session: DictationInterface? = null
+  /** Who's listening right now ("Listening · Gemini"), null while idle. */
+  var listening by mutableStateOf<DictationRoute?>(null); private set
+  /** Whether the phone's own speech recognition can be used (tests replace it). */
+  var deviceSpeech: () -> Boolean = { DeviceDictation.available(context) }
   private var prefetched: DictationSession? = null
   private var watchdog: Job? = null
   private var lastHeard = 0L
@@ -68,16 +77,16 @@ class DictationModel(
   val active: Boolean get() = phase != Phase.Idle
   /** A voice call runs: the mic belongs to it. */
   val callRunning: Boolean get() = calls.running
-  /** The mic button works: this Mercury can dictate and no call has the mic. */
-  val available: Boolean get() = capabilities?.dictation == true && !callRunning
+  /** Who would listen if the mic were tapped now. */
+  val route: DictationRoute get() = DictationRoute.decide(capabilities, deviceSpeech(), callRunning)
+  /** The mic button works: Mercury's speech service or the phone's own, and no call has the mic. */
+  val available: Boolean get() = route !is DictationRoute.Unavailable
 
-  /** Why the mic is greyed out, in plain words (null while it isn't known yet). */
-  val unavailableReason: String?
-    get() {
-      if (callRunning) return "Dictation is off during a voice call."
-      val c = capabilities ?: return null
-      return if (c.dictation) null else c.setupLine
-    }
+  /** Why the mic is greyed out, in plain words (null when it works). */
+  val unavailableReason: String? get() = (route as? DictationRoute.Unavailable)?.reason
+
+  /** The box's placeholder while dictating: "Listening · Gemini", "Listening · On this phone". */
+  val listeningLabel: String get() = (listening ?: DictationRoute.Server(null)).listeningLabel
 
   /** Asks the Mercury what it can do, and gets a token ready so the first tap starts at once. */
   suspend fun load() {
@@ -104,10 +113,14 @@ class DictationModel(
     if (phase != Phase.Idle) return
     val gen = ++generation
     notice = null
+    val route = route
+    listening = route
     phase = Phase.Starting
     haptics.play(CallHaptic.DictationStarted)
     text = DictationText(draft.text.toString())
     lastHeard = SystemClock.elapsedRealtime()
+    // The phone's recogniser opens the microphone itself.
+    if (route is DictationRoute.Device) { startOnPhone(gen, null); watch(gen); return }
     val relay = DictationRelay()
     this.relay = relay
     val engine = CallAudio(meter, MediaRecorder.AudioSource.VOICE_RECOGNITION, withPlayback = false)
@@ -153,17 +166,19 @@ class DictationModel(
     } else {
       val r = try { client.dictationSession() } catch (e: Exception) {
         if (e is kotlinx.coroutines.CancellationException) throw e
-        return fail("Dictation couldn't start: ${e.message}", gen)
+        return switchToPhone(gen, "Dictation couldn't start: ${e.message}")
       }
       when (r) {
         is DictationStart.Live -> s = r.session
         is DictationStart.Unavailable -> {
+          // No speech service (or an older Mercury): the phone listens instead.
           capabilities = capabilities?.copy(dictation = false, dictationSetup = r.setup)
-          return fail(r.setup, gen)
+          return switchToPhone(gen, r.setup)
         }
       }
     }
     if (gen != generation || (phase != Phase.Starting && phase != Phase.Stopping)) return
+    if (listening == DictationRoute.Server(null)) listening = DictationRoute.Server(capabilities?.dictationName ?: VoiceCapabilities.engineName(s.engine))
     val config = DictationConfig(engine = s.engine, token = s.token, ephemeral = s.ephemeral, url = s.url, model = s.model, language = s.language)
     try {
       val d = Dictation.start(config, object : DictationListener {
@@ -175,6 +190,26 @@ class DictationModel(
     } catch (e: Throwable) {
       fail("Dictation couldn't start: ${(e as? app.mercury.voice.VoiceException.Config)?.reason ?: "the voice engine didn't load"}", gen)
     }
+  }
+
+  /** Mercury's speech service couldn't start: hand over to the phone's recogniser (it opens the mic itself). */
+  private fun switchToPhone(gen: Int, why: String) {
+    if (gen != generation || !active) return
+    if (!deviceSpeech()) return fail(why, gen)
+    relay?.close(); relay = null
+    stopAudio()
+    startOnPhone(gen, why)
+  }
+
+  /** The phone's own speech recognition. [why]: what to say if it can't start either. */
+  private fun startOnPhone(gen: Int, why: String?) {
+    if (DictationRoute.afterServerRefused(why ?: DictationRoute.NO_SPEECH, deviceSpeech()) is DictationRoute.Unavailable) {
+      return fail(why ?: DictationRoute.NO_SPEECH, gen)
+    }
+    listening = DictationRoute.Device
+    val d = DeviceDictation.start(context) { e -> main.post { handle(e, gen) } } ?: return fail(why ?: DictationRoute.NO_SPEECH, gen)
+    session = d
+    if (phase == Phase.Stopping) d.stop()
   }
 
   fun handle(e: DictationEvent, gen: Int) {
@@ -207,8 +242,8 @@ class DictationModel(
         if (gen != generation || !active) return@launch
         if (callRunning) { cancel(); return@launch }
         val now = SystemClock.elapsedRealtime()
-        // The engine never confirmed the stop: give up waiting.
-        if (phase == Phase.Stopping && now - stoppingSince > 10_000) { cancel(); return@launch }
+        // The engine never confirmed the stop: give up waiting (Gemini can take ~10 s on a long dictation).
+        if (phase == Phase.Stopping && now - stoppingSince > 14_000) { cancel(); return@launch }
         if (phase == Phase.Listening && now - lastHeard >= SILENCE_LIMIT_MS) {
           notice = "Dictation stopped after a minute of quiet."
           stop()
@@ -240,6 +275,7 @@ class DictationModel(
     session = null
     relay = null
     text = null
+    listening = null
     meter.reset()
     phase = Phase.Idle
   }
@@ -309,13 +345,13 @@ class DictationText(draft: String) {
  */
 class DictationRelay(private val maxHeld: Int = 250) {
   private val held = ArrayDeque<ByteArray>()
-  private var target: Dictation? = null
+  private var target: DictationInterface? = null
   private var closed = false
   /** The mic stopped: frames already kept still go to the stream when it opens. */
   private var inputDone = false
 
   fun push(frame: ByteArray) {
-    val t: Dictation?
+    val t: DictationInterface?
     synchronized(this) {
       if (closed || inputDone) return
       t = target
@@ -328,7 +364,7 @@ class DictationRelay(private val maxHeld: Int = 250) {
     t?.pushAudio(frame)
   }
 
-  fun attach(d: Dictation) {
+  fun attach(d: DictationInterface) {
     val early: List<ByteArray>
     synchronized(this) {
       early = held.toList()

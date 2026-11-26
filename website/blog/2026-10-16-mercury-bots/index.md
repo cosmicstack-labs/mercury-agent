@@ -1,7 +1,7 @@
 ---
 slug: mercury-bots
 title: "Mercury Bots: an agent fleet that runs on your machine"
-description: "Always-on agents shipped everywhere this autumn. How Mercury Bots work, what we measured, how they compare with Grok Bot, OpenAI dots, Meta Muse, OpenClaw and Hermes Agent, and the commits behind it."
+description: "How Mercury Bots work, what we measured, how they compare with other always-on agents, and the commits behind them, as the work was done."
 authors: [salman]
 tags: [product, engineering, runtime]
 image: ./cover.jpg

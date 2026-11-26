@@ -1,6 +1,77 @@
+# Mercury Weekly #1: IPOs, models and agents that pay
+
+> The week of 9 to 15 November 2026: Anthropic's IPO roadshow, Nvidia's CEO change, new frontier models, ChatGPT Wallet and the Decisions API.
+
+Published 2026-11-17 by Tashir Khan. Tags: weekly, news, ai-agents, security.
+Canonical: https://mercuryagent.sh/blog/mercury-weekly-1
+
+This week, AI moved on four fronts at once: the companies behind it moved toward public markets, the frontier models got stronger, developer tools started offering several models instead of one, and agents began to spend money on users' behalf. Each of these is a separate story, but read together they point the same way. This is the first Mercury Weekly, covering 9 to 15 November. There was no Mercury release this week.
+
+## Anthropic begins its IPO roadshow
+
+On 10 November, Anthropic launched the roadshow for its proposed initial public offering. [Anthropic says](https://www.anthropic.com/news/roadshow-launch) it plans to offer 825 million Class A shares at an expected price of $70 to $78 per share, and has applied to list on Nasdaq under the ticker `ANT`. Of those shares, 801,351,354 are being sold by Anthropic and 23,648,646 by existing stockholders, so the company itself will receive the proceeds. The offering is still proposed, so the price and timing can change. This is the biggest financial story of the week, and it means one of the leading AI labs is about to be judged by public investors.
+
+## Nvidia's CEO steps down
+
+On 12 November, Jensen Huang resigned as Nvidia's President, CEO and board member, effective immediately. CFO Colette Kress became interim CEO, and the board has started a search for a permanent successor. [Nvidia's announcement](https://nvidianews.nvidia.com/news/nvidia-announces-ceo-transition) also named Harvey Jones as the board's first independent chair, and said the company expects operations, customer commitments and its product roadmap to continue without interruption.
+
+The resignation came amid reports about Huang's personal conduct, including a reported relationship with a suspected Chinese intelligence agent. Several outlets, including [The Guardian](https://www.theguardian.com/technology/2026/nov/12/nvidia-ceo-jensen-huang-resigns) and [CBS News](https://www.cbsnews.com/news/nvidia-ceo-jensen-huang-resigns/), have reported those allegations. Nvidia's stock reflected the uncertainty. [CNBC](https://www.cnbc.com/2026/11/13/nvidia-stock-jensen-affair-ai.html) reported that shares fell about 13% that week, the sixth straight weekly loss and the longest such run since 2012. The question for the industry is whether a new CEO changes Nvidia's strategy, and Nvidia's next earnings report on 17 November should give the first hint.
+
+## Frontier models: Claude Fable 5.2, Mythos 5.2 and Gemini 4 Carbon
+
+On 9 November, Anthropic released Claude Fable 5.2 and Mythos 5.2, upgraded models for difficult technical work with gains in coding, reasoning and vision. Anthropic says the two [are the same underlying model](https://www.anthropic.com/claude-fable-and-mythos-5-2). The difference is access. Fable has strong cybersecurity and biology safeguards, so it is available to all users. Mythos is available to organizations that apply through Anthropic's verification programs for life sciences and cybersecurity research. Anthropic lists Fable 5.2 at $8 per million input tokens and $40 per million output tokens, and says it generates output up to 30% faster than Fable 5.1.
+
+On 10 November, Google made [Gemini 4 Carbon](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-4-carbon-now-available/) available to developers, enterprises and consumers. Google describes Carbon as its strongest model, with frontier cybersecurity performance and long-horizon agentic workflows across complex knowledge work, software engineering and scientific reasoning. It sits above Gemini 4 Argon, which Google still recommends for most software engineering and knowledge work. Carbon is for harder problems that need more tokens. Its API pricing is $2 per million input tokens and $10 per million output tokens.
+
+## ChatGPT Wallet: agents that pay
+
+On 13 November, OpenAI introduced ChatGPT Wallet, which lets dots, its agents inside ChatGPT, complete purchases for a user. According to [OpenAI's announcement](https://openai.com/index/introducing-chatgpt-wallet/) and launch coverage, the feature starts with a limited group of U.S. ChatGPT Pro subscribers. Every purchase requires the user's approval, typically with a biometric check such as Face ID or a fingerprint.
+
+The detail that matters most for developers is the credential. OpenAI says the agent and the merchant receive a substitute payment credential, not the real card number, so the user's card stays out of the agent's hands. That makes "agents that pay" concrete: the approval step and the payment token are where the trust decision is made, and they are what to watch as the feature widens.
+
+## Google's Decisions API
+
+On 11 November, Google launched the Decisions API, powered by a new model, Gemini Decision 1. It is built for bounded choices rather than open-ended text. Google's [launch post](https://blog.google/innovation-and-ai/technology/developers-tools/gemini-decisions-api/) lists the uses as tool selection, policy checks, model routing and context grading.
+
+For developers, the interesting part is the shape of the call. One request can carry text, images, audio, video or PDFs, up to 256K tokens, along with up to 1,000 independent questions. Each question is a yes/no check, a multiple-choice selection or a rubric score, and every answer comes with a confidence score from 0 to 1, so ambiguous cases can go to a fallback model or a person. Google claims end-to-end latency of 150 to 250 ms, and pricing of $0.10 per million input tokens with no charge for output tokens. Those figures explain why someone would use it instead of a generative call: a fast, cheap yes/no or routing decision does not need a model to write text. These are Google's figures, and we have not tested them.
+
+## Also this week
+
+**Git patches six security vulnerabilities.** On 10 November, the Git project released fixes for six vulnerabilities in [Git 2.56.1](https://github.blog/open-source/git/git-security-vulnerabilities-announced-7/) and backports to several earlier maintenance lines. The most serious, CVE-2026-111760, can run attacker-controlled code during a recursive clone of a malicious repository. Others cover path traversal, memory corruption during merges and binary patches, and file access through fast-import streams. GitHub recommends updating to Git 2.56.1, or the patched release for your maintenance series, and updating any application that bundles its own copy of Git. If you cannot update immediately, clone only from trusted servers and avoid recursive clones of untrusted repositories.
+
+**GitHub Copilot added three models between 9 and 13 November.** GitHub added Claude Fable 5.2 on 9 November, Gemini 4 Carbon on 10 November and Gemini 4 Hydrogen on 13 November, according to its [changelog](https://github.blog/changelog/). My read: developer tools are becoming surfaces where you pick between models, not products tied to one model.
+
+**The Fed warns about AI and jobs.** On 12 November, Federal Reserve Governor Michael Barr said at Yale that the U.S. should prepare for possibly significant labor-market disruption and greater inequality as AI adoption speeds up. He stressed that the eventual effects are still uncertain.
+
+## The signal
+
+Taken together, this week's stories suggest AI is becoming an ecosystem rather than a model market. Anthropic is preparing to become a public company, so its growth will soon be judged by quarterly results as well as benchmarks. Developers no longer have to choose one model for everything, because Copilot offers several at once and Google's Decisions API is built to route work between models. And agents have moved from recommending purchases to making them, with approval and payment tokens as the safeguards. The stories are about different companies, but they share one direction: the value is shifting from any single model to the systems that connect models, tools, money and people.
+
+## Mercury this week
+
+No Mercury release this week. We'll include product updates here when there's something worth reporting.
+
+## Sources
+
+- Anthropic, IPO roadshow launch: https://www.anthropic.com/news/roadshow-launch
+- NVIDIA Newsroom, CEO transition announcement: https://nvidianews.nvidia.com/news/nvidia-announces-ceo-transition
+- CNBC, Nvidia stock and the CEO affair story, 13 Nov 2026: https://www.cnbc.com/2026/11/13/nvidia-stock-jensen-affair-ai.html
+- [The Guardian](https://www.theguardian.com/technology/2026/nov/12/nvidia-ceo-jensen-huang-resigns), reporting on Jensen Huang's resignation, 12 Nov 2026
+- [CBS News](https://www.cbsnews.com/news/nvidia-ceo-jensen-huang-resigns/), reporting on Jensen Huang's resignation, 12 Nov 2026
+- Anthropic, Claude Fable 5.2 and Mythos 5.2: https://www.anthropic.com/claude-fable-and-mythos-5-2
+- Google, Gemini 4 Carbon now available: https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-4-carbon-now-available/
+- OpenAI, Introducing ChatGPT Wallet: https://openai.com/index/introducing-chatgpt-wallet/
+- Google, Gemini Decisions API launch: https://blog.google/innovation-and-ai/technology/developers-tools/gemini-decisions-api/
+- The GitHub Blog, Git security vulnerabilities announced: https://github.blog/open-source/git/git-security-vulnerabilities-announced-7/
+- GitHub Changelog, Copilot model additions: https://github.blog/changelog/
+- Federal Reserve, Governor Michael Barr's speech at Yale, 12 Nov 2026: https://www.federalreserve.gov/newsevents/speech/barr20261112a.htm
+
+
+---
+
 # What Is a Personal AI Assistant? 10 Real Tasks in 2026
 
-> An AI personal assistant acts for one person across their accounts, files, apps and connected services. Here is what it is, ten tasks it can handle, and the permissions each one needs.
+> A personal AI assistant acts for one person across accounts, files, apps and services. What it is, ten tasks it handles, and the permissions each needs.
 
 Published 2026-11-11 by Tashir Khan. Tags: product, security, ai-agents, self-hosted-ai.
 Canonical: https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant
@@ -151,9 +222,9 @@ A personal assistant earns its place by doing small, dull work correctly every d
 
 ---
 
-# 9 Safest, Most Secure, and Permission-Aware AI Agents for Real-World Tasks
+# 9 AI Agents Compared for Real Work: Memory and Permissions
 
-> Grok, ChatGPT Work, Mercury, OpenClaw, Manus, Gemini agent for work, Devin, Claude Cowork and Comet compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.
+> Nine AI agents compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.
 
 Published 2026-11-05 by Tashir Khan. Tags: engineering, product, ai-agents, ai-agent-comparison, self-hosted-ai, ai-agent-memory.
 Canonical: https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work
@@ -418,6 +489,14 @@ In 1.5.0, a request counts as local only when it comes from `127.0.0.1` with no 
 
 `/server` in the terminal, or `mercury server` in a shell, manages all of it, and `mercury doctor --security` checks your setup. The design is in [ADR-035](https://github.com/cosmicstack-labs/mercury-agent/blob/main/DECISIONS.md), and [Remote access & security](/docs/desktop/remote-access) explains how to use it.
 
+## MCP servers and Bots 2.0
+
+**MCP servers.** Mercury can now use tools from Model Context Protocol servers. You connect a server over stdio, where Mercury starts it as a local process, or over streamable HTTP. Its tools then appear to the agent alongside the built-in ones.
+
+Every MCP call asks first in Ask Me mode. Allow All does not skip that prompt, and a shell command that changes the MCP setup asks too. The one exception is a tool you list under `tools.autoApprove` for that server, which then runs without asking. Bots get no MCP tools at all, whatever their tier. [MCP Servers](/docs/integrations/mcp) has the setup steps.
+
+**Bots 2.0.** Every bot run now ends with a report that says one of three things: it produced something, there was nothing new, or it failed. Results wait in a results inbox. Each run also keeps a journal and transcript, so you can see what a bot did and why.
+
 ## Updates that put things back
 
 Updating used to mean `mercury upgrade`, which removed the npm package before installing the new one, kept no backup, and didn't check that the new version started. Now an update, from the app or the terminal, does this:
@@ -436,8 +515,6 @@ Mercury Desktop shows an Update button at the top right, like Chrome's. It gets 
 
 - **Research you can watch.** A plan you can edit, every source read or failed with the reason, and a report even when a run is cut short. Reports export as PDF or Word.
 - **Files in one place.** What Mercury makes goes in `~/mercury-artifacts`, one folder per chat.
-- **MCP servers.** Mercury can use tools from Model Context Protocol servers, and every MCP call asks first in Ask Me mode. See [MCP Servers](/docs/integrations/mcp).
-- **Bots 2.0.** Each run reports, says there was nothing new, or says it failed, and results wait in an inbox.
 
 Update with `mercury upgrade`, or [download Mercury Desktop](/download) and let it update your Mercury for you.
 
@@ -504,7 +581,7 @@ Bots are Mercury instances with their own persona, tools and sandbox that run on
 
 ## Brain
 
-**Brain** shows what Mercury knows. Memories lists what it has learned about you and how you work, and you can correct anything that's wrong. People shows the people it knows from your conversations. Map groups your notes into topics, and Graph shows how people and notes connect.
+**Brain** shows what Mercury knows. Memory lists what it has learned about you and how you work, and you can correct anything that's wrong. Persons shows the people it knows from your conversations. Goals lists your goals and projects, and Graph shows how people and notes connect.
 
 ## Plugins and voice
 
@@ -602,7 +679,7 @@ Measured against the table above, we did not find the following:
 - Full arguments. The stored trace caps them at 80 characters, so you often can't reconstruct exactly what was sent.
 - An OpenTelemetry dependency in `package.json`, or an audit log.
 
-So the honest version is this. From the code we read, Mercury can show roughly what it did in the last turn. We did not find a way to show the first wrong step of a bad run from what it stores. This is the same gap our October 17 permissions post described from the other side: we can't audit access we don't record.
+So the honest version is this. From the code we read, Mercury can show roughly what it did in the last turn. We did not find a way to show the first wrong step of a bad run from what it stores. Mercury does keep a security log, `~/.mercury/security/audit.jsonl`, but it covers pairing, device and remote-action decisions, not each tool call. This is the same gap our October 17 permissions post described from the other side: we can't audit access we don't record.
 
 ## What we would instrument first
 
@@ -621,7 +698,7 @@ If you cannot reconstruct the run after it fails, a successful response can hide
 
 # Running an agent overnight: what breaks first
 
-> We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.
+> We read Mercury's scheduler and budget code and reproduced one behaviour to find what fails in long unattended runs: skipped tasks and quiet errors.
 
 Published 2026-10-27 by Tashir Khan. Tags: runtime, engineering.
 Canonical: https://mercuryagent.sh/blog/running-an-agent-overnight
@@ -884,9 +961,9 @@ https://github.com/cosmicstack-labs/mercury-agent
 
 ---
 
-# Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk
+# Mercury 1.4: plugins, WhatsApp calls, and Optimus
 
-> Mercury 1.4 adds isolated plugins and two official ones: WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.
+> Mercury 1.4 adds isolated plugins, WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.
 
 Published 2026-10-23 by Salman Qureshi. Tags: news, releases, product.
 Canonical: https://mercuryagent.sh/blog/mercury-1-4
@@ -997,9 +1074,9 @@ https://github.com/cosmicstack-labs/mercury-agent
 
 ---
 
-# The new bottleneck in AI coding isn't code generation. It's verification.
+# AI coding's bottleneck is verification, not generation
 
-> A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.
+> A Harvard working paper finds coding agents raised output while review time rose 49%. Why verification should decide whether an agent is useful.
 
 Published 2026-10-20 by Tashir Khan. Tags: engineering, news.
 Canonical: https://mercuryagent.sh/blog/ai-coding-verification-bottleneck
@@ -1076,7 +1153,7 @@ Fiona Chen and James Stratton, *Artificial Intelligence in the Firm: Bottlenecks
 
 **Secondary**
 
-Ars Technica, coverage of the same study. [arstechnica.com](https://arstechnica.com/)
+Ars Technica, coverage of the same study. [AI coding agents generate more code, but not more software](https://arstechnica.com/ai/2026/10/ai-coding-agents-generate-more-code-but-not-more-software/)
 
 
 ---
@@ -1154,7 +1231,7 @@ The full options are in the [permissions reference](/docs/reference/permissions)
 - **Symlinks and hard links are checked.** A read that resolves outside the approved scopes is denied. A regular file with more than one hard link needs approval, because it may be an alias of a file outside every scope.
 - **Unattended bots fail closed.** A bot has no one to ask, so an out-of-scope action is denied instead of waiting. Skill elevation is ignored in that mode, so a skill cannot widen what a bot may do.
 
-Two gaps remain. Scheduled tasks run in Allow All mode for their own turn, so shell commands run unless they hit the blocklist and scope prompts are skipped. That is the weakest point, and it looks like the situation CERT-In describes: a background run with broad access and nobody watching. Second, we found no per-access audit log in the permission code, so we treat auditability as missing, not done.
+Two gaps remain. Scheduled tasks run in Allow All mode for their own turn, so shell commands run unless they hit the blocklist and scope prompts are skipped. That is the weakest point, and it looks like the situation CERT-In describes: a background run with broad access and nobody watching. Second, Mercury keeps a security log in `~/.mercury/security/audit.jsonl`. It records pairing, device approvals and revocations, and remote sensitive actions with the answer each got. It does not record every file read or shell command the agent runs, so per-access auditing is still missing, not done.
 
 ## What it means for you
 
@@ -1182,7 +1259,7 @@ Read the CERT-In advisory itself, not only the coverage.
 
 # Mercury Bots: an agent fleet that runs on your machine
 
-> Always-on agents shipped everywhere this autumn. How Mercury Bots work, what we measured, how they compare with Grok Bot, OpenAI dots, Meta Muse, OpenClaw and Hermes Agent, and the commits behind it.
+> How Mercury Bots work, what we measured, how they compare with other always-on agents, and the commits behind them, as the work was done.
 
 Published 2026-10-16 by Salman Qureshi. Tags: product, engineering, runtime.
 Canonical: https://mercuryagent.sh/blog/mercury-bots
@@ -1449,7 +1526,7 @@ All checked on October 16, 2026.
 
 # The setup wizard that quit at the first menu
 
-> For six releases, a brand-new Mercury install asked for your name, showed one menu, and exited without an error. A walkthrough of a one-tick race between two readers of the same terminal, and the test that now keeps it from coming back.
+> A new Mercury install asked for your name, showed one menu, then quit with no error. How a one-tick race caused it, and the test that stops it returning.
 
 Published 2026-10-15 by Mercury Engineering. Tags: engineering, postmortem.
 Canonical: https://mercuryagent.sh/blog/the-wizard-that-quit-at-the-menu
@@ -1554,7 +1631,7 @@ We're sorry to everyone whose first impression of Mercury was a menu that vanish
 
 # We were running Mercury twice and didn't know it
 
-> Typing felt sluggish on every machine, and the terminal renderer took the blame. The real cause was a second full copy of the agent, started quietly by the launcher. How we found it, and why the fix was an architecture change rather than a performance tweak.
+> Typing felt sluggish everywhere. The cause was a second full copy of the agent, started quietly by the launcher. How we found it and fixed it.
 
 Published 2026-10-14 by Salman Qureshi. Tags: engineering, postmortem, runtime.
 Canonical: https://mercuryagent.sh/blog/we-were-running-mercury-twice
@@ -1633,7 +1710,7 @@ If you're building something that runs in the background and has a terminal fron
 
 # Mercury 1.3: an agent you can actually leave running
 
-> One background runtime that every terminal attaches to, bots that deliver real files and stay online, and a fleet you can run from Telegram. What changed in the 1.3 line and why.
+> Mercury 1.3's shared background runtime, bots that deliver real files and stay online, and a fleet you run from Telegram. What changed and why.
 
 Published 2026-10-12 by Salman Qureshi. Tags: news, releases, runtime.
 Canonical: https://mercuryagent.sh/blog/mercury-1-3
@@ -1704,7 +1781,7 @@ https://github.com/cosmicstack-labs/mercury-agent
 
 # Asks before it acts: how Mercury's permission model works
 
-> An agent with a shell, a file system and network access is only useful if you can trust what it will do with them. A tour of the layers between the model and your machine: scopes, approvals, a blocklist nothing can override, an SSRF guard, and tiers for unattended bots.
+> How Mercury's permission model works: scopes, approvals, a blocklist nothing overrides, an SSRF guard, and the limits that apply to unattended bots.
 
 Published 2026-10-09 by Mercury Engineering. Tags: product, security.
 Canonical: https://mercuryagent.sh/blog/asks-before-it-acts
@@ -1746,6 +1823,13 @@ You choose the default per session:
 
 One detail we're careful about: Allow All applies to the session where you turned it on. A request that arrives from a different channel doesn't inherit your permissive setting. If you said "allow all" in your terminal, a message from a Telegram group is still checked as a Telegram message.
 
+### Two more places that always ask
+
+Allow All doesn't cover everything. Two exceptions were added after this model was first written:
+
+- **MCP tools.** Mercury can use tools from Model Context Protocol servers. Every MCP call asks first in Ask Me mode, and Allow All doesn't skip that prompt. A shell command that changes the MCP setup, or writes `mercury.yaml`, `.env` or `permissions.yaml`, also asks, even under Allow All. The only exception is a single tool you have listed under `tools.autoApprove` for that server.
+- **Remote devices.** Mercury listens only on `127.0.0.1`. A request counts as local only when it comes from that address with no proxy headers and a `localhost` host. Anything else is remote. A new remote device needs your approval before it can connect, and sensitive actions from it ask you each time, including the terminal, Allow All, and restarts. Devices unused for 30 days stop working until you approve them again.
+
 ## Layer 4: the network
 
 `fetch_url` is how Mercury reads the web, and it's a classic way to attack a self-hosted service: ask the agent to fetch `http://192.168.1.1/admin`, or a public URL that redirects to one, and it becomes a proxy into your home network.
@@ -1772,7 +1856,7 @@ When you create a bot you pick a tier:
 | **Operator** | Also run commands, restricted to its granted folders. The blocklist still applies. |
 | **Full access** | Everything, including deleting files. Meant for automation you fully trust. |
 
-Each bot also has its own folder scopes, its own daily token budget, and its own memory. A bot's tier is a ceiling: a crew member can't do more than the permissions it was given, regardless of what its lead asks it to do.
+Each bot also has its own folder scopes, its own daily token budget, and its own memory. A bot's tier is a ceiling: a crew member can't do more than the permissions it was given, regardless of what its lead asks it to do. Bots also get no MCP tools at all, whatever their tier.
 
 ## Layer 6: secrets stay out of the conversation
 

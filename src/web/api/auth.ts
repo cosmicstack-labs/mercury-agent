@@ -16,6 +16,15 @@ import { ownerApprovals } from '../../security/owner-approvals.js';
 import { audit } from '../../security/audit.js';
 import { closeStreams } from '../../security/live-streams.js';
 import { pairCodes } from '../../security/pair-codes.js';
+import { readRemoteSettings } from '../../security/remote-settings.js';
+
+/**
+ * Password sign-in from other devices is off unless the owner turned it on
+ * (/server password on): devices connect with a device token made on this
+ * computer. On this computer itself the password still works.
+ */
+export const PASSWORD_SIGN_IN_OFF = 'Password sign-in is turned off for other devices. Connect with a device token instead: on the computer Mercury runs on, type /server token <device name> (or run: mercury devices add <name>) and paste the token here. The owner can turn password sign-in back on with /server password on.';
+const passwordSignInRefused = (local: boolean): boolean => !local && !readRemoteSettings().passwordSignIn;
 
 function resolveWebDir(...segments: string[]): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -96,6 +105,10 @@ auth.post('/api/auth/login', async (c) => {
   if (wait > 0) {
     c.header('Retry-After', String(wait));
     return c.html(renderLoginPage(`Too many failed attempts. Try again in ${Math.ceil(wait / 60)} minutes.`), 429);
+  }
+  if (passwordSignInRefused(originOf(c).local)) {
+    audit('login.refused', { who: 'browser', ip: originOf(c).clientIp, detail: 'password sign-in is off' });
+    return c.html(renderLoginPage(PASSWORD_SIGN_IN_OFF.replace(' and paste the token here', '')), 403);
   }
   const body = await c.req.parseBody();
   const username = (body.username as string) || '';
@@ -179,6 +192,10 @@ auth.post('/api/auth/token', async (c) => {
   if (wait > 0) {
     c.header('Retry-After', String(wait));
     return c.json({ error: 'Too many failed sign-in attempts; try again later' }, 429);
+  }
+  if (passwordSignInRefused(originOf(c).local)) {
+    audit('login.refused', { who: 'a device', ip: originOf(c).clientIp, detail: 'password sign-in is off' });
+    return c.json({ error: PASSWORD_SIGN_IN_OFF, code: 'password_sign_in_off' }, 403);
   }
   let body: Record<string, unknown>;
   try {

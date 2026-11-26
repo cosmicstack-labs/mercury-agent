@@ -36,7 +36,7 @@ export function registerServerCli(program: Command): void {
     .action(async (args: string[] = []) => {
       const { ops, live } = await opsForThisComputer();
       if (!live) console.log(chalk.dim('  Mercury is not running: changing settings directly (nothing is waiting for approval).'));
-      const { selectWithArrowKeys } = await import('../utils/arrow-select.js');
+      const { selectWithArrowKeys, inputWithKeys } = await import('../utils/arrow-select.js');
       const { acknowledgeSecret } = await import('../utils/clipboard.js');
       const tty = !!(process.stdin.isTTY && process.stdout.isTTY);
       try {
@@ -45,7 +45,7 @@ export function registerServerCli(program: Command): void {
           say: async (text) => { console.log(`\n${text.replace(/\*\*(.+?)\*\*/g, (_m, t: string) => chalk.bold(t))}\n`); },
           secret: async (text, copy) => {
             console.log(`\n${text}\n`);
-            if (tty) await acknowledgeSecret((t, o) => selectWithArrowKeys(t, o).catch(() => ''), 'Copy the token now: it is not shown again.', copy);
+            return tty ? acknowledgeSecret((t, o) => selectWithArrowKeys(t, o).catch(() => ''), 'Copy the token now: it is not shown again.', copy) : 'ok';
           },
           terminal: true,
           waitFor: (text, until) => {
@@ -57,6 +57,7 @@ export function registerServerCli(program: Command): void {
               until.then((v) => { process.off('SIGINT', stop); resolve(v); }, (e: unknown) => { process.off('SIGINT', stop); reject(e); });
             });
           },
+          ...(tty ? { ask: async (title: string, hint?: string) => (await inputWithKeys(title, { helperText: hint }).catch(() => '')) || null } : {}),
         });
       } catch (err) {
         console.error(chalk.red(`  ${err instanceof Error ? err.message : String(err)}`));

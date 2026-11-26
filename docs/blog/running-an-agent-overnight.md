@@ -1,6 +1,6 @@
 # Running an agent overnight: what breaks first
 
-> We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.
+> We read Mercury's scheduler and budget code and reproduced one behaviour to find what fails in long unattended runs: skipped tasks and quiet errors.
 
 Published 2026-10-27 by Tashir Khan. Tags: runtime, engineering.
 Canonical: https://mercuryagent.sh/blog/running-an-agent-overnight

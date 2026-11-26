@@ -1430,7 +1430,7 @@ public func FfiConverterTypeVoiceListener_lower(_ value: VoiceListener) -> UInt6
  */
 public struct DictationConfig: Equatable, Hashable {
     /**
-     * "openai", "deepgram" or "elevenlabs".
+     * "openai", "gemini", "deepgram" or "elevenlabs".
      */
     public var engine: String
     /**
@@ -1452,7 +1452,7 @@ public struct DictationConfig: Equatable, Hashable {
     // declare one manually.
     public init(
         /**
-         * "openai", "deepgram" or "elevenlabs".
+         * "openai", "gemini", "deepgram" or "elevenlabs".
          */engine: String, 
         /**
          * The short-lived token (or, for testing, an API key).

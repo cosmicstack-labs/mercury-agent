@@ -91,7 +91,7 @@ fun ConnectScreen(vm: ConnectViewModel, onClose: (() -> Unit)? = null) {
         colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
         navigationIcon = {
           when {
-            ui.step != ConnectStep.Welcome && ui.step !is ConnectStep.Waiting ->
+            ui.step != ConnectStep.Welcome && ui.step !is ConnectStep.Waiting && ui.step != ConnectStep.Name ->
               IconButton(onClick = { vm.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
             onClose != null && ui.step == ConnectStep.Welcome -> IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, "Close") }
           }
@@ -111,6 +111,7 @@ fun ConnectScreen(vm: ConnectViewModel, onClose: (() -> Unit)? = null) {
         ConnectStep.Welcome::class -> Welcome(vm)
         ConnectStep.SignIn::class -> SignIn(vm, ui)
         ConnectStep.Token::class -> PasteToken(vm, ui)
+        ConnectStep.Name::class -> NameStep(vm, ui)
         else -> (ui.step as? ConnectStep.Waiting)?.let { Waiting(vm, it.pairing) }
       }
     }
@@ -135,7 +136,7 @@ private fun Welcome(vm: ConnectViewModel) {
     )
     Spacer(Modifier.height(32.dp))
     Card(
-      onClick = { vm.go(ConnectStep.SignIn) },
+      onClick = { vm.go(ConnectStep.Token) },
       colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
       modifier = Modifier.fillMaxWidth(),
     ) {
@@ -146,7 +147,7 @@ private fun Welcome(vm: ConnectViewModel) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
           Text("Your own Mercury", style = MaterialTheme.typography.titleMedium)
           Text(
-            "On your computer or a server. Sign in, then approve this phone with a short code.",
+            "On your computer or a server. Make a device token there, then paste it here.",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
         }
@@ -154,8 +155,8 @@ private fun Welcome(vm: ConnectViewModel) {
       }
     }
     Spacer(Modifier.weight(1f).height(32.dp))
-    Button(onClick = { vm.go(ConnectStep.SignIn) }, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Sign in to your Mercury") }
-    TextButton(onClick = { vm.go(ConnectStep.Token) }, modifier = Modifier.padding(top = 8.dp)) { Text("I have a device token") }
+    Button(onClick = { vm.go(ConnectStep.Token) }, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Connect with a device token") }
+    TextButton(onClick = { vm.go(ConnectStep.SignIn) }, modifier = Modifier.padding(top = 8.dp)) { Text("Sign in with a password") }
     // QR pairing: iOS has none yet (ConnectModel.swift); when Mercury shows a pairing QR, add CameraX + ML Kit here.
   }
 }
@@ -184,7 +185,7 @@ private fun SignIn(vm: ConnectViewModel, ui: ConnectUi) {
   FormColumn {
     Text("Sign in to your Mercury", style = MaterialTheme.typography.headlineSmall)
     Text(
-      "Use the address you reach Mercury at, and the username and password you set for it.",
+      "Use the address you reach Mercury at, and the username and password you set for it. This works only if password sign-in is on for your Mercury (/server password on); it's off by default.",
       style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     AddressField(ui.address, vm::setAddress)
@@ -225,7 +226,7 @@ private fun PasteToken(vm: ConnectViewModel, ui: ConnectUi) {
   FormColumn {
     Text("Connect with a token", style = MaterialTheme.typography.headlineSmall)
     Text(
-      "Paste a device token (it starts with mdt_) made for this phone on your Mercury.",
+      "On the computer Mercury runs on, type /server token <phone name> (or run mercury devices add <name>), then paste the token here. It starts with mdt_.",
       style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     AddressField(ui.address, vm::setAddress)

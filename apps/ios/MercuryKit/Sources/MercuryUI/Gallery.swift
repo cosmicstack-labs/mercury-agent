@@ -14,6 +14,23 @@ public enum Gallery {
     .padding(16).frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
   }
 
+  /// Owner tasks (ADR-048): the sheet's cards, a text one and a "done" one with its page.
+  static var ownerTasks: some View {
+    let m = OwnerTasksModel()
+    let soon = Date.now.addingTimeInterval(4 * 60 + 50)
+    m.replace([
+      OwnerTask(id: "g1", code: "K7Q2M", title: "Enter the code from your bank's text", prompt: "Your bank sent a 6-digit code to your phone. Type it here.",
+                who: "Mercury", link: URL(string: "https://bank.example.com/verify"), expiresAt: soon),
+      OwnerTask(id: "g2", code: "P4XW9", title: "Finish signing in", prompt: "Open the page, approve the sign-in, then tap Done.",
+                who: "plugin captcha", link: URL(string: "https://accounts.example.com/approve"), answerKind: .done, expiresAt: soon),
+    ])
+    return VStack(spacing: 12) {
+      OwnerTasksList(model: m, now: .now)
+      Spacer(minLength: 0)
+    }
+    .padding(16).frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
+  }
+
   static let reply = """
   ## Landing page: what changed
   The deploy is ready. Three things moved:
@@ -83,8 +100,13 @@ public enum Gallery {
       ("01c-connect-signin-error", connect(.signIn, error: MercuryError.badCredentials.errorDescription)),
       ("01d-connect-waiting", connect(.waiting(pairing))),
       ("01e-connect-token", connect(.token)),
+      ("01f-connect-name", AnyView(IdentityGallery.nameStep(store: store))),
+      ("01g-logo-sheet", AnyView(IdentityGallery.sheet)),
+      ("01h-mercury-switcher", AnyView(IdentityGallery.switcher())),
+      ("01i-mercury-edit", AnyView(IdentityGallery.edit())),
       ("03b-conversation-markdown", AnyView(markdown)),
       ("04-approval", AnyView(approval)),
+      ("04d-owner-tasks", AnyView(ownerTasks)),
     ]
   }
 }

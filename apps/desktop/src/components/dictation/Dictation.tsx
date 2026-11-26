@@ -15,18 +15,29 @@ import { formatClock, useDictation, type FinishMode } from "./useDictation";
 
 export type Dictation = ReturnType<typeof useDictation>;
 
-export function Waveform({ levels, className }: { levels: number[]; className?: string }) {
+export function Waveform({ levels, className, max = 26 }: { levels: number[]; className?: string; max?: number }) {
   return (
     <div className={cx("flex h-7 min-w-0 flex-1 items-center gap-[3px] overflow-hidden", className)} aria-hidden="true">
       {levels.map((l, i) => (
-        <span key={i} className="w-[3px] shrink-0 rounded-full bg-ink/70 transition-[height] duration-75" style={{ height: `${Math.max(3, Math.round(l * 26))}px`, opacity: 0.35 + l * 0.65 }} />
+        <span key={i} className="w-[3px] shrink-0 rounded-full bg-ink/70 transition-[height] duration-75" style={{ height: `${Math.max(3, Math.round(l * max))}px`, opacity: 0.35 + l * 0.65 }} />
       ))}
     </div>
   );
 }
 
-/** The mic button in its idle / starting / transcribing states. */
+/** The mic button in its idle / starting / transcribing states; while live, it stops. */
 export function MicButton({ d, disabled, size = "md" }: { d: Dictation; disabled?: boolean; size?: "sm" | "md" }) {
+  if (d.liveActive) {
+    const finishing = d.phase === "finishing";
+    return (
+      <Tooltip label={finishing ? "Writing the last words…" : "Stop dictation"} shortcut={finishing ? undefined : "esc"} side="top">
+        <Button type="button" variant="secondary" size={size} icon disabled={finishing} onClick={() => d.finish("insert")} aria-label="Stop dictation" aria-pressed="true" className="!rounded-full text-red">
+          {/* Listening: the same mic, in red, so it reads as "click to stop". */}
+          {finishing ? <Spinner size={size === "sm" ? 12 : 15} /> : <Mic size={size === "sm" ? 14 : 17} />}
+        </Button>
+      </Tooltip>
+    );
+  }
   const busy = d.phase === "starting" || d.phase === "transcribing";
   return (
     <Tooltip label={d.phase === "transcribing" ? "Turning speech into text…" : "Dictate"} side="top">
@@ -55,6 +66,20 @@ export function RecordingBar({ d, canSend, className }: { d: Dictation; canSend:
           <Button type="button" variant="primary" size="md" icon onClick={() => d.finish("send")} aria-label="Stop and send" className="!rounded-full"><ArrowUp size={17} strokeWidth={2.4} /></Button>
         </Tooltip>
       )}
+    </div>
+  );
+}
+
+/** Live dictation: who's listening, the mic's level and the time; the words go in the box itself. */
+export function LiveHint({ d, className }: { d: Dictation; className?: string }) {
+  if (!d.liveActive) return null;
+  const label = d.phase === "finishing" ? "Finishing" : d.phase === "starting" ? "Starting" : "Listening";
+  return (
+    <div className={cx("flex min-w-0 items-center gap-2 text-xs text-ink3", className)} role="status" aria-live="polite">
+      <span className={cx("h-2 w-2 shrink-0 rounded-full", d.phase === "listening" ? "animate-pulse bg-red" : "bg-ink4")} aria-hidden="true" />
+      <span className="shrink-0">{label}{d.engineName ? ` · ${d.engineName}` : ""}</span>
+      <Waveform levels={d.levels.slice(-24)} max={14} className="!h-4 max-w-[140px] opacity-80" />
+      <span className="shrink-0 font-mono tabular-nums text-ink4" aria-hidden="true">{formatClock(d.seconds)}</span>
     </div>
   );
 }
@@ -110,3 +135,4 @@ export function joinText(existing: string, added: string): string {
 
 export type { FinishMode };
 export { useDictation };
+export type { LiveTarget } from "./useDictation";

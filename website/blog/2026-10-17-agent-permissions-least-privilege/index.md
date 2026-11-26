@@ -76,7 +76,7 @@ The full options are in the [permissions reference](/docs/reference/permissions)
 - **Symlinks and hard links are checked.** A read that resolves outside the approved scopes is denied. A regular file with more than one hard link needs approval, because it may be an alias of a file outside every scope.
 - **Unattended bots fail closed.** A bot has no one to ask, so an out-of-scope action is denied instead of waiting. Skill elevation is ignored in that mode, so a skill cannot widen what a bot may do.
 
-Two gaps remain. Scheduled tasks run in Allow All mode for their own turn, so shell commands run unless they hit the blocklist and scope prompts are skipped. That is the weakest point, and it looks like the situation CERT-In describes: a background run with broad access and nobody watching. Second, we found no per-access audit log in the permission code, so we treat auditability as missing, not done.
+Two gaps remain. Scheduled tasks run in Allow All mode for their own turn, so shell commands run unless they hit the blocklist and scope prompts are skipped. That is the weakest point, and it looks like the situation CERT-In describes: a background run with broad access and nobody watching. Second, Mercury keeps a security log in `~/.mercury/security/audit.jsonl`. It records pairing, device approvals and revocations, and remote sensitive actions with the answer each got. It does not record every file read or shell command the agent runs, so per-access auditing is still missing, not done.
 
 ## What it means for you
 

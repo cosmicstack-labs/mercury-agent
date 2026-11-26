@@ -312,8 +312,8 @@ describe('hand-off limits', () => {
 });
 
 describe('asking the owner', () => {
-  it('a command outside its grants waits for the owner; "always" goes into the bot\'s own permissions', async () => {
-    const { manager, store } = makeManager();
+  it('ask mode: a command outside its grants waits for the owner; "always" goes into the bot\'s own permissions', async () => {
+    const { manager, store } = makeManager({ approvals: 'ask' });
     store.create({ id: 'ops', name: 'Ops' });
     store.writePermissions('ops', { paths: [{ scope: 'self', read: true, write: true, execute: true }], tools: { deny: [] } });
     const asked: string[] = [];
@@ -342,8 +342,8 @@ describe('asking the owner', () => {
     expect(q!.title).toBe('Ops asks: Run command: printf approved | tee /dev/null');
   });
 
-  it('no answer in time is a no, and the run carries on without it', async () => {
-    const { manager, store } = makeManager({ approvalWaitMinutes: 1 });
+  it('ask mode: no answer in time is a no, and the run carries on without it', async () => {
+    const { manager, store } = makeManager({ approvals: 'ask', approvalWaitMinutes: 1 });
     store.create({ id: 'ops', name: 'Ops' });
     store.writePermissions('ops', { paths: [{ scope: 'self', read: true, write: true, execute: true }], tools: { deny: [] } });
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -365,6 +365,57 @@ describe('asking the owner', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('auto mode (ADR-047, the default)', () => {
+  function runsCommands(commands: string[], results: string[]) {
+    mockedGenerateText.mockImplementation((async (opts: Opts) => {
+      for (const command of commands) results.push(String(await opts.tools.run_command.execute({ command }, {})));
+      const r = await opts.tools.bot_report.execute({ summary: 'Done.' }, {});
+      opts.onStepFinish?.({ usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [{ toolName: 'bot_report', toolCallId: 'r' }], toolResults: [{ toolCallId: 'r', output: { type: 'text', value: r } }] });
+      return { text: '', finishReason: 'stop', usage: {} };
+    }) as never);
+  }
+
+  it('decides at once without asking: what can be undone runs, what can\'t is refused; nothing is persisted', async () => {
+    const { manager, store } = makeManager();
+    store.create({ id: 'ops', name: 'Ops' });
+    store.writePermissions('ops', { paths: [{ scope: 'self', read: true, write: true, execute: true }], tools: { deny: [] } });
+    const asked: string[] = [];
+    manager.approvals.onChange((e) => { if (e.type === 'new') asked.push(e.approval.prompt); });
+    const labels: string[] = [];
+    manager.onBotActivity((ev) => labels.push(ev.label));
+    const results: string[] = [];
+    runsCommands(['printf approved | tee /dev/null', 'git push --force origin main'], results);
+    const started = Date.now();
+    manager.enqueue('ops', { trigger: 'api', prompt: 'run the check' });
+    await idle(manager, 'ops');
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(asked).toEqual([]);
+    expect(results[0]).toContain('approved');
+    expect(results[1]).toMatch(/denied|not allow/i);
+    expect(labels.some((l) => l.startsWith('Auto-approved: running printf approved'))).toBe(true);
+    expect(labels.some((l) => l.startsWith("Refused (can't be undone): force-pushing"))).toBe(true);
+    // Auto answers are per call: no grant is written to the bot's permissions.
+    expect(store.readPermissions('ops').autoApproveCommands ?? []).toEqual([]);
+    expect(manager.inbox.list().filter((e) => e.kind === 'needs-you')).toEqual([]);
+  });
+
+  it('a bot set to ask still asks, whatever the fleet default', async () => {
+    const { manager, store } = makeManager();
+    store.create({ id: 'careful', name: 'Careful', manifest: { autonomy: { approvals: 'ask' } } });
+    store.writePermissions('careful', { paths: [{ scope: 'self', read: true, write: true, execute: true }], tools: { deny: [] } });
+    const asked: string[] = [];
+    manager.approvals.onChange((e) => {
+      if (e.type !== 'new') return;
+      asked.push(e.approval.prompt);
+      setTimeout(() => manager.approvals.answer(e.approval.id, 'no'), 10);
+    });
+    runsCommands(['printf hi | tee /dev/null'], []);
+    manager.enqueue('careful', { trigger: 'api', prompt: 'go' });
+    await idle(manager, 'careful');
+    expect(asked).toEqual(['Run command: printf hi | tee /dev/null']);
   });
 });
 

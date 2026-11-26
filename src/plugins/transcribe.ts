@@ -178,7 +178,8 @@ export function preferredSpeech(settings: Record<string, unknown>, use: 'listen'
   const tts = typeof settings.ttsProvider === 'string' ? settings.ttsProvider : undefined;
   const out: string[] = [];
   if (engine) out.push(engine);
-  if (use === 'listen' && stt) out.push(stt);
+  // Mercury's own pipeline listens with Deepgram unless another is picked (Optimus's default).
+  if (use === 'listen' && (stt ?? (engine === 'mercury' ? 'deepgram' : undefined))) out.push(stt ?? 'deepgram');
   if (use === 'speak' && tts) out.push(tts);
   return out;
 }

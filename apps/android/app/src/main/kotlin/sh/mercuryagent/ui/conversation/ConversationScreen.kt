@@ -117,6 +117,10 @@ fun ConversationScreen(
   onNewChat: () -> Unit,
   /** The chat was deleted from its own menu. */
   onDeleted: () -> Unit,
+  /** Settings → Voice (from the model picker). */
+  onVoiceSettings: () -> Unit = {},
+  /** Owner tasks (ADR-048: a CAPTCHA, a code), pinned above the message box with "Needs you". */
+  ownerTasks: @Composable () -> Unit = {},
 ) {
   val ui by vm.ui.collectAsStateWithLifecycle()
   val welcome by vm.welcome.collectAsStateWithLifecycle()
@@ -136,13 +140,52 @@ fun ConversationScreen(
   // Live dictation into the box, and voice calls: both need the microphone first.
   val dictation = remember(vm) { sh.mercuryagent.call.DictationModel(context.applicationContext, vm.client, vm.draft, calls, scope) }
   val mic = sh.mercuryagent.ui.call.rememberMicPermission(snackbar)
-  LaunchedEffect(dictation) { dictation.load() }
+  // A voice key saved in Settings → Voice: the mic asks again at once.
+  val voiceChanges by calls.changes.collectAsStateWithLifecycle()
+  LaunchedEffect(dictation, voiceChanges) { dictation.load() }
+  var voiceKeys by remember(vm.client) { mutableStateOf(false) }
+  LaunchedEffect(vm.client) { voiceKeys = sh.mercuryagent.core.VOICE_PROVIDERS_FEATURE in calls.features(vm.client) }
   androidx.compose.runtime.DisposableEffect(dictation) { onDispose { dictation.cancel() } }
-  val startCall: () -> Unit = { dismissKeyboard(); mic { dictation.cancel(); calls.start(vm) } }
+  // A ring the owner answered (ADR-046) goes with the call, so Mercury says why it called.
+  val beginCall: () -> Unit = { mic { dictation.cancel(); calls.start(vm, container.takeAnsweredRing()) } }
+  // "Set up voice" (VoiceSetupSheet), when a call or the mic needs a voice this Mercury doesn't have.
+  var voiceSetup by remember(vm.client) { mutableStateOf<sh.mercuryagent.core.VoiceSetup.Trigger?>(null) }
+  /**
+   * The gate before a call or dictation starts: it works → go; an older Mercury (no voice.providers)
+   * or capabilities that can't be read → [legacy] (today's behaviour); otherwise the setup sheet.
+   * Only decides what happens before; the call itself is unchanged.
+   */
+  fun gate(trigger: sh.mercuryagent.core.VoiceSetup.Trigger, go: () -> Unit, legacy: () -> Unit = go) {
+    val known = if (trigger == sh.mercuryagent.core.VoiceSetup.Trigger.Dictation) dictation.capabilities else null
+    if (known != null && sh.mercuryagent.core.VoiceSetup.available(trigger, known)) { go(); return }
+    scope.launch {
+      var caps = calls.capabilities(vm.client)
+      if (caps != null && sh.mercuryagent.core.VoiceSetup.available(trigger, caps)) { go(); return@launch }
+      val supported = sh.mercuryagent.core.VOICE_PROVIDERS_FEATURE in calls.features(vm.client)
+      // About to ask for setup: make sure it isn't a stale "no" (a key added on the computer meanwhile).
+      if (supported) caps = calls.capabilities(vm.client, refresh = true) ?: caps
+      when (sh.mercuryagent.core.VoiceSetup.decide(trigger, supported, caps)) {
+        sh.mercuryagent.core.VoiceSetup.Decision.Proceed -> go()
+        sh.mercuryagent.core.VoiceSetup.Decision.Legacy -> legacy()
+        sh.mercuryagent.core.VoiceSetup.Decision.Setup -> { dictation.notice = null; voiceSetup = trigger }
+      }
+    }
+  }
+  val startCall: () -> Unit = {
+    dismissKeyboard()
+    if (calls.running) beginCall() else gate(sh.mercuryagent.core.VoiceSetup.Trigger.Call, beginCall)
+  }
   // Call Mercury from the drawer or the launcher's app shortcut: the same call as the button's.
   val callRequested by container.callRequested.collectAsStateWithLifecycle()
   LaunchedEffect(callRequested) { if (callRequested) { container.callRequested.value = false; startCall() } }
-  val dictate: () -> Unit = { if (dictation.active || !dictation.available) dictation.tap() else mic { dictation.tap() } }
+  val dictate: () -> Unit = {
+    when {
+      dictation.active || dictation.callRunning -> dictation.tap()
+      dictation.available -> mic { dictation.tap() }
+      // Not known yet, or not available: the gate decides (setup, or today's notice).
+      else -> gate(sh.mercuryagent.core.VoiceSetup.Trigger.Dictation, go = { scope.launch { dictation.load(); mic { dictation.tap() } } }, legacy = { dictation.tap() })
+    }
+  }
 
   LifecycleResumeEffect(vm) {
     vm.setOnScreen(true)
@@ -233,9 +276,13 @@ fun ConversationScreen(
       Column(Modifier.imePadding().navigationBarsPadding()) {
         Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
           ui.plan?.let { PlanCard(it, ui.busy, ui.threadId) }
+          ownerTasks()
           NeedsYouCard(ui.prompts, answer = { p, v -> vm.answer(p, v) })
         }
-        Composer(vm, ui.busy, ui.stopping, focus, dictation, onDictate = dictate, onCall = startCall)
+        Composer(
+          vm, ui.busy, ui.stopping, focus, dictation, onDictate = dictate, onCall = startCall,
+          voiceKeys = voiceKeys, onVoiceSettings = { dismissKeyboard(); onVoiceSettings() },
+        )
       }
     },
     snackbarHost = { SnackbarHost(snackbar) },
@@ -275,6 +322,20 @@ fun ConversationScreen(
     confirmButton = { TextButton(onClick = { deleting = false; vm.delete(onDeleted) }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
     dismissButton = { TextButton(onClick = { deleting = false }) { Text("Cancel") } },
   )
+  voiceSetup?.let { trigger ->
+    sh.mercuryagent.ui.more.VoiceSetupSheet(
+      vm.client, calls, trigger,
+      onDismiss = { voiceSetup = null },
+      onContinue = { next ->
+        voiceSetup = null
+        when (next) {
+          sh.mercuryagent.core.VoiceSetup.Next.StartCall -> beginCall()
+          sh.mercuryagent.core.VoiceSetup.Next.StartDictation -> scope.launch { dictation.load(); mic { dictation.tap() } }
+          else -> {}
+        }
+      },
+    )
+  }
 }
 
 /** Call Mercury and New chat side by side in one dark pill, as tall as the round menu button. */

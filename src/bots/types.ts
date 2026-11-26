@@ -69,6 +69,8 @@ export interface BotScheduleConfig {
 }
 
 export interface BotAutonomyConfig {
+  /** This bot's answer to asks outside its grants; overrides config bots.approvals (ADR-047). */
+  approvals?: 'auto' | 'ask';
   maxConcurrent?: number;
   maxSteps?: number;
   /** Hard daily token cap. Exceeded → the bot pauses until the next day.
@@ -225,6 +227,8 @@ export interface BotRunRecord {
   toolCalls?: number;
   /** Largest single-step prompt the provider saw. */
   peakInputTokens?: number;
+  /** Input tokens served from the provider's prompt cache (part of tokensIn). */
+  tokensCached?: number;
   /** What the run did: deliverable | action | delegated | message | quiet | failed | none. */
   outcome?: string;
   /** How the bot closed the run (Bots 2.0): result | no_update | failure. */

@@ -83,11 +83,52 @@ export interface PluginContext {
    * Requests are aborted when the plugin is disabled.
    */
   fetch(url: string, init?: RequestInit): Promise<Response>;
+  /**
+   * Plugin API 1.3, with `permissions.askOwner`: hand the owner something only
+   * a human can do and wait for the answer (ADR-048). They get it on their
+   * phone, chat apps, Mercury Desktop and the terminal. Throws without the
+   * permission. Resolves with their answer, or why there is none.
+   */
+  readonly owner: {
+    ask(request: PluginOwnerAsk): Promise<PluginOwnerAnswer>;
+  };
+  /**
+   * Plugin API 1.3, with `permissions.useModels`: ask the owner's own models
+   * about an image — whatever providers they set up (OpenAI, Anthropic,
+   * Gemini, OpenRouter, Ollama, any OpenAI-compatible server), the default
+   * first, models that can't see images skipped. The plugin never sees a key.
+   * Null when no model could answer. Throws without the permission.
+   */
+  readonly models: {
+    lookAt(request: { prompt: string; image: { mimeType: string; data: Uint8Array }; maxModels?: number; /** Provider names to skip, e.g. for a second opinion. */ exclude?: string[]; signal?: AbortSignal }): Promise<{ text: string; provider: string; model: string } | null>;
+  };
   /** Aborted when the plugin is being disabled, updated or uninstalled. */
   readonly signal: AbortSignal;
   /** Run cleanup when the plugin stops. */
   onDispose(fn: () => void | Promise<void>): void;
 }
+
+export interface PluginOwnerAsk {
+  /** One line: "Solve this CAPTCHA". */
+  title: string;
+  /** What to do and what to send back, naming the site. */
+  prompt: string;
+  /** An image or audio clip to show (≤ 5 MB): png, jpeg, gif, webp, mp3, wav, ogg, webm, m4a. */
+  media?: { mimeType: string; data: Uint8Array };
+  /** The page it is for (https://…). */
+  link?: string;
+  /** "text" (default): they type an answer. "done": they finish it themselves and confirm. */
+  answer?: 'text' | 'done';
+  /** 1–30 minutes; default 5. */
+  timeoutMinutes?: number;
+  signal?: AbortSignal;
+}
+
+export type PluginOwnerAnswer =
+  | { status: 'answered'; answer: string }
+  | { status: 'declined' | 'expired' | 'cancelled' }
+  /** Nobody can be asked: the call came from an unattended bot run. */
+  | { status: 'unavailable' };
 
 export interface PluginModule {
   activate(ctx: PluginContext): void | Promise<void>;

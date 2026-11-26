@@ -8,6 +8,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
@@ -55,13 +58,15 @@ import sh.mercuryagent.ui.media.LocalMediaLoader
 import sh.mercuryagent.ui.media.MediaLoader
 import sh.mercuryagent.ui.more.SettingsNav
 import sh.mercuryagent.ui.more.settingsGraph
+import sh.mercuryagent.ui.owner.OwnerTaskCards
 
 // Routes (type-safe Navigation Compose). The app is one chat at a time with a drawer, as in the
-// ChatGPT and Grok apps; Bots, Artifacts and Settings open over it and back returns to the chat.
+// ChatGPT and Grok apps; Bots, Artifacts, Brain and Settings open over it and back returns to the chat.
 /** A chat: [id] null is a new one; [n] makes each "New chat" its own screen. */
 @Serializable data class ChatRoute(val id: String? = null, val n: Long = 0)
 @Serializable object BotsRoute
 @Serializable object ArtifactsRoute
+@Serializable object BrainRoute
 @Serializable object AddMercuryRoute
 
 /** Connect when no Mercury is saved yet, otherwise the app for the active one (iOS: RootView). */
@@ -130,7 +135,8 @@ private fun Home(container: AppContainer, connection: Connection) {
   LaunchedEffect(container) {
     container.openChat.collect { key ->
       drawer.close()
-      if (key.startsWith("bot:")) nav.navigate(BotsRoute) else nav.openChat(key)
+      // An owner task's card is on every screen: opening the app is enough.
+      if (key.startsWith("bot:")) nav.navigate(BotsRoute) else if (!key.startsWith("task:")) nav.openChat(key)
     }
   }
 
@@ -167,10 +173,12 @@ private fun Home(container: AppContainer, connection: Connection) {
               onCall = { closeThen { if (!onChat) nav.openChat(currentChat); container.requestCall() } },
               onBots = { closeThen { nav.navigate(BotsRoute) } },
               onArtifacts = { closeThen { nav.navigate(ArtifactsRoute) } },
+              onBrain = { closeThen { nav.navigate(BrainRoute) } },
               onSettings = { closeThen { nav.navigate(SettingsNav.Root) } },
               onClose = { closeThen { } },
               onSwitchMercury = { id -> closeThen { container.connections.activate(id) } },
               onAddMercury = { closeThen { nav.navigate(AddMercuryRoute) } },
+              onEditMercury = { id, name, logo -> container.connections.update(id, name, logo) },
             )
           }
         },
@@ -205,6 +213,8 @@ private fun Home(container: AppContainer, connection: Connection) {
               onMenu = { dismissKeyboard(); scope.launch { drawer.open() } },
               onNewChat = { nav.openChat(null) },
               onDeleted = { nav.openChat(null) },
+              onVoiceSettings = { nav.navigate(SettingsNav.Voice) },
+              ownerTasks = { OwnerTaskCards(container.ownerTasks, client) },
             )
           }
           composable<BotsRoute> {
@@ -223,6 +233,15 @@ private fun Home(container: AppContainer, connection: Connection) {
             })
             sh.mercuryagent.ui.artifacts.ArtifactsScreen(vm, onBack = { nav.popBackStack() }, onOpenChat = { nav.openChat(it) })
           }
+          composable<BrainRoute> {
+            // Kept for the activity's life (per Mercury), so the layout stays put between visits (desktop keeps it mounted).
+            val vm: sh.mercuryagent.ui.brain.MindMapViewModel = viewModel(viewModelStoreOwner = activity, key = "brain-${connection.id}", factory = viewModelFactory {
+              initializer {
+                sh.mercuryagent.ui.brain.MindMapViewModel(client, container.mindMapSettings.state.value, { container.mindMapSettings.save(it) })
+              }
+            })
+            sh.mercuryagent.ui.brain.MindMapScreen(vm, onBack = { nav.popBackStack() })
+          }
           settingsGraph(nav, container, connection, client, onAddMercury = { nav.navigate(AddMercuryRoute) })
           composable<AddMercuryRoute> {
             val vm: ConnectViewModel = viewModel(factory = viewModelFactory {
@@ -231,6 +250,13 @@ private fun Home(container: AppContainer, connection: Connection) {
             ConnectScreen(vm, onClose = { nav.popBackStack() })
           }
         }
+      }
+      // Owner tasks (ADR-048) on the screens without a message box; a chat pins them above its own.
+      if (!onChat) {
+        OwnerTaskCards(
+          container.ownerTasks, client,
+          Modifier.align(androidx.compose.ui.Alignment.BottomCenter).imePadding().navigationBarsPadding().padding(12.dp),
+        )
       }
       // A voice call covers everything until it's closed (back leaves it running in the background).
       container.calls.current?.let { call ->

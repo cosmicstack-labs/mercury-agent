@@ -365,6 +365,7 @@
   - **Hardening**: file endpoints follow symlinks and refuse Mercury's credentials always and keys/shell start-up files for remote callers; Mercury's own file and shell tools can't touch its login files; sign-in is limited per client on both endpoints (this computer never locked out), bcrypt is async with no username timing signal; sessions are stored hashed and cookies are `Secure` over https; cookie-authenticated changes need a same-origin Origin; nosniff/Referrer-Policy everywhere and `frame-ancestors 'none'` on pages; 64 KB body limit on sign-in; generic 500s; the provider check never sends the saved key to a different base URL; Discord and Slack approval buttons check who clicked.
   - **Owner tools**: `/server` (terminal chat; also Mercury Desktop and attached terminals on this computer), `mercury server` (through the running Mercury when it's up, directly otherwise), `mercury doctor --security` and a one-line summary on every doctor run, the security log `~/.mercury/security/audit.jsonl`, and `/api/security/*`. Feature flag `security.remote`.
 - **Consequence**: Through a tunnel, a remote device can do what the owner does in chat (subject to the permission mode), but it can't escalate, persist past revocation, or read secrets without the owner saying yes on a device they hold. Pairing a new device takes one tap. Known limits: a proxy that adds no forwarding header and rewrites Host to localhost looks local (the attach token still guards the most sensitive operations, and the docs/security check say to configure forwarding headers); an IP allow-list needs a tunnel that passes the client address; Ask Me prompts are answered by whoever is using the session, so a paired device is trusted like the owner while paired. Follow-ups: a Security section in Mercury Desktop's settings, QR pairing, per-device scopes (read-only devices), and the full remote-access docs.
+- **Amendment (2026-11-22): device tokens only, unless the owner says otherwise.** Password sign-in from other devices is off by default (`remote.json` `passwordSignIn: false`). While it's off, `POST /api/auth/token` and the browser `POST /api/auth/login` refuse any caller that isn't this computer with 403 (`code: password_sign_in_off`) and a message saying how to make a token, before the password is even checked (no guessing, no lockout counting). Devices connect with a token made on this computer (`/server token <name>`, `mercury devices add`, `POST /api/security/devices`). The owner turns password sign-in back on with `/server password on` (or the `/server` menu, or `PUT /api/security/remote { passwordSignIn: true }`); it then works as before, with each new device approved. On this computer the password still works. Devices and browser sessions already signed in keep working. The apps lead with "Connect with a device token"; password sign-in is the second choice.
 
 ## ADR-036: One signed update manifest; updates that never leave you broken and never nag
 
@@ -741,7 +742,103 @@
   - Connect reads the sign-in URL gws prints. A gws the owner installed that prints it differently falls back to running `gws auth login` by hand.
   - Follow-ups: OAuth for Mercury's MCP client, which unlocks Google's hosted servers, typed Google tools with approval previews, and a connect button in the dashboard.
 
-## ADR-046: Pairing a phone with a code the owner shows — showing it is the approval
+## ADR-046: Mercury rings and notifies the owner's phone over the app's live connection only
+
+- **Context**: WhatsApp's `call_owner` lets Mercury ring the owner ("call me at 9pm", or when something goes wrong), but only through WhatsApp. The owner wants the same from the Mercury app on iOS and Android: a real incoming call, and notifications, with no friction. The server didn't know which paired device is which phone, or whether it is connected. The owner chose no cloud-hosted relay and no new background or foreground service: Mercury reaches the phone only over the app's own live connection to the owner's Mercury.
+- **Decision**: reach the phone only while the Mercury app is running and connected.
+  - **Registry.** A phone registers itself after pairing (`PUT /api/devices/me/reach`: platform, app version, ring and notify switches, capabilities). This is stored on its own device record in `devices.json`, only that device can change it, and changes are audited (`device.reach`). No push tokens or keys exist. Live presence is the activity stream (`/api/chat/activity`) a paired device has open right now (`src/reach/presence.ts`).
+  - **Events.** Mercury sends `ring` `{ id, caller, reason, urgency, expiresAt }`, `ring_end` `{ id, outcome }` and `notify` `{ id, title, body, kind, urgency, threadId?, silent }` on that stream. Apps de-duplicate by id, because each app can have more than one stream open.
+  - **Calls** (`src/reach/service.ts`, the agent's core `call_owner`):
+    - The owner's settings apply first. Calls off, below the urgency threshold, in quiet hours (only `critical` rings through) or over the calls-per-hour limit (4) each become a notification instead.
+    - Every live phone that is set to ring rings for 45 s. The first answer stops the others.
+    - With no live phone or no answer, WhatsApp's `call_owner` is tried when that plugin runs.
+    - Still no answer: one retry after 5 minutes. The core "phone" scheduler reuses `call-schedule.ts` semantics, so "call me at 9pm" (`schedule_call`, `/call`) targets the app once a phone is paired, and WhatsApp keeps its own scheduler. After that, a missed-call note is left and a message goes to the owner's messaging channel.
+    - A decline is the owner's answer: no retry, just the note.
+  - **Phones report each ring** (`POST /api/devices/me/ring/:id`, only a phone the ring went to). Answering starts the existing live voice call with `{ callInviteId }`. The server takes the reason from its own record of the ring and adds WhatsApp's opener ("You called the owner and they answered. Why you called: …") after the unchanged instructions.
+  - **Notifications** (`notify_owner`) go to live phones that want them, silently in quiet hours. With no live phone they wait, and `high` urgency also goes to the messaging channel. Anything missed is kept in `~/.mercury/reach/missed.json`. The app fetches it when it comes to the foreground and acknowledges it, which clears it for every phone.
+  - **"Call when something's wrong"** triggers are owner settings, with these defaults:
+    - a bot that needs you: notify;
+    - a bot's own failure report: off;
+    - a background task of 10 minutes or more that failed or timed out: notify.
+    - No trigger calls by default.
+  - **Security (ADR-044).**
+    - `call_owner` and `notify_owner` are outbound sinks. After untrusted content in the turn, they need the owner's explicit yes even under Allow All, so read content alone can't make Mercury ring.
+    - A scheduled run may use them unattended unless what it read carried instructions to an AI.
+    - `schedule_call` and `cancel_scheduled_call` are now control tools.
+    - Everything is rate-limited, and only the owner is ever reached.
+  - **iOS:** a `ring` is reported to CallKit as an incoming call (`reportNewIncomingCall`), even in the foreground. Answering it makes it the call: the voice call adopts that CallKit call instead of starting an outgoing one. No PushKit and no push entitlement, so the default build still signs with a free team.
+  - **Android:**
+    - A `ring` becomes a core-telecom self-managed incoming call with a CallStyle notification (ringtone, vibration, Answer and Decline).
+    - A full-screen incoming-call screen shows over the lock screen. On Android 14+ this needs the owner's one-time full-screen-intent permission, which the app links to.
+    - Answering hands over to the normal outgoing voice call.
+    - "Stay connected" is unchanged and nothing new runs in the background.
+  - **Settings → Calls from Mercury** in both apps: ring this phone, notifications, calls on or off, quiet hours, test ring.
+- **Consequences**:
+  - Calls and notifications reach a phone only while the app is open or still alive in the background. On iOS that is seconds to minutes after leaving the app (longer during a call or audio). On Android it is while the process and its activity stream live: on screen, while a chat works, or with "Stay connected" on.
+  - Otherwise WhatsApp (when linked) and the owner's messaging channel carry the call or message, and the app shows a missed call next time it opens.
+  - Nothing passes through a third party, and nothing new holds a token for the phone.
+
+## ADR-047: Bots decide permission asks themselves: reversible goes ahead, irreversible is refused
+
+- **Status**: Accepted (2026-11-21)
+- **Context**: Bots run unattended. When a bot needed something outside its grants (a command, a file outside its folders, a privileged action after reading web content), the run asked the owner and waited up to `bots.approvalWaitMinutes` (default 10), then took silence as a no. The owner is rarely there, so runs stalled for minutes and then failed anyway.
+- **Decision**:
+  - **Auto mode is the default** (`bots.approvals: auto`, per bot `autonomy.approvals`). An ask is decided at once by `src/bots/auto-approve.ts`, and the run never waits.
+  - **The rule is reversibility.**
+    - What can be undone goes ahead: reading ordinary files, writing files, everyday commands, and posting or sending through tools whose result can be deleted.
+    - An existing file is copied to `bots/<id>/backups/<time>/` before it is overwritten, by a write or a `>`/`mv`/`cp` onto it. Backups are kept 14 days. Files over 50 MB can't be backed up, so overwriting them is refused.
+  - **What can't be undone is refused**:
+    - deleting (`rm`, `find -delete`, `delete`/`destroy`/`prune`/`drop` subcommands, `DROP TABLE`, HTTP `DELETE`);
+    - force-pushing, `git reset --hard`, `git clean`, and discarding changes;
+    - publishing packages and sending email;
+    - killing processes, `sudo`, and running downloaded or `eval`'d code;
+    - inline interpreter code that deletes or spawns commands;
+    - reading or writing credentials, and writing system or login files.
+  - **What auto mode doesn't recognise is refused.**
+  - **ADR-044 still holds.** After untrusted content, an action goes ahead only when no hidden instructions were found and no data would leave in an address or command. `install_skill`, `approve_*` and `forget_memory` are always refused.
+  - **Decisions are per call.** Nothing is written to `permissions.yaml`. Each decision appears in the bot's activity and in the audit log (`bot.auto.allowed` / `bot.auto.refused`).
+  - **The global blocked list, the permission tier's tool gate and the injection scanner still run first.** Auto mode only answers what would have asked.
+  - **`approvals: ask` keeps the old behaviour.**
+- **Consequences**:
+  - Bots no longer wait on the owner.
+  - A refused action is reported in the run instead of stalling it, and the bot's rules tell it not to look for workarounds.
+  - The classifier is conservative: a false refusal costs a step, a false approval could cost data. Unknown requests and every MCP call remain refused.
+
+### ADR-040 amendment (2026-11-21): built-in skills may ship their own files, and install heavy dependencies on first use
+
+- **Built-in skills with files.** A built-in skill can now ship scripts and references. They live in `src/skills/bundled/<name>/`, are compiled into the bundle by `scripts/gen-bundled-skills.cjs` (`npm run skills:bundle`; a test fails when it's stale), and are installed once, like the other defaults.
+- **Safe upgrades.** `.bundled.json` in the skill folder records what Mercury wrote. A later version upgrades only files the owner never edited, and puts back files that went missing. A skill the owner deleted stays deleted.
+- **First: `any-to-pdf`.** It wraps lovstudio/any2pdf (MIT, vendored unchanged at a92111d, audited: no exec, network only for emoji and the document's own images) with a launcher that accepts Markdown, text, Word, HTML, CSV, code and images. It adds about 27 KB gzipped to the package.
+- **Dependencies install on first use** into `~/.mercury/cache/any2pdf/pyXY` with `pip --target`, never into the system Python:
+  - reportlab (about 20 MB with Pillow) on the first run;
+  - mammoth or markdownify (under 1 MB) only for Word or HTML input;
+  - matplotlib (about 100 MB) only for display formulas. It is optional: without it, formulas render as text.
+- **An exception to "Mercury's own tools only".** This skill needs Python 3.8+. Without Python it falls back to the `documents` skill.
+
+## ADR-048: Owner tasks: Mercury hands the owner what only a human can do, and waits
+
+- **Status**: Accepted (2026-11-21)
+- **Context**: Some steps only the owner can do: reading a CAPTCHA, giving a one-time or 2FA code, finishing a step on a website. `ask_user` offered only multiple choice in the current chat, with no image, no typed answer and no way to reach a phone. The CAPTCHA plugin needed a last-resort human fallback, and that need is not CAPTCHA-specific.
+- **Decision**:
+  - **A core primitive, not a plugin feature.** `src/security/owner-tasks.ts` holds the task: title, prompt, who asks, an optional link, an image or audio clip (≤ 5 MB, saved to `~/.mercury/owner-tasks/`), and a five-letter code. It returns the answer, a decline, a cancel (when the asker stops), or a timeout. It never returns a guess.
+  - **Delivery reuses the approval paths** (`wireOwnerTasks` in agent.ts). Each task goes to:
+    - every connected messaging channel, as text with the media attached;
+    - the terminal, with a path to open the media;
+    - every app (`owner_task` event);
+    - the phones, as a notification through reach (ADR-046).
+  - **Answers.** The owner answers with `<code> <answer>` or `decline <code>` in a chat (admins only), `/answer …` in the terminal, or `POST /api/owner/tasks/:id` from an app. The first answer wins, and every answer is audited (`owner.task`).
+  - **Who can ask.**
+    - **The model:** through the `ask_owner` tool (image or audio file, link, `text` or `done` answer, 1–30 minutes).
+    - **Plugins:** through `ctx.owner.ask` (Plugin API 1.3, behind `permissions.askOwner`, shown before install).
+    - **Never:** bots, which are unattended, or chat members, so a member's message can't send the owner a request for a code.
+  - **Plugins can also use the owner's own models**, through `ctx.models.lookAt` (behind `permissions.useModels`). It works with whatever providers are set up, default first in Mercury's fallback order, skipping models that can't see images. The plugin never sees a key.
+  - **Every task message warns never to send a password or bank PIN this way.**
+- **Consequences**:
+  - **One owner-in-the-loop path for CAPTCHAs, codes and manual steps**, on every device the owner uses.
+  - **Out-of-process plugins** don't get `owner.ask` or `models.lookAt` yet; that needs a host JSON-RPC method.
+  - **Desktop and the phone apps** receive `owner_task` events and the API. Their answer screens come next; until then, the owner answers from a chat or the terminal.
+
+## ADR-049: Pairing a phone with a code the owner shows — showing it is the approval
 
 - **Context**: Issue #311. ADR-035 listed QR pairing as a follow-up, and the iOS and Android apps shipped in 1.5.3. Connecting a phone took two hard steps:
   - **An address.** Mercury binds `127.0.0.1`, so a phone needs a tunnel, and the apps refuse plain `http://` outside the local network: iOS through `NSAllowsLocalNetworking`, Android through `LocalNetwork.allowsCleartext`.

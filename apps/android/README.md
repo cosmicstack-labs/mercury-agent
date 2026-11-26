@@ -25,9 +25,11 @@ One chat at a time with a drawer, as in the ChatGPT and Grok apps (not a bottom-
   name; the picker lists GET /api/chat/models and switches with POST /api/chat/models/switch, which
   changes Mercury's model for every chat; Auto is the configured default), the mic, and one round
   button (call when empty, send, stop).
-- The left drawer (`ui/chats/ChatDrawer.kt`, Grok's layout): the connected Mercury at the top (tap to
-  switch or add one) and » to close; Bots, Artifacts, Saved; "Conversations" over one flat list,
-  each row the title alone (a dot only when a chat works, needs you or failed; unread titles
+- The left drawer (`ui/chats/ChatDrawer.kt`, Grok's layout): the connected Mercury at the top, its
+  logo and friendly name (tap: the switcher, to switch, rename, pick a logo or add one) and » to
+  close; Bots, Artifacts, Saved; "Conversations" over the chats with small day labels between them
+  (Today, Yesterday, 3 days ago, Previous 30 days, October), all one scrolling `LazyColumn`; each row
+  the title alone (a dot only when a chat works, needs you or failed; unread titles
   semibold with a dot); swipe left to delete with Undo, long-press for Rename, Save, Delete; and at
   the bottom Settings, Search (live, titles and messages) and a white New chat button.
 - Bots, Artifacts and Settings open as full screens over the chat; back returns to it.
@@ -177,6 +179,9 @@ Lifecycle 2.9.4, OkHttp 4.12, kotlinx.serialization 1.9, core-telecom 1.0.0, JNA
    Mercury Desktop, or with `/server approve K7Q2M`. The app then holds a device token
    (`mdt_…`), encrypted in the Android Keystore; the password is never kept.
 4. Or **I have a device token**: paste a token made for this phone.
+5. Name it: the computer's name is the first guess (GET /api/health's `host`), and one of twelve
+   playful Mercury logos (`ui/components/MercuryLogo.kt`, the same shapes as iOS) is picked in turn.
+   Both are kept per connection and can be changed from the drawer's switcher or Settings.
 
 Plain `http://` works only to local and private addresses (as iOS's `NSAllowsLocalNetworking`);
 anything else must be `https://`. More → **Add another Mercury** pairs more; tap one to switch.

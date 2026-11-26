@@ -171,3 +171,68 @@ export async function selectWithArrowKeys(
     render();
   });
 }
+
+export interface TextInputConfig {
+  /** Shown dim under the title: what to type, an example. */
+  helperText?: string;
+  signal?: AbortSignal;
+}
+
+/**
+ * One line of typed text, drawn like the arrow-key menus (same terminal
+ * handling): Enter returns what was typed, Escape returns '' (nothing).
+ * Used where a menu needs a value no list can offer, such as an address.
+ */
+export async function inputWithKeys(title: string, config: TextInputConfig = {}): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return '';
+  closeAsk();
+  readline.emitKeypressEvents(process.stdin);
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+  const canUseRawMode = typeof stdin.setRawMode === 'function';
+  const helperText = config.helperText || 'Type it, then press Enter. Esc to go back.';
+  let value = '';
+  let renderedRows = 0;
+
+  const render = () => {
+    const lines = [
+      ...title.split('\n').map((line) => (line ? chalk.bold.white(`  ${line}`) : '')),
+      chalk.dim(`  ${helperText}`),
+      '',
+      `  ${chalk.cyanBright('›')} ${value}${chalk.inverse(' ')}`,
+      '',
+    ];
+    if (renderedRows > 0) readline.moveCursor(stdout, 0, -(renderedRows - 1));
+    readline.cursorTo(stdout, 0);
+    readline.clearScreenDown(stdout);
+    stdout.write(lines.join('\n'));
+    renderedRows = screenRows(lines, stdout.columns || 80);
+  };
+
+  return await new Promise<string>((resolve, reject) => {
+    const cleanup = () => {
+      stdin.off('keypress', onKeypress);
+      config.signal?.removeEventListener('abort', onAbort);
+      if (canUseRawMode) stdin.setRawMode(false);
+    };
+    const onAbort = () => { cleanup(); reject(new ArrowSelectCancelledError()); };
+    const finish = (out: string) => { cleanup(); stdout.write('\n'); resolve(out); };
+    const onKeypress = (input: string, key: readline.Key) => {
+      if (key?.ctrl && key.name === 'c') { cleanup(); process.kill(process.pid, 'SIGINT'); return; }
+      if (key?.name === 'return' || key?.name === 'enter') { finish(value.trim()); return; }
+      if (key?.name === 'escape') { finish(''); return; }
+      if (key?.name === 'backspace') { value = [...value].slice(0, -1).join(''); render(); return; }
+      if (key?.ctrl && key.name === 'u') { value = ''; render(); return; }
+      if (key?.ctrl || key?.meta) return;
+      // Printable text, including a paste (several characters in one event).
+      const text = (input ?? '').replace(/[\x00-\x1f\x7f]/g, '');
+      if (text) { value = (value + text).slice(0, 200); render(); }
+    };
+    if (canUseRawMode) stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on('keypress', onKeypress);
+    config.signal?.addEventListener('abort', onAbort, { once: true });
+    if (config.signal?.aborted) { onAbort(); return; }
+    render();
+  });
+}

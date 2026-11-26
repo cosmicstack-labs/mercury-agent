@@ -45,6 +45,27 @@ export interface DeviceRecord {
   approvedBy?: string;
   /** Set once by the upgrade that added idle expiry: the clock for old devices starts then. */
   idleSince?: string;
+  /** How Mercury reaches this phone (ADR-046): set by the app itself, never by another device. */
+  reach?: DeviceReach;
+}
+
+/**
+ * What a phone told Mercury about itself, so Mercury knows which paired
+ * device is which phone and whether to ring it (ADR-046). Live presence
+ * (an open event stream right now) isn't stored: see reach/presence.ts.
+ */
+export interface DeviceReach {
+  /** "ios" or "android". */
+  platform: string;
+  /** The app's version, e.g. "1.4.0 (52)". */
+  appVersion: string;
+  /** Ring this phone for calls from Mercury. */
+  ring: boolean;
+  /** Show Mercury's notifications on this phone. */
+  notify: boolean;
+  /** What the app can do: "callkit", "telecom", "full-screen-intent"… */
+  capabilities: string[];
+  updatedAt: string;
 }
 
 export interface DeviceSummary {
@@ -58,6 +79,8 @@ export interface DeviceSummary {
   approvedBy?: string;
   /** When it stops working if it isn't used (idle expiry), or null when it never does. */
   expiresAt: string | null;
+  /** The phone's own reach registration (ADR-046), when it made one. */
+  reach?: DeviceReach;
 }
 
 interface DevicesFile {
@@ -132,6 +155,7 @@ function toSummary(d: DeviceRecord): DeviceSummary {
     id: d.id, name: d.name, platform: d.platform, createdAt: d.createdAt, lastSeenAt: d.lastSeenAt,
     ...(d.lastIp ? { lastIp: d.lastIp } : {}), ...(d.lastAgent ? { lastAgent: d.lastAgent } : {}), ...(d.approvedBy ? { approvedBy: d.approvedBy } : {}),
     expiresAt: exp ? new Date(exp).toISOString() : null,
+    ...(d.reach ? { reach: d.reach } : {}),
   };
 }
 
@@ -263,6 +287,37 @@ export function noteDeviceSeen(id: string, ip: string | null, agent: string | nu
   if (ua) d.lastAgent = ua;
   try { writeFile(data); } catch { /* cosmetic */ }
   return isNew && known.length > 0;
+}
+
+const REACH_PLATFORMS = new Set(['ios', 'android']);
+
+/** A phone's reach registration from its request body, or a plain reason it can't be taken. */
+export function normalizeReach(body: unknown, now = new Date()): DeviceReach | string {
+  if (!body || typeof body !== 'object') return 'Send { platform, appVersion, ring, notify, capabilities }.';
+  const b = body as Record<string, unknown>;
+  const platform = normalizePlatform(b.platform);
+  if (!REACH_PLATFORMS.has(platform)) return 'platform must be "ios" or "android".';
+  // eslint-disable-next-line no-control-regex -- strips control characters on purpose
+  const appVersion = String(b.appVersion ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 40);
+  const capabilities = Array.isArray(b.capabilities)
+    ? [...new Set(b.capabilities.filter((c): c is string => typeof c === 'string').map((c) => c.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 32)).filter(Boolean))].slice(0, 16)
+    : [];
+  return { platform, appVersion, ring: b.ring !== false, notify: b.notify !== false, capabilities, updatedAt: now.toISOString() };
+}
+
+/** Save a phone's reach registration on its own record. False when the device is gone. */
+export function setDeviceReach(id: string, reach: DeviceReach): boolean {
+  const data = readFile();
+  const d = data.devices.find((x) => x.id === id);
+  if (!d) return false;
+  d.reach = reach;
+  writeFile(data);
+  return true;
+}
+
+/** Paired phones: devices that registered how to reach them, or paired as a phone. */
+export function listPhones(): DeviceSummary[] {
+  return listDevices().filter((d) => REACH_PLATFORMS.has(d.reach?.platform ?? d.platform));
 }
 
 /** Revoke every device; how many. */

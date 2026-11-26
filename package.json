@@ -1,6 +1,6 @@
 {
   "name": "@cosmicstack/mercury-agent",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "description": "Soul-driven AI agent with Second Brain memory, permission-hardened tools, token budgets, and multi-channel access. Runs 24/7 from CLI or Telegram.",
   "type": "module",
   "main": "dist/index.js",
@@ -26,6 +26,8 @@
     "eval": "vitest run src/eval",
     "vendor:ink": "node scripts/vendor-ink.cjs",
     "vendor:ink:check": "node scripts/vendor-ink.cjs --check",
+    "skills:bundle": "node scripts/gen-bundled-skills.cjs",
+    "skills:bundle:check": "node scripts/gen-bundled-skills.cjs --check",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

@@ -1,3 +1,4 @@
+import { isServerCommand, useServerPanel } from "~/components/ServerPanel";
 import { ArrowUp, AudioLines, ChevronDown, Clapperboard, Gauge, Image as ImageIcon, Music, Paperclip, Shield, ShieldCheck, Square, Telescope, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
@@ -14,7 +15,7 @@ import { useConversation, useConversationStore, type Surface } from "~/app/conve
 import { Button } from "~/components/ui/Button";
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from "~/components/ui/Menu";
 import { Tooltip } from "~/components/ui/Tooltip";
-import { DictationNotice, MicButton, RecordingBar, joinText, useDictation } from "~/components/dictation/Dictation";
+import { DictationNotice, LiveHint, MicButton, RecordingBar, joinText, useDictation } from "~/components/dictation/Dictation";
 
 /**
  * One box. Enter sends, Shift+Enter breaks a line, Esc clears. Photos and
@@ -113,8 +114,32 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
     if (mode === "send") { void submit(next); return; }
     setText(next);
     requestAnimationFrame(() => { const el = ref.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } });
+  }, {
+    // Live dictation: the words stream into the box at the cursor.
+    get: () => {
+      const el = ref.current;
+      const t = textRef.current;
+      return { text: t, cursor: el && document.activeElement === el ? Math.min(el.selectionStart ?? t.length, t.length) : t.length };
+    },
+    set: (next, cursor) => {
+      textRef.current = next;
+      setText(next);
+      requestAnimationFrame(() => { const el = ref.current; if (el && el.value === next && document.activeElement === el) el.setSelectionRange(cursor, cursor); });
+    },
   });
   const recording = dictation.phase === "recording";
+  const live = dictation.liveActive;
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  // Esc (or the mic) stops live dictation; the words stay in the box.
+  useEffect(() => {
+    if (!live) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dictation.finish("insert"); }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [live]); // eslint-disable-line react-hooks/exhaustive-deps
   const voiceAvailable = useVoice((s) => s.available && s.supported && !s.active);
   // Esc throws the take away, Enter sends it, while recording.
   useEffect(() => {
@@ -225,6 +250,15 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
     if (surface === "chat" && researchNext !== "off" && !imageNext && content && !/^[/#]/.test(content)) content = `/research ${researchNext === "plan" ? "plan " : ""}${content}`;
     const media: ImageIntent | undefined = surface === "chat" && imageNext && content && !/^[/#]/.test(content) ? imageNext : undefined;
     if ((!content && files.length === 0) || sending) return;
+    // /server is a window of its own, not a chat turn.
+    if (isServerCommand(content) && files.length === 0) {
+      setText("");
+      setToken(null);
+      useServerPanel.getState().show();
+      return;
+    }
+    // Sending stops live dictation: what's in the box is what goes.
+    if (liveRef.current) dictation.finish("cancel");
     setSending(true);
     setError(null);
     try {
@@ -292,6 +326,8 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
           {recording ? (
             <div className="px-4 pb-1 pt-3"><RecordingBar d={dictation} canSend={connected && !blockedReason} /></div>
           ) : (
+          <>
+          {live && <LiveHint d={dictation} className="px-5 pt-3" />}
           <div className="flex">
           {mono && <span aria-hidden="true" className="pointer-events-none select-none pl-5 pt-4 font-mono text-md leading-[26px] text-accent">&gt;</span>}
           {token && <CommandChip label={token.label} kind={token.kind} onRemove={() => { setToken(null); ref.current?.focus(); }} className={mono ? "ml-2 mt-[15px]" : "ml-4 mt-[15px]"} />}
@@ -323,6 +359,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
             aria-label="Message"
           />
           </div>
+          </>
           )}
           {/* One line, always: the model name gives way first, then the chips drop to their icons (base.css .composer-row). */}
           <div className="composer-row flex flex-nowrap items-center gap-1 px-3 pb-3 pt-1.5">

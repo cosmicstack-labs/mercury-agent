@@ -37,7 +37,8 @@ final class ChatsModel {
   var history: ChatHistory {
     // Read every input, so SwiftUI redraws when one changes, even when the memo answers.
     let all = threads
-    let key = "\(revision)|\(savedOnly)|\(query)"
+    // The day too, so the labels move on after midnight.
+    let key = "\(revision)|\(savedOnly)|\(query)|\(Calendar.current.startOfDay(for: .now).timeIntervalSince1970)"
     if let memo, memo.key == key { return memo.history }
     let h = ChatHistory.build(all, query: query, savedOnly: savedOnly)
     memo = (key, h)

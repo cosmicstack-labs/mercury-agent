@@ -2710,7 +2710,7 @@ public object FfiConverterTypeVoiceListener: FfiConverter<VoiceListener, Long> {
  */
 data class DictationConfig (
     /**
-     * "openai", "deepgram" or "elevenlabs".
+     * "openai", "gemini", "deepgram" or "elevenlabs".
      */
     var `engine`: kotlin.String
     , 

@@ -2,18 +2,33 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://mercuryagent.sh/blog</id>
     <title>Mercury Blog</title>
-    <updated>2026-11-11T00:00:00.000Z</updated>
+    <updated>2026-11-17T00:00:00.000Z</updated>
     <generator>https://github.com/jpmonette/feed</generator>
     <link rel="alternate" href="https://mercuryagent.sh/blog"/>
     <subtitle>News, engineering notes and field reports from the team building Mercury.</subtitle>
     <icon>https://mercuryagent.sh/img/logo-light.png</icon>
     <rights>© 2026 Cosmic Stack</rights>
     <entry>
+        <title type="html"><![CDATA[Mercury Weekly #1: IPOs, models and agents that pay]]></title>
+        <id>https://mercuryagent.sh/blog/mercury-weekly-1</id>
+        <link href="https://mercuryagent.sh/blog/mercury-weekly-1"/>
+        <updated>2026-11-17T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[The week of 9 to 15 November 2026: Anthropic's IPO roadshow, Nvidia's CEO change, new frontier models, ChatGPT Wallet and the Decisions API.]]></summary>
+        <author>
+            <name>Tashir Khan</name>
+            <uri>https://github.com/tashiriskhan</uri>
+        </author>
+        <category label="Mercury Weekly" term="Mercury Weekly"/>
+        <category label="News" term="News"/>
+        <category label="AI Agents" term="AI Agents"/>
+        <category label="Security" term="Security"/>
+    </entry>
+    <entry>
         <title type="html"><![CDATA[What Is a Personal AI Assistant? 10 Real Tasks in 2026]]></title>
         <id>https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant</id>
         <link href="https://mercuryagent.sh/blog/what-is-a-personal-ai-assistant"/>
         <updated>2026-11-11T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[An AI personal assistant acts for one person across their accounts, files, apps and connected services. Here is what it is, ten tasks it can handle, and the permissions each one needs.]]></summary>
+        <summary type="html"><![CDATA[A personal AI assistant acts for one person across accounts, files, apps and services. What it is, ten tasks it handles, and the permissions each needs.]]></summary>
         <author>
             <name>Tashir Khan</name>
             <uri>https://github.com/tashiriskhan</uri>
@@ -24,11 +39,11 @@
         <category label="Self-Hosted AI" term="Self-Hosted AI"/>
     </entry>
     <entry>
-        <title type="html"><![CDATA[9 Safest, Most Secure, and Permission-Aware AI Agents for Real-World Tasks]]></title>
+        <title type="html"><![CDATA[9 AI Agents Compared for Real Work: Memory and Permissions]]></title>
         <id>https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work</id>
         <link href="https://mercuryagent.sh/blog/six-ai-agents-compared-for-real-work"/>
         <updated>2026-11-05T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[Grok, ChatGPT Work, Mercury, OpenClaw, Manus, Gemini agent for work, Devin, Claude Cowork and Comet compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.]]></summary>
+        <summary type="html"><![CDATA[Nine AI agents compared on memory, where they run, what they can touch, scheduling, permissions, model choice and price.]]></summary>
         <author>
             <name>Tashir Khan</name>
             <uri>https://github.com/tashiriskhan</uri>
@@ -41,19 +56,6 @@
         <category label="AI Agent Memory" term="AI Agent Memory"/>
     </entry>
     <entry>
-        <title type="html"><![CDATA[Mercury 1.5: Mercury Desktop]]></title>
-        <id>https://mercuryagent.sh/blog/mercury-1-5</id>
-        <link href="https://mercuryagent.sh/blog/mercury-1-5"/>
-        <updated>2026-11-03T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.]]></summary>
-        <author>
-            <name>Mercury Engineering</name>
-            <uri>https://github.com/cosmicstack-labs/mercury-agent</uri>
-        </author>
-        <category label="News" term="News"/>
-        <category label="Releases" term="Releases"/>
-    </entry>
-    <entry>
         <title type="html"><![CDATA[A tour of Mercury Desktop: one app, every Mercury you run]]></title>
         <id>https://mercuryagent.sh/blog/mercury-desktop-tour</id>
         <link href="https://mercuryagent.sh/blog/mercury-desktop-tour"/>
@@ -64,6 +66,19 @@
             <uri>https://github.com/cosmicstack-labs/mercury-agent</uri>
         </author>
         <category label="Product" term="Product"/>
+        <category label="Releases" term="Releases"/>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[Mercury 1.5: Mercury Desktop]]></title>
+        <id>https://mercuryagent.sh/blog/mercury-1-5</id>
+        <link href="https://mercuryagent.sh/blog/mercury-1-5"/>
+        <updated>2026-11-03T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.]]></summary>
+        <author>
+            <name>Mercury Engineering</name>
+            <uri>https://github.com/cosmicstack-labs/mercury-agent</uri>
+        </author>
+        <category label="News" term="News"/>
         <category label="Releases" term="Releases"/>
     </entry>
     <entry>
@@ -84,7 +99,7 @@
         <id>https://mercuryagent.sh/blog/running-an-agent-overnight</id>
         <link href="https://mercuryagent.sh/blog/running-an-agent-overnight"/>
         <updated>2026-10-27T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.]]></summary>
+        <summary type="html"><![CDATA[We read Mercury's scheduler and budget code and reproduced one behaviour to find what fails in long unattended runs: skipped tasks and quiet errors.]]></summary>
         <author>
             <name>Tashir Khan</name>
             <uri>https://github.com/tashiriskhan</uri>
@@ -106,11 +121,11 @@
         <category label="Product" term="Product"/>
     </entry>
     <entry>
-        <title type="html"><![CDATA[Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk]]></title>
+        <title type="html"><![CDATA[Mercury 1.4: plugins, WhatsApp calls, and Optimus]]></title>
         <id>https://mercuryagent.sh/blog/mercury-1-4</id>
         <link href="https://mercuryagent.sh/blog/mercury-1-4"/>
         <updated>2026-10-23T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[Mercury 1.4 adds isolated plugins and two official ones: WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.]]></summary>
+        <summary type="html"><![CDATA[Mercury 1.4 adds isolated plugins, WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.]]></summary>
         <author>
             <name>Salman Qureshi</name>
             <uri>https://github.com/hotheadhacker</uri>
@@ -120,11 +135,11 @@
         <category label="Product" term="Product"/>
     </entry>
     <entry>
-        <title type="html"><![CDATA[The new bottleneck in AI coding isn't code generation. It's verification.]]></title>
+        <title type="html"><![CDATA[AI coding's bottleneck is verification, not generation]]></title>
         <id>https://mercuryagent.sh/blog/ai-coding-verification-bottleneck</id>
         <link href="https://mercuryagent.sh/blog/ai-coding-verification-bottleneck"/>
         <updated>2026-10-20T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.]]></summary>
+        <summary type="html"><![CDATA[A Harvard working paper finds coding agents raised output while review time rose 49%. Why verification should decide whether an agent is useful.]]></summary>
         <author>
             <name>Tashir Khan</name>
             <uri>https://github.com/tashiriskhan</uri>
@@ -150,7 +165,7 @@
         <id>https://mercuryagent.sh/blog/mercury-bots</id>
         <link href="https://mercuryagent.sh/blog/mercury-bots"/>
         <updated>2026-10-16T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[Always-on agents shipped everywhere this autumn. How Mercury Bots work, what we measured, how they compare with Grok Bot, OpenAI dots, Meta Muse, OpenClaw and Hermes Agent, and the commits behind it.]]></summary>
+        <summary type="html"><![CDATA[How Mercury Bots work, what we measured, how they compare with other always-on agents, and the commits behind them, as the work was done.]]></summary>
         <author>
             <name>Salman Qureshi</name>
             <uri>https://github.com/hotheadhacker</uri>
@@ -164,7 +179,7 @@
         <id>https://mercuryagent.sh/blog/the-wizard-that-quit-at-the-menu</id>
         <link href="https://mercuryagent.sh/blog/the-wizard-that-quit-at-the-menu"/>
         <updated>2026-10-15T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[For six releases, a brand-new Mercury install asked for your name, showed one menu, and exited without an error. A walkthrough of a one-tick race between two readers of the same terminal, and the test that now keeps it from coming back.]]></summary>
+        <summary type="html"><![CDATA[A new Mercury install asked for your name, showed one menu, then quit with no error. How a one-tick race caused it, and the test that stops it returning.]]></summary>
         <author>
             <name>Mercury Engineering</name>
             <uri>https://github.com/cosmicstack-labs/mercury-agent</uri>
@@ -177,7 +192,7 @@
         <id>https://mercuryagent.sh/blog/we-were-running-mercury-twice</id>
         <link href="https://mercuryagent.sh/blog/we-were-running-mercury-twice"/>
         <updated>2026-10-14T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[Typing felt sluggish on every machine, and the terminal renderer took the blame. The real cause was a second full copy of the agent, started quietly by the launcher. How we found it, and why the fix was an architecture change rather than a performance tweak.]]></summary>
+        <summary type="html"><![CDATA[Typing felt sluggish everywhere. The cause was a second full copy of the agent, started quietly by the launcher. How we found it and fixed it.]]></summary>
         <author>
             <name>Salman Qureshi</name>
             <uri>https://github.com/hotheadhacker</uri>
@@ -191,7 +206,7 @@
         <id>https://mercuryagent.sh/blog/mercury-1-3</id>
         <link href="https://mercuryagent.sh/blog/mercury-1-3"/>
         <updated>2026-10-12T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[One background runtime that every terminal attaches to, bots that deliver real files and stay online, and a fleet you can run from Telegram. What changed in the 1.3 line and why.]]></summary>
+        <summary type="html"><![CDATA[Mercury 1.3's shared background runtime, bots that deliver real files and stay online, and a fleet you run from Telegram. What changed and why.]]></summary>
         <author>
             <name>Salman Qureshi</name>
             <uri>https://github.com/hotheadhacker</uri>
@@ -205,7 +220,7 @@
         <id>https://mercuryagent.sh/blog/asks-before-it-acts</id>
         <link href="https://mercuryagent.sh/blog/asks-before-it-acts"/>
         <updated>2026-10-09T00:00:00.000Z</updated>
-        <summary type="html"><![CDATA[An agent with a shell, a file system and network access is only useful if you can trust what it will do with them. A tour of the layers between the model and your machine: scopes, approvals, a blocklist nothing can override, an SSRF guard, and tiers for unattended bots.]]></summary>
+        <summary type="html"><![CDATA[How Mercury's permission model works: scopes, approvals, a blocklist nothing overrides, an SSRF guard, and the limits that apply to unattended bots.]]></summary>
         <author>
             <name>Mercury Engineering</name>
             <uri>https://github.com/cosmicstack-labs/mercury-agent</uri>

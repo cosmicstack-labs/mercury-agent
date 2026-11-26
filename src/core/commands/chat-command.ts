@@ -1268,12 +1268,13 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     const prompt = channel as typeof channel & { presentChoicePrompt?: (q: string, o: Array<{ value: string; label: string }>, t?: string) => Promise<string> };
     const say = async (text: string) => { await channel.send(text, channelId); };
     if (channel instanceof CLIChannel) {
-      await channel.withMenu(async (select) => {
+      await channel.withMenu(async (select, input) => {
         await runServerCommand(args, ops, {
           choose: async (title, options) => (await select(title, options)) || null,
           say,
           // Shown in the menu, not the transcript.
-          secret: async (text, copy) => { await acknowledgeSecret(select, text, copy); },
+          secret: (text, copy) => acknowledgeSecret(select, text, copy),
+          ask: async (title, hint) => (await input(title, hint)) || null,
           terminal: true,
           waitFor: async (text, until) => {
             const done = new AbortController();
@@ -1297,8 +1298,9 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
       choose: async (title, options) => (typeof prompt.presentChoicePrompt === 'function' ? (await prompt.presentChoicePrompt(title, options, channelId)) || null : null),
       say,
       secret: async (text, copy) => {
-        if (typeof prompt.presentChoicePrompt === 'function') await acknowledgeSecret((t, o) => prompt.presentChoicePrompt!(t, o, channelId), text, copy);
-        else await say(text);
+        if (typeof prompt.presentChoicePrompt === 'function') return acknowledgeSecret((t, o) => prompt.presentChoicePrompt!(t, o, channelId), text, copy);
+        await say(text);
+        return 'ok';
       },
     });
     return true;

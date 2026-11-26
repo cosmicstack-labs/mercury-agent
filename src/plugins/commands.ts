@@ -83,6 +83,8 @@ function describe(i: PluginListItem): string {
   lines.push(`Network: ${p?.network.length ? p.network.join(', ') : 'none'}`);
   lines.push(`Secrets it can read: ${p?.secrets.length ? p.secrets.join(', ') : 'none'}`);
   if (p?.desktop) lines.push('⚠️ Controls this computer: it can see your screen, move the mouse and type, in any app.');
+  if (p?.useModels) lines.push('Uses your own Mercury models to look at images (whichever providers you set up; it never sees a key).');
+  if (p?.askOwner) lines.push('Can ask you to do things only you can (solve a CAPTCHA, read out a code), on your phone and chats.');
   for (const m of i.missing ?? []) lines.push(`⚠️ ${m.unlocks} is off: needs ${m.needs}. ${m.fix}`);
   const providers = Object.keys(i.permissions?.providers ?? {});
   if (providers.length) lines.push(`Uses your Mercury providers: ${providers.join(', ')}`);

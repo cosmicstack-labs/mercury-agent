@@ -1,6 +1,6 @@
 # We were running Mercury twice and didn't know it
 
-> Typing felt sluggish on every machine, and the terminal renderer took the blame. The real cause was a second full copy of the agent, started quietly by the launcher. How we found it, and why the fix was an architecture change rather than a performance tweak.
+> Typing felt sluggish everywhere. The cause was a second full copy of the agent, started quietly by the launcher. How we found it and fixed it.
 
 Published 2026-10-14 by Salman Qureshi. Tags: engineering, postmortem, runtime.
 Canonical: https://mercuryagent.sh/blog/we-were-running-mercury-twice

@@ -42,7 +42,7 @@ import { basename } from 'node:path';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { getMercuryHome } from '../utils/config.js';
-import { activeCallScheduler } from './call-schedule.js';
+import { pluginCallScheduler } from './call-schedule.js';
 import { BaseChannel, type Channel } from '../channels/base.js';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
@@ -313,7 +313,8 @@ export class PluginChannel extends BaseChannel {
         return { instructions: voiceBriefing() };
       case 'mercury/call/schedule': {
         // "Call me back at 9" said on a call: the time is worked out here, not by a model.
-        const sched = activeCallScheduler();
+        // Asked on a WhatsApp call: the call back comes on WhatsApp too.
+        const sched = pluginCallScheduler();
         if (!sched) return { ok: false, text: 'Scheduled calls aren\'t available right now.' };
         try {
           const r = sched.schedule(String(p.when ?? ''), typeof p.topic === 'string' ? p.topic : '');

@@ -11,6 +11,10 @@
  * Saved to <plugin dir>/scheduled-calls.json, so calls survive restarts; one
  * that came due while Mercury was down is placed when it's back (up to 2h
  * late), otherwise the owner gets a "missed" note.
+ *
+ * The same scheduler serves Mercury's own "phone" channel (ADR-046): calls
+ * that ring the Mercury app (reach/service.ts), with its own placer, its own
+ * file (~/.mercury/reach) and its own give-up step.
  */
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,6 +28,8 @@ export interface ScheduledCall {
   topic: string;
   createdAt: string;
   attempts: number;
+  /** Ring only these phones / only the Mercury app (a call to a named device). */
+  target?: { deviceIds?: string[]; appOnly?: boolean; targetLabel?: string };
 }
 
 const RETRY_MS = 5 * 60_000;
@@ -106,6 +112,17 @@ export function describeTime(at: Date, now = new Date()): string {
 
 // ── scheduler ─────────────────────────────────────────────────────────────
 
+export interface CallSchedulerOptions {
+  /** Where scheduled-calls.json lives (default: the plugin's folder). */
+  dir?: string;
+  /** Ring the owner; returns the outcome text ("answered…", "no_answer…"). Default: the plugin's call_owner tool. */
+  place?: (c: ScheduledCall) => Promise<string>;
+  /** Whether an unanswered outcome is worth the one retry. */
+  retryable?: (outcome: string) => boolean;
+  /** No answer after the retry (or not retryable): what to do instead of the default chat message. */
+  giveUp?: (c: ScheduledCall, outcome: string) => Promise<void>;
+}
+
 export class CallScheduler {
   private calls: ScheduledCall[] = [];
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -115,10 +132,15 @@ export class CallScheduler {
     private readonly pluginId: string,
     /** Send the owner a chat message (missed call notes). */
     private readonly message: (text: string) => Promise<void>,
+    private readonly opts: CallSchedulerOptions = {},
   ) {}
 
+  private dir(): string {
+    return this.opts.dir ?? pluginDir(this.pluginId);
+  }
+
   private file(): string {
-    return join(pluginDir(this.pluginId), 'scheduled-calls.json');
+    return join(this.dir(), 'scheduled-calls.json');
   }
 
   start(): void {
@@ -151,7 +173,7 @@ export class CallScheduler {
   }
 
   /** Schedule a call; returns the confirmation to show (or throws with a plain reason). */
-  schedule(when: string, topic: string, now = new Date()): { call: ScheduledCall; confirmation: string } {
+  schedule(when: string, topic: string, now = new Date(), target?: ScheduledCall['target']): { call: ScheduledCall; confirmation: string } {
     const at = parseWhen(when, now);
     if (!at) throw new Error(`I couldn't work out when "${when}" is. Try "9pm", "in 20 minutes" or "tomorrow 8:30am".`);
     if (at.getTime() - now.getTime() > MAX_AHEAD_MS) throw new Error('That\'s more than 30 days away; pick a closer time.');
@@ -161,11 +183,31 @@ export class CallScheduler {
       topic: topic.trim().slice(0, 300) || 'checking in',
       createdAt: now.toISOString(),
       attempts: 0,
+      ...(target ? { target } : {}),
     };
     this.calls.push(call);
     this.arm(call);
     this.save();
-    return { call, confirmation: `✅ I'll call you at ${describeTime(at, now)}${call.topic !== 'checking in' ? ` about ${call.topic}` : ''}.` };
+    return { call, confirmation: `✅ I'll call you${target?.targetLabel ? ` on ${target.targetLabel}` : ''} at ${describeTime(at, now)}${call.topic !== 'checking in' ? ` about ${call.topic}` : ''}.` };
+  }
+
+  /**
+   * An immediate call nobody answered: the one retry, 5 minutes from now
+   * (counted as the second attempt, so no answer then gives up).
+   */
+  retryLater(topic: string, now = new Date(), target?: ScheduledCall['target']): ScheduledCall {
+    const call: ScheduledCall = {
+      id: `c${Date.now().toString(36)}${(++this.seq).toString(36)}`,
+      at: new Date(now.getTime() + RETRY_MS).toISOString(),
+      topic: topic.trim().slice(0, 300) || 'checking in',
+      createdAt: now.toISOString(),
+      attempts: 1,
+      ...(target ? { target } : {}),
+    };
+    this.calls.push(call);
+    this.arm(call);
+    this.save();
+    return call;
   }
 
   /** Cancel by id, by list number (1-based), or "all". Returns how many were cancelled. */
@@ -186,7 +228,7 @@ export class CallScheduler {
 
   private save(): void {
     try {
-      mkdirSync(pluginDir(this.pluginId), { recursive: true });
+      mkdirSync(this.dir(), { recursive: true });
       writeJsonAtomic(this.file(), this.calls);
     } catch (err) {
       logger.warn({ err }, 'Could not save scheduled calls');
@@ -210,9 +252,15 @@ export class CallScheduler {
   /** Ring the owner. One retry after 5 minutes if they don't pick up, then a message. */
   private async place(c: ScheduledCall): Promise<void> {
     this.timers.delete(c.id);
-    const tool = listLiveTools().find((t) => t.pluginId === this.pluginId && t.name === 'call_owner');
     let outcome = '';
-    if (!tool) {
+    const tool = this.opts.place ? undefined : listLiveTools().find((t) => t.pluginId === this.pluginId && t.name === 'call_owner');
+    if (this.opts.place) {
+      try {
+        outcome = await this.opts.place(c);
+      } catch (err) {
+        outcome = `failed: ${(err as Error).message}`;
+      }
+    } else if (!tool) {
       outcome = 'the WhatsApp plugin isn\'t running';
     } else {
       try {
@@ -230,7 +278,8 @@ export class CallScheduler {
       return;
     }
     c.attempts += 1;
-    if (c.attempts < 2 && !/isn't running|Voice calls|need/.test(outcome)) {
+    const retryable = this.opts.retryable ? this.opts.retryable(outcome) : !/isn't running|Voice calls|need/.test(outcome);
+    if (c.attempts < 2 && retryable) {
       c.at = new Date(Date.now() + RETRY_MS).toISOString();
       this.arm(c);
       this.save();
@@ -238,6 +287,10 @@ export class CallScheduler {
     }
     this.remove(c.id);
     this.save();
+    if (this.opts.giveUp) {
+      await this.opts.giveUp(c, outcome).catch(() => {});
+      return;
+    }
     const why = /no_answer|declined|busy/.test(outcome) ? 'you didn\'t pick up' : outcome.replace(/^failed:\s*/, '').slice(0, 200);
     await this.message(`📞 I tried to call you${c.topic !== 'checking in' ? ` about ${c.topic}` : ''}, but ${why}. Say /call now when you're free, or just reply here.`).catch(() => {});
   }
@@ -254,8 +307,36 @@ export function registerCallScheduler(pluginId: string, s: CallScheduler | null)
   else schedulers.delete(pluginId);
 }
 
+/** The core phone channel's scheduler id (ADR-046). */
+export const PHONE_SCHEDULER_ID = 'phone';
+let phoneAvailable: () => boolean = () => false;
+
+/** Whether the phone scheduler should take scheduled calls now (a phone with the Mercury app is paired). */
+export function setPhoneSchedulerAvailability(fn: () => boolean): void {
+  phoneAvailable = fn;
+}
+
+/**
+ * The scheduler new calls go to: Mercury's own phone channel when a phone
+ * with the Mercury app is paired (it falls back to WhatsApp by itself),
+ * else a calling channel plugin's.
+ */
 export function activeCallScheduler(): CallScheduler | undefined {
-  return schedulers.values().next().value;
+  const phone = schedulers.get(PHONE_SCHEDULER_ID);
+  if (phone && phoneAvailable()) return phone;
+  for (const [id, s] of schedulers) if (id !== PHONE_SCHEDULER_ID) return s;
+  return undefined;
+}
+
+/** The Mercury app's scheduler (calls to a named phone or the app go through it). */
+export function phoneCallScheduler(): CallScheduler | undefined {
+  return schedulers.get(PHONE_SCHEDULER_ID);
+}
+
+/** A calling channel plugin's scheduler (not the phone's). */
+export function pluginCallScheduler(): CallScheduler | undefined {
+  for (const [id, s] of schedulers) if (id !== PHONE_SCHEDULER_ID) return s;
+  return undefined;
 }
 
 // ── /call and /calls ──────────────────────────────────────────────────────
@@ -270,7 +351,7 @@ export const CALL_HELP = [
 /** Handle "/call …" and "/calls …". Returns the reply text. */
 export function handleCallCommand(trimmed: string, isMember: boolean): string {
   const s = activeCallScheduler();
-  if (!s) return '📞 Calls need the WhatsApp plugin, linked and running. Set it up with /plugins install whatsapp.';
+  if (!s) return '📞 Calls need the Mercury app paired on your phone, or the WhatsApp plugin, linked and running. Set it up with /plugins install whatsapp.';
   if (isMember) return 'Only the owner can schedule calls.';
   const [cmd, ...rest] = trimmed.slice(1).split(/\s+/);
   const args = rest.join(' ').trim();

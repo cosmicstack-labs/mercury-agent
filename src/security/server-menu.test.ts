@@ -3,12 +3,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OwnerApprovals, _setOwnerApprovals, ownerApprovals } from './owner-approvals.js';
-import { runServerCommand, type ServerUi } from './server-menu.js';
+import { SERVER_HELP, runServerCommand, serverMenu, type ServerUi } from './server-menu.js';
 import { localServerOps } from './server-ops.js';
 import { readRemoteSettings, writeRemoteSettings } from './remote-settings.js';
 import { readAudit } from './audit.js';
 import { PairCodes, _setPairCodes, pairCodes } from './pair-codes.js';
-import { SERVER_HELP, serverMenu } from './server-menu.js';
 
 let home: string;
 const previous = process.env.MERCURY_HOME;
@@ -84,6 +83,45 @@ describe('/server', () => {
     await runServerCommand('', localServerOps(), s.ui);
     expect(ownerApprovals().get(q.id)?.status).toBe('allowed');
     expect(s.titles[0]).toMatch(/Remote access: on · 0 devices · 1 waiting for you · Security:/);
+  });
+
+  it('adds an allowed address typed in the menu, re-asking on a bad one, and removes it again', async () => {
+    const ops = localServerOps();
+    const s = screen(['ips', 'type', 'back', 'done']);
+    const typed = ['not an address', '203.0.113.7'];
+    const asked: string[] = [];
+    s.ui.ask = async (title) => { asked.push(title); return typed.shift() ?? null; };
+    await serverMenu(ops, s.ui);
+    expect(readRemoteSettings().allowIps).toEqual(['203.0.113.7']);
+    expect(asked[1]).toMatch(/isn't an address/);
+    const r = screen(['ips', 'remove:203.0.113.7', 'back', 'done']);
+    await serverMenu(ops, r.ui);
+    expect(readRemoteSettings().allowIps).toEqual([]);
+  });
+
+  it('offers the Tailscale range as one pick, and says how to add one where nothing can be typed', async () => {
+    const ops = localServerOps();
+    const s = screen(['ips', 'add:100.64.0.0/10', 'how', 'back', 'done']);
+    await serverMenu(ops, s.ui);
+    expect(readRemoteSettings().allowIps).toEqual(['100.64.0.0/10']);
+    expect(s.said.join('\n')).toMatch(/\/server allow-ip/);
+  });
+
+  it('a copied token closes the screen and says so, without the token', async () => {
+    const s = screen();
+    s.ui.secret = async () => 'copied';
+    await runServerCommand('token Phone', localServerOps(), s.ui);
+    expect(s.said.at(-1)).toMatch(/copied/);
+    expect(s.said.join('\n')).not.toMatch(/mdt_/);
+  });
+
+  it('turns password sign-in for other devices on and off (off by default)', async () => {
+    const s = screen();
+    expect(readRemoteSettings().passwordSignIn).toBe(false);
+    await runServerCommand('password on', localServerOps(), s.ui);
+    expect(readRemoteSettings().passwordSignIn).toBe(true);
+    await runServerCommand('password off', localServerOps(), s.ui);
+    expect(readRemoteSettings().passwordSignIn).toBe(false);
   });
 });
 

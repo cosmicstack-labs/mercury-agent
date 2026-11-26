@@ -24,7 +24,7 @@ export const MANIFEST_VERSION = 1 as const;
  * Minor bumps only add; a major bump is a breaking change and the previous
  * major stays supported for at least two Mercury minor releases.
  */
-export const PLUGIN_API_VERSION = '1.2.0';
+export const PLUGIN_API_VERSION = '1.3.0';
 
 export const PLUGIN_ID_RE = /^[a-z][a-z0-9-]{1,30}[a-z0-9]$/;
 /** Tool and command names a plugin declares (before namespacing). */
@@ -200,6 +200,18 @@ export const manifestSchema = z.object({
      * /plugins info; the plugin must also ask for consent in its own setup.
      */
     desktop: z.boolean().optional(),
+    /**
+     * Plugin API 1.3: the plugin may hand the owner tasks only a human can do
+     * (ctx.owner.ask: a CAPTCHA, a one-time code), sent to their phone, chat
+     * apps and Mercury Desktop (ADR-048). Shown to the owner before install.
+     */
+    askOwner: z.boolean().optional(),
+    /**
+     * Plugin API 1.3: the plugin may ask the owner's own models a question
+     * about an image (ctx.models.lookAt) — whichever providers they set up,
+     * default first. It never sees a key. Shown to the owner before install.
+     */
+    useModels: z.boolean().optional(),
     /**
      * Secrets the plugin works without, and what they unlock, e.g.
      * { "OPENAI_API_KEY": "Voice calls" }. A missing one is reported to the

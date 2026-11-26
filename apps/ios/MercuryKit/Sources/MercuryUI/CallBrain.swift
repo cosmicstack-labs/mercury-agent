@@ -96,6 +96,8 @@ final class CallBrain {
   @ObservationIgnored var onEnd: (End) -> Void = { _ in }
   /// Judges barge-ins while Mercury speaks (is it the owner, or someone nearby?). None: every one counts.
   @ObservationIgnored var bargeIn: BargeInJudge?
+  /// Extra state for the call log's per-second line (the echo guard's levels).
+  @ObservationIgnored var logExtra: (() -> String)?
   /// Mute changed (from the screen or by voice): the model syncs CallKit and the meter.
   @ObservationIgnored var onMuted: (Bool) -> Void = { _ in }
 
@@ -138,6 +140,7 @@ final class CallBrain {
     let t = now()
     switch e {
     case .connected:
+      CallLog.note("connected")
       connected = true
       started = t; lastActivity = t
       haptic(.connected)
@@ -154,9 +157,11 @@ final class CallBrain {
       if mercuryAudible || playback.isPlaying || responding {
         let audible = mercuryAudible || playback.isPlaying
         if audible, let gate = bargeIn, !gate.admits() {
+          CallLog.note("speechStarted while Mercury audible: held by gate")
           gate.hold()
           return
         }
+        CallLog.note("speechStarted: cut in (audible=\(audible) playing=\(playback.isPlaying) responding=\(responding))")
         cutIn(audible: audible)
       }
     case .userText(let text):
@@ -169,13 +174,16 @@ final class CallBrain {
     case .toolCall(let id, let name, let argsJson):
       toolCall(id: id, name: name, args: (argsJson.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]) ?? [:])
     case .responseStarted:
+      CallLog.note("response started")
       bargeIn?.setOwnerTalking(false)
       setResponding(true)
       spokeThisResponse = false
     case .responseDone:
+      CallLog.note("response done (spoke=\(spokeThisResponse))")
       setResponding(false)
       deliverIfIdle()
     case .closed(let reason):
+      CallLog.note("closed: \(reason)")
       finish(.dropped(reason))
     }
   }
@@ -226,6 +234,7 @@ final class CallBrain {
   // MARK: Tools
 
   private func toolCall(id: String, name: String, args: [String: Any]) {
+    CallLog.note("tool call \(name) (args: \(args.keys.sorted().joined(separator: ",")))")
     switch name {
     case "end_conversation", "end_call":
       // Let the goodbye finish playing (up to 5 s), then hang up. Work Mercury started keeps going.
@@ -398,6 +407,7 @@ final class CallBrain {
   // MARK: The status tick (every second)
 
   func tick() {
+    CallLog.summary("audible=\(mercuryAudible) playing=\(playback.isPlaying) responding=\(responding) \(logExtra?() ?? "")")
     guard ended == nil else { return }
     let t = now()
     if t.timeIntervalSince(started) >= maxDuration { finish(.timeLimit); return }

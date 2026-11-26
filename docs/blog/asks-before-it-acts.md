@@ -1,6 +1,6 @@
 # Asks before it acts: how Mercury's permission model works
 
-> An agent with a shell, a file system and network access is only useful if you can trust what it will do with them. A tour of the layers between the model and your machine: scopes, approvals, a blocklist nothing can override, an SSRF guard, and tiers for unattended bots.
+> How Mercury's permission model works: scopes, approvals, a blocklist nothing overrides, an SSRF guard, and the limits that apply to unattended bots.
 
 Published 2026-10-09 by Mercury Engineering. Tags: product, security.
 Canonical: https://mercuryagent.sh/blog/asks-before-it-acts
@@ -42,6 +42,13 @@ You choose the default per session:
 
 One detail we're careful about: Allow All applies to the session where you turned it on. A request that arrives from a different channel doesn't inherit your permissive setting. If you said "allow all" in your terminal, a message from a Telegram group is still checked as a Telegram message.
 
+### Two more places that always ask
+
+Allow All doesn't cover everything. Two exceptions were added after this model was first written:
+
+- **MCP tools.** Mercury can use tools from Model Context Protocol servers. Every MCP call asks first in Ask Me mode, and Allow All doesn't skip that prompt. A shell command that changes the MCP setup, or writes `mercury.yaml`, `.env` or `permissions.yaml`, also asks, even under Allow All. The only exception is a single tool you have listed under `tools.autoApprove` for that server.
+- **Remote devices.** Mercury listens only on `127.0.0.1`. A request counts as local only when it comes from that address with no proxy headers and a `localhost` host. Anything else is remote. A new remote device needs your approval before it can connect, and sensitive actions from it ask you each time, including the terminal, Allow All, and restarts. Devices unused for 30 days stop working until you approve them again.
+
 ## Layer 4: the network
 
 `fetch_url` is how Mercury reads the web, and it's a classic way to attack a self-hosted service: ask the agent to fetch `http://192.168.1.1/admin`, or a public URL that redirects to one, and it becomes a proxy into your home network.
@@ -68,7 +75,7 @@ When you create a bot you pick a tier:
 | **Operator** | Also run commands, restricted to its granted folders. The blocklist still applies. |
 | **Full access** | Everything, including deleting files. Meant for automation you fully trust. |
 
-Each bot also has its own folder scopes, its own daily token budget, and its own memory. A bot's tier is a ceiling: a crew member can't do more than the permissions it was given, regardless of what its lead asks it to do.
+Each bot also has its own folder scopes, its own daily token budget, and its own memory. A bot's tier is a ceiling: a crew member can't do more than the permissions it was given, regardless of what its lead asks it to do. Bots also get no MCP tools at all, whatever their tier.
 
 ## Layer 6: secrets stay out of the conversation
 

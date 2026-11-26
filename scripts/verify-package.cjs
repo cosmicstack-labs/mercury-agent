@@ -70,7 +70,7 @@ check('dist/index.js is the Node version launcher, dist/mercury.js the bundle', 
 check('no dangling script references', () => {
   const pkg = JSON.parse(readFileSync(join(modDir, 'package.json'), 'utf-8'));
   const scripts = pkg.scripts || {};
-  const devOnlyScripts = ['build', 'build:ui', 'build:bin', 'build:bin:all', 'build:bin:force', 'build:bin:all:force', 'dev', 'lint', 'typecheck', 'test', 'test:watch', 'prepublishOnly', 'eval', 'lint:eslint', 'lint:ratchet', 'vendor:ink', 'vendor:ink:check'];
+  const devOnlyScripts = ['build', 'build:ui', 'build:bin', 'build:bin:all', 'build:bin:force', 'build:bin:all:force', 'dev', 'lint', 'typecheck', 'test', 'test:watch', 'prepublishOnly', 'eval', 'lint:eslint', 'lint:ratchet', 'vendor:ink', 'vendor:ink:check', 'skills:bundle', 'skills:bundle:check'];
   for (const [key, val] of Object.entries(scripts)) {
     if (devOnlyScripts.includes(key)) continue;
     if (val.includes('bash ')) {

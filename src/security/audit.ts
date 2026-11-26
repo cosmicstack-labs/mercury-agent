@@ -14,9 +14,13 @@ export type AuditKind =
   | 'pair.code.created' | 'pair.code.redeemed' | 'pair.code.expired'
   | 'device.revoked' | 'device.expired' | 'device.new-location' | 'device.blocked'
   | 'action.requested' | 'action.allowed' | 'action.denied'
-  | 'remote.changed' | 'login.failed' | 'login.locked' | 'password.changed'
+  | 'remote.changed' | 'login.failed' | 'login.locked' | 'login.refused' | 'password.changed'
   | 'update.started'
-  | 'voice.key.set' | 'voice.key.removed';
+  | 'voice.key.set' | 'voice.key.removed'
+  | 'permissions.mode'
+  | 'device.reach' | 'reach.settings'
+  | 'bot.auto.allowed' | 'bot.auto.refused'
+  | 'owner.task';
 
 export interface AuditEntry {
   at: string;

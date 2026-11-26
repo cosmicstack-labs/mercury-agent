@@ -29,6 +29,14 @@ In 1.5.0, a request counts as local only when it comes from `127.0.0.1` with no 
 
 `/server` in the terminal, or `mercury server` in a shell, manages all of it, and `mercury doctor --security` checks your setup. The design is in [ADR-035](https://github.com/cosmicstack-labs/mercury-agent/blob/main/DECISIONS.md), and [Remote access & security](/docs/desktop/remote-access) explains how to use it.
 
+## MCP servers and Bots 2.0
+
+**MCP servers.** Mercury can now use tools from Model Context Protocol servers. You connect a server over stdio, where Mercury starts it as a local process, or over streamable HTTP. Its tools then appear to the agent alongside the built-in ones.
+
+Every MCP call asks first in Ask Me mode. Allow All does not skip that prompt, and a shell command that changes the MCP setup asks too. The one exception is a tool you list under `tools.autoApprove` for that server, which then runs without asking. Bots get no MCP tools at all, whatever their tier. [MCP Servers](/docs/integrations/mcp) has the setup steps.
+
+**Bots 2.0.** Every bot run now ends with a report that says one of three things: it produced something, there was nothing new, or it failed. Results wait in a results inbox. Each run also keeps a journal and transcript, so you can see what a bot did and why.
+
 ## Updates that put things back
 
 Updating used to mean `mercury upgrade`, which removed the npm package before installing the new one, kept no backup, and didn't check that the new version started. Now an update, from the app or the terminal, does this:
@@ -47,8 +55,6 @@ Mercury Desktop shows an Update button at the top right, like Chrome's. It gets 
 
 - **Research you can watch.** A plan you can edit, every source read or failed with the reason, and a report even when a run is cut short. Reports export as PDF or Word.
 - **Files in one place.** What Mercury makes goes in `~/mercury-artifacts`, one folder per chat.
-- **MCP servers.** Mercury can use tools from Model Context Protocol servers, and every MCP call asks first in Ask Me mode. See [MCP Servers](/docs/integrations/mcp).
-- **Bots 2.0.** Each run reports, says there was nothing new, or says it failed, and results wait in an inbox.
 
 Update with `mercury upgrade`, or [download Mercury Desktop](/download) and let it update your Mercury for you.
 

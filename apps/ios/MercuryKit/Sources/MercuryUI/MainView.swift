@@ -3,7 +3,7 @@ import MercuryCore
 
 /// The app once connected, chat-first like the ChatGPT and Grok apps (and Mercury for Android):
 /// one conversation fills the screen; the menu button or a swipe from the leading edge opens the
-/// side panel (search, New chat, Bots, Artifacts, the history, and the connected Mercury, which
+/// side panel (search, New chat, Bots, Artifacts, Brain, the history, and the connected Mercury, which
 /// a gear for Settings). Bots, Artifacts and Settings push over the chat; back returns to it.
 struct MainView: View {
   var store: ConnectionStore
@@ -12,6 +12,8 @@ struct MainView: View {
   @State var path = NavigationPath()
   @State var artifacts: ArtifactsModel
   @State var bots: BotsModel
+  /// Brain → Mind map: kept while connected, so the layout stays put between visits (desktop keeps it mounted).
+  @State var brain: MindMapModel
   @State var conversation: ConversationModel
   /// A new identity for each chat opened, so its screen starts fresh.
   @State var conversationKey = UUID()
@@ -20,8 +22,11 @@ struct MainView: View {
   @State var notifier = Notifier.shared
   @State var adding = false
   @State var quickActions = HomeScreenActions.shared
+  @State var ringer = PhoneRinger.shared
+  @State var ownerTasks = OwnerTasksModel.shared
+  @Environment(\.scenePhase) var scenePhase
 
-  enum Route: Hashable { case bots, artifacts, settings }
+  enum Route: Hashable { case bots, artifacts, brain, settings }
 
   init(store: ConnectionStore, connection: Connection) {
     self.store = store; self.connection = connection
@@ -30,6 +35,7 @@ struct MainView: View {
     _chats = State(initialValue: chats)
     _artifacts = State(initialValue: ArtifactsModel(client: client))
     _bots = State(initialValue: BotsModel(client: client))
+    _brain = State(initialValue: MindMapModel(client: client))
     _conversation = State(initialValue: Self.makeConversation(client: client, thread: nil, chats: chats))
   }
 
@@ -85,6 +91,7 @@ struct MainView: View {
           switch r {
           case .bots: BotsView(model: bots)
           case .artifacts: ArtifactsView(model: artifacts)
+          case .brain: MindMapScreen(model: brain) { if !path.isEmpty { path.removeLast() } }
           case .settings: MoreView(store: store, connection: connection)
           }
         }
@@ -93,13 +100,20 @@ struct MainView: View {
       ChatDrawer(
         model: chats, connection: connection, connections: store.connections, online: online, current: conversation.threadId,
         onOpen: { open($0) }, onNewChat: { open(nil) }, onCall: { call() },
-        onBots: { go(.bots) }, onArtifacts: { go(.artifacts) }, onSettings: { go(.settings) },
+        onBots: { go(.bots) }, onArtifacts: { go(.artifacts) }, onBrain: { go(.brain) }, onSettings: { go(.settings) },
         onClose: { withAnimation(.snappy(duration: 0.28)) { drawer = false } },
         onSwitch: { id in store.activate(id) },
-        onAddMercury: { adding = true }
+        onAddMercury: { adding = true },
+        store: store
       )
     }
     .sheet(isPresented: $adding) { ConnectView(store: store) }
+    // What only the owner can do (ADR-048): up over whatever is on screen when one arrives.
+    .sheet(isPresented: Binding(get: { ownerTasks.presented && !ownerTasks.live.isEmpty && !adding },
+                                set: { if !$0 { ownerTasks.presented = false } })) {
+      OwnerTasksSheet(model: ownerTasks)
+    }
+    .task(id: connection.id) { await ownerTasks.connect(store.client(for: connection), scope: connection.id) }
     .onChange(of: store.connections.count) { adding = false }
     .onChange(of: path.count) { dismissKeyboard() }
     .task { await chats.load(); chats.listen() }
@@ -113,6 +127,16 @@ struct MainView: View {
       }
     }
     .task(id: connection.id) { notifier.start(store.client(for: connection)) }
+    // Mercury can ring and notify this phone (ADR-046): tell it how, and show what was missed.
+    .task(id: connection.id) { await ringer.connect(store.client(for: connection)) }
+    .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await ringer.catchUp(); await ownerTasks.refresh() } } }
+    // Mercury rang and the owner answered: the call starts here, and Mercury says why it called.
+    .onChange(of: ringer.answered, initial: true) { _, invite in
+      guard let invite else { return }
+      ringer.answered = nil
+      conversation.ringInvite = invite
+      call()
+    }
     // Coming back to the panel refreshes the list.
     .onChange(of: drawer) { _, isOpen in if isOpen { Task { await chats.load() } } }
     // The Home Screen's Call Mercury quick action (at launch, or while running).

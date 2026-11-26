@@ -43,6 +43,13 @@ class ActivityMonitor(
   /** Every activity line, for the chat list's markers. */
   val activity: SharedFlow<ActivityEvent> = _activity
 
+  /** Mercury ringing or notifying this phone (ADR-046): `ring`, `ring_end`, `notify` on the activity stream. */
+  var onReach: (sh.mercuryagent.core.ReachEvent) -> Unit = {}
+  /** Owner tasks (ADR-048): `owner_task` on the activity stream, a new one or one settled anywhere. */
+  var onOwnerTask: (sh.mercuryagent.core.OwnerTaskEvent) -> Unit = {}
+  /** The streams (re)opened to this Mercury: register this phone and catch up on what it missed. */
+  var onStreamsStarted: (sh.mercuryagent.core.MercuryClient) -> Unit = {}
+
   private var streams: Job? = null
   private var dueTimer: Job? = null
   private var visible = false
@@ -80,13 +87,19 @@ class ActivityMonitor(
   private fun startStreams() {
     val c = connections.state.value.active ?: return
     val client = connections.client(c)
+    onStreamsStarted(client)
     streams = scope.launch {
       launch {
         client.runningTurns()?.let { t -> decider.seed(t.running.mapNotNull { it.sessionId ?: it.channelId }, System.currentTimeMillis()); update() }
       }
       launch {
         client.events("/api/chat/activity").collect { e ->
-          if (e.name != "activity") return@collect
+          if (e.name != "activity") {
+            sh.mercuryagent.core.ReachEvent.parse(e.name, e.data)?.let(onReach)
+            // Its notification comes as a reach `notify` (Notifier.postReach); the card takes it from here.
+            sh.mercuryagent.core.OwnerTaskEvent.parse(e.name, e.data)?.let(onOwnerTask)
+            return@collect
+          }
           val a = runCatching { MercuryJson.decodeFromString(ActivityEvent.serializer(), e.data) }.getOrNull() ?: return@collect
           _activity.tryEmit(a)
           decider.handle(a, System.currentTimeMillis()).forEach(::apply)

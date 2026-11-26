@@ -1,6 +1,6 @@
 {
   "catalogVersion": 1,
-  "updatedAt": "2026-10-23T12:40:54Z",
+  "updatedAt": "2026-11-22T14:33:03Z",
   "plugins": [
     {
       "id": "whatsapp",
@@ -147,6 +147,43 @@
           "SARVAM_API_KEY",
           "CARTESIA_API_KEY",
           "MINIMAX_API_KEY"
+        ]
+      }
+    },
+    {
+      "id": "captcha",
+      "name": "CAPTCHA Solver",
+      "description": "Solves CAPTCHAs on your tasks: your own models read simple ones, a solving service with your key (2Captcha, CapSolver, Anti-Captcha, CapMonster) handles reCAPTCHA, Turnstile and GeeTest, and you are asked as the last resort.",
+      "version": "0.1.0",
+      "kind": "in-process",
+      "tier": "official",
+      "homepage": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/plugins/captcha",
+      "engines": {
+        "mercury": ">=1.5.5 <2.0.0",
+        "pluginApi": "^1.3.0"
+      },
+      "artifact": {
+        "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/captcha-v0.1.0/mercury-plugin-captcha.tgz",
+        "sha256": "f2fed7a30a0bd853f4f3e97ea71e4ad5a3dcca61fb44c4873092753877af0965",
+        "size": 10846
+      },
+      "tools": [
+        "solve",
+        "detect",
+        "balance"
+      ],
+      "permissions": {
+        "network": [
+          "api.2captcha.com",
+          "api.capsolver.com",
+          "api.anti-captcha.com",
+          "api.capmonster.cloud"
+        ],
+        "secrets": [
+          "TWOCAPTCHA_API_KEY",
+          "CAPSOLVER_API_KEY",
+          "ANTICAPTCHA_API_KEY",
+          "CAPMONSTER_API_KEY"
         ]
       }
     }

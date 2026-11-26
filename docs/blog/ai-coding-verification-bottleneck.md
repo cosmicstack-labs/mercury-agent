@@ -1,6 +1,6 @@
-# The new bottleneck in AI coding isn't code generation. It's verification.
+# AI coding's bottleneck is verification, not generation
 
-> A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.
+> A Harvard working paper finds coding agents raised output while review time rose 49%. Why verification should decide whether an agent is useful.
 
 Published 2026-10-20 by Tashir Khan. Tags: engineering, news.
 Canonical: https://mercuryagent.sh/blog/ai-coding-verification-bottleneck
@@ -77,4 +77,4 @@ Fiona Chen and James Stratton, *Artificial Intelligence in the Firm: Bottlenecks
 
 **Secondary**
 
-Ars Technica, coverage of the same study. [arstechnica.com](https://arstechnica.com/)
+Ars Technica, coverage of the same study. [AI coding agents generate more code, but not more software](https://arstechnica.com/ai/2026/10/ai-coding-agents-generate-more-code-but-not-more-software/)

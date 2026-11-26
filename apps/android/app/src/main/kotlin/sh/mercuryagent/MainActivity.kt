@@ -43,6 +43,11 @@ class MainActivity : ComponentActivity() {
   /** A notification's tap or a mercury:// link: open that chat (or the bots); Call Mercury (the app shortcut): a call. */
   private fun handle(intent: Intent?) {
     if (intent?.action == ACTION_CALL) { (application as MercuryApplication).container.requestCall(); return }
+    // The ring notification's Answer (ADR-046): the call starts here and Mercury says why it called.
+    if (intent?.action == ACTION_ANSWER_RING) {
+      intent.getStringExtra(sh.mercuryagent.call.RingTelecom.EXTRA_RING)?.let { (application as MercuryApplication).container.answerRing(it) }
+      return
+    }
     val key = sh.mercuryagent.notify.Notifier.keyOf(intent?.data) ?: return
     (application as MercuryApplication).container.open(key)
   }
@@ -50,5 +55,7 @@ class MainActivity : ComponentActivity() {
   companion object {
     /** The launcher's Call Mercury shortcut (res/xml/shortcuts.xml). */
     const val ACTION_CALL = "sh.mercuryagent.action.CALL"
+    /** Answer on the ring notification (call/RingTelecom.kt). */
+    const val ACTION_ANSWER_RING = "sh.mercuryagent.action.ANSWER_RING"
   }
 }

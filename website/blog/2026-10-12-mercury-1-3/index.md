@@ -1,7 +1,7 @@
 ---
 slug: mercury-1-3
 title: "Mercury 1.3: an agent you can actually leave running"
-description: "One background runtime that every terminal attaches to, bots that deliver real files and stay online, and a fleet you can run from Telegram. What changed in the 1.3 line and why."
+description: "Mercury 1.3's shared background runtime, bots that deliver real files and stay online, and a fleet you run from Telegram. What changed and why."
 authors: [salman]
 tags: [news, releases, runtime]
 image: ./cover.jpg

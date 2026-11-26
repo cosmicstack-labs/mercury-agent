@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync, unlinkSync, renameSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
@@ -9,6 +9,7 @@ import { recordSelfMadeUse, SELF_MADE_CATEGORY, SELF_MADE_LABEL } from './self-m
 import { IntentRouter } from './intent-router.js';
 import { logger } from '../utils/logger.js';
 import { DEFAULT_SKILL_SEEDS, PREVIOUS_SEED_CONTENTS, RETIRED_SEEDS, getCategoryLabel } from './default-skills.js';
+import { BUNDLED_SKILLS, type BundledSkill } from './bundled-skills.generated.js';
 
 /**
  * The web-search skill dir holds a skill that tells the model to fetch a
@@ -584,6 +585,46 @@ Describe what this skill enables Mercury to do. When invoked via the use_skill t
       seeded.add(seed.dirName);
       logger.info({ skill: seed.dirName }, 'Seeded default skill');
     }
+    for (const bundled of BUNDLED_SKILLS) this.ensureBundledSkill(bundled, seeded);
     if (seeded.size !== before) this.writeSeededDefaults(seeded);
+  }
+
+  /**
+   * A built-in skill with its own files (scripts, references). Installed once
+   * like the others; a copy the owner deleted stays deleted. `.bundled.json`
+   * in the skill folder records what Mercury wrote, so a later version
+   * upgrades the files the owner never touched and leaves edited ones alone;
+   * a file that went missing is put back.
+   */
+  private ensureBundledSkill(bundled: BundledSkill, seeded: Set<string>): void {
+    const skillDir = join(this.skillsDir, bundled.dirName);
+    const present = existsSync(join(skillDir, SKILL_FILE));
+    if (!present && seeded.has(bundled.dirName)) return;
+    const recordFile = join(skillDir, '.bundled.json');
+    let written: Record<string, string> = {};
+    try { written = (JSON.parse(readFileSync(recordFile, 'utf-8')) as { files?: Record<string, string> }).files ?? {}; } catch { /* first install, or no record */ }
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+    let changed = false;
+    try {
+      for (const [rel, content] of Object.entries(bundled.files)) {
+        const target = join(skillDir, rel);
+        if (!resolve(target).startsWith(resolve(skillDir) + sep)) continue;
+        const next = hash(content);
+        let current: string | null = null;
+        try { current = hash(readFileSync(target, 'utf-8')); } catch { /* missing */ }
+        if (current === next) { written[rel] = next; continue; }
+        // Present and not what Mercury last wrote: the owner's edit, kept.
+        if (current !== null && present && written[rel] !== current) continue;
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, content, 'utf-8');
+        written[rel] = next;
+        changed = true;
+      }
+      if (changed || !existsSync(recordFile)) writeFileSync(recordFile, JSON.stringify({ files: written }, null, 2) + '\n', 'utf-8');
+      if (changed) logger.info({ skill: bundled.dirName }, present ? 'Updated built-in skill files' : 'Seeded default skill');
+      seeded.add(bundled.dirName);
+    } catch (err) {
+      logger.warn({ err, skill: bundled.dirName }, 'Could not install a built-in skill');
+    }
   }
 }

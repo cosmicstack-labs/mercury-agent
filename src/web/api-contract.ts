@@ -68,8 +68,9 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'chat.trace',        // live step ids/durations, progress/phase events, message.trace on replies (ADR-041); GET /api/chat/threads/:id/live (a running reply so far)
   'chat.research',     // SSE 'research' / 'research_plan' / 'research_plan_resolved' / 'notice'; GET /api/chat/threads/:id/research, POST …/research/finish, …/research/off, POST /api/chat/research/plan/:id; message.research; step_done { failed, reason }
   'voice.mobile',      // POST /api/mobile/voice/session → { engine, token, expiresAt, model, voice, url?, instructions, tools } | 409 { error, fallback } — short-lived tokens for the shared Rust voice engine
-  'voice.dictation',   // POST /api/mobile/voice/dictation → { engine, token, expiresAt, model, url?, language? } | 409 { error, fallback, setup }; GET /api/mobile/voice/capabilities → { call, dictation, dictationSetup? } — live dictation for the phone's message box
+  'voice.dictation',   // POST /api/mobile/voice/dictation → { engine, token, expiresAt, model, url?, language? } | 409 { error, fallback, device?, setup }; GET /api/mobile/voice/capabilities → { call, dictation, dictationSetup?, dictationFallback? } — live dictation for the phone's message box
   'voice.providers',   // GET /api/voice/providers → { providers [{ id, name, env, uses, set, source, hint?, canEdit, note? }], capabilities }; PUT /api/voice/providers/:id { apiKey | null } → { ok, verified, message?, provider, capabilities } (remote → 428 owner; env-set → 409). Keys shared with Optimus.
+  'phone.reach',       // ADR-046: PUT/GET /api/devices/me/reach, POST /api/devices/me/ring/:id { outcome }, POST /api/devices/me/test-ring, GET /api/devices/me/missed + POST …/missed/ack, GET/PUT /api/reach/settings, GET /api/reach/phones; SSE on /api/chat/activity: 'ring' { id, caller, reason, urgency, at, expiresAt }, 'ring_end' { id, outcome }, 'notify' { id, title, body, kind, urgency, threadId?, silent, at }; POST /api/mobile/voice/session { reason?, callInviteId? } → opener
   'auth.pairCode',
 ]);
 

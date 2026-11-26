@@ -221,6 +221,10 @@ data class PluginGroup(val id: String, val label: String = "", val description: 
 @Serializable
 data class PluginMissing(val key: String = "", val needs: String = "", val fix: String = "")
 
+/**
+ * One plugin as GET /api/plugins lists it and GET /api/plugins/:id describes it (PluginListItem in
+ * src/plugins/types.ts). A catalog-only entry (not installed) has no [installedVersion].
+ */
 @Serializable
 data class PluginDetail(
   val id: String,
@@ -231,7 +235,38 @@ data class PluginDetail(
   @Serializable(with = PluginFieldList::class) val settings: List<PluginField> = emptyList(),
   val settingGroups: List<PluginGroup> = emptyList(),
   val missing: List<PluginMissing> = emptyList(),
+  val description: String? = null,
+  /** "in-process" or "out-of-process". */
+  val kind: String? = null,
+  /** "official", "community" or "local". */
+  val tier: String? = null,
+  /** available, installed, enabled, disabled, update-available, incompatible, error. */
+  val status: String? = null,
+  val latestVersion: String? = null,
+  val sizeBytes: Long? = null,
+  val tools: List<String> = emptyList(),
+  val permissions: PluginPermissions? = null,
+  val disabled: PluginDisabled? = null,
+  val lastError: String? = null,
+  val incompatibleReason: String? = null,
 )
+
+@Serializable
+data class PluginDisabled(val code: String? = null, val message: String? = null)
+
+/** What a plugin may reach (the manifest's `permissions`; a catalog entry only has network and secrets). */
+@Serializable
+data class PluginPermissions(
+  val network: List<String> = emptyList(),
+  val secrets: List<String> = emptyList(),
+  /** It sees the screen and uses the mouse and keyboard (Plugin API 1.2). */
+  val desktop: Boolean? = null,
+  val optionalSecrets: Map<String, String>? = null,
+  val providers: Map<String, PluginProviderNeed>? = null,
+)
+
+@Serializable
+data class PluginProviderNeed(val unlocks: String? = null)
 
 @Serializable
 data class VoiceKeyCheck(val ok: Boolean = false, val verified: Boolean = false, val message: String = "")
@@ -249,7 +284,8 @@ suspend fun MercuryClient.plugin(id: String): PluginDetail? = try {
 /** POST /api/plugins/:id/settings `{ key, value }`. */
 suspend fun MercuryClient.setPluginSetting(id: String, key: String, value: JsonElement, approval: String? = null) {
   val body = buildJsonObject { put("key", key); put("value", value) }
-  decode(OkReply.serializer(), gated("POST", "/api/plugins/${MercuryClient.q(id)}/settings", body, approval))
+  // A plugin may restart to read the change; newer servers answer first, older ones only after it.
+  decode(OkReply.serializer(), gated("POST", "/api/plugins/${MercuryClient.q(id)}/settings", body, approval), timeoutSeconds = 60)
 }
 
 /** POST /api/voice/check: is this voice key good? With no key, checks the saved one. */

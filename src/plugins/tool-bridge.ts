@@ -26,6 +26,7 @@ import {
   type ToolImage,
 } from '../capabilities/tool-images.js';
 import { logger } from '../utils/logger.js';
+import { runPluginCall } from './call-context.js';
 
 export interface LiveTool {
   pluginId: string;
@@ -222,7 +223,9 @@ function wrap(t: LiveTool, permissions: PermissionManager): Tool {
         }, t.timeoutMs);
       });
       try {
-        const result = await Promise.race([Promise.resolve().then(() => t.invoke(args, ac.signal)), timeout]);
+        // A bot's call is unattended: the plugin can't hand the owner a task from it (ADR-048).
+        const call = { unattended: permissions.isFailClosed?.() === true };
+        const result = await Promise.race([Promise.resolve().then(() => runPluginCall(call, () => t.invoke(args, ac.signal))), timeout]);
         outcomeSink(t.pluginId, { ok: true });
         if (isToolContent(result)) {
           const images = usableImages(result.images);

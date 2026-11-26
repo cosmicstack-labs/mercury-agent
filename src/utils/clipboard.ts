@@ -22,16 +22,16 @@ type Select = (title: string, options: Array<{ value: string; label: string }>) 
  * clipboard: a long token wraps in a narrow terminal, and copying it by hand
  * then picks up line breaks and box borders.
  */
-export async function acknowledgeSecret(select: Select, text: string, copy?: string): Promise<void> {
+export async function acknowledgeSecret(select: Select, text: string, copy?: string): Promise<'copied' | 'ok'> {
   let title = text;
   for (;;) {
     const options = copy
       ? [{ value: 'copy', label: 'Copy to clipboard' }, { value: 'ok', label: "Done, I've saved it" }]
       : [{ value: 'ok', label: "I've copied it" }];
     const picked = await select(title, options);
-    if (picked !== 'copy' || !copy) return;
-    title = copyToClipboard(copy)
-      ? `${text}\n\n✓ Copied to the clipboard.`
-      : `${text}\n\nCouldn't reach the clipboard here: select the token above and copy it.`;
+    if (picked !== 'copy' || !copy) return 'ok';
+    // Copied: that was the point of the screen, so it closes.
+    if (copyToClipboard(copy)) return 'copied';
+    title = `${text}\n\nCouldn't reach the clipboard here: select the token above and copy it, then choose Done.`;
   }
 }

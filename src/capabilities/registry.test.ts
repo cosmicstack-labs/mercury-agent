@@ -24,7 +24,10 @@ describe('CapabilityRegistry.getTools sender role gating', () => {
     expect(member.install_skill).toBeUndefined();
     // create_skill (ADR-027) is owner-only for the same reason.
     expect(member.create_skill).toBeUndefined();
-    expect(Object.keys(member).length).toBe(Object.keys(admin).length - 2);
+    // …and ask_owner: a member's message must not send the owner a request for a code (ADR-048).
+    expect(member.ask_owner).toBeUndefined();
+    expect(admin.ask_owner).toBeDefined();
+    expect(Object.keys(member).length).toBe(Object.keys(admin).length - 3);
     expect(member.use_skill).toBeDefined();
   });
 });

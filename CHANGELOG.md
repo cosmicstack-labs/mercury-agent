@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 1.5.5 — device-token sign-in, Mercury asks you for what only you can do, cheaper bots
+
+### Security: devices sign in with a device token
+- **Password sign-in from other devices is off by default.** The apps and browsers on other machines connect with a device token made on the computer Mercury runs on: `/server token <name>` or `mercury devices add <name>`. With it off, `POST /api/auth/token` and the browser sign-in refuse any other device with 403 (`password_sign_in_off`) and say how to make a token, before the password is checked. On this computer the password still works, and devices and browsers already signed in keep working. Turn it back on with `/server password on`.
+- **`/server` → Allowed addresses can add one.** Type an address or range (a bad one is refused and asked again), or pick your Tailscale network or the last remote device's address.
+- **Copying a new token closes the token screen** and says it was copied.
+
+### Mercury asks you for what only you can do (ADR-048)
+- **Owner tasks.** When Mercury hits something only a person can do (a CAPTCHA, a code from your bank's text, a step on a website), it sends it to you with the image or audio and waits. It goes to every chat you've connected (Telegram, WhatsApp, Signal, Discord, Slack and plugin channels), the terminal, Mercury Desktop and your phones. Reply `K7Q2M <answer>` (or `decline K7Q2M`) from any of them; the first answer wins, and every chat is told when it's over. Nobody answering in time is "no answer", never a guess. The model asks with the new `ask_owner` tool.
+- **Plugin API 1.3.** Plugins can ask you with `ctx.owner.ask()` and look at an image with any vision model you've set up with `ctx.models.lookAt()`, each behind a permission shown before install. Bots can't ask you.
+
+### Bots
+- **Auto mode (ADR-047).** Bots no longer wait for approvals: reversible actions go ahead (files are backed up before they're overwritten), and anything that can't be undone is refused. `bots.approvals` in the config, or `autonomy.approvals` per bot, changes it.
+- **Fewer tokens.** Prompt caching now works in bot runs (Anthropic cache markers, OpenAI prompt cache keys), old tool results are trimmed in cache-friendly batches, a bot gets a wrap-up step instead of running past its budget, and a run stops after the report or after the same call fails twice.
+
+### Calls and notifications from Mercury (ADR-046)
+- **Mercury can ring and notify your phone** over the app's live connection: `call_owner` and `notify_owner` tools, scheduled calls and alert triggers. A call to a named device rings only that device.
+
+### Skills
+- **Any to PDF is built in.** Markdown, Word, HTML, CSV, code or images to a typeset PDF with themes, a cover and contents. Its Python dependencies install into Mercury's cache the first time it's used, so the package stays small.
+
+### Mercury Desktop
+- **`/server` opens a Remote access window** instead of running as a chat turn: switches for remote access, password sign-in and the remote terminal, allowed addresses, devices with Make a token, approvals and the security check.
+- **Owner tasks appear as a card** with the image or audio and a box for your answer.
+- **Live dictation:** the composer mic streams words into the box as you speak (Gemini, OpenAI, Deepgram, ElevenLabs).
+- **Connect to another Mercury with a device token** first; password sign-in is the second choice.
+
 ## 1.5.4 — set up voice from your phone, fewer approval prompts
 
 ### Voice, from any device

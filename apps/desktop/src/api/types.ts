@@ -82,6 +82,20 @@ export interface OwnerApproval {
   status: "pending" | "allowed" | "denied" | "expired";
 }
 
+/** Something only the owner can do (ADR-048): solve a CAPTCHA, read out a code, finish a step. */
+export interface OwnerTask {
+  id: string;
+  code: string;
+  title: string;
+  prompt: string;
+  who: string;
+  link?: string;
+  media?: { kind: "image" | "audio"; mimeType: string; url: string };
+  answerKind: "text" | "done";
+  expiresAt: number;
+  status: "pending" | "answered" | "declined" | "expired" | "cancelled";
+}
+
 // ── Chat ──
 export interface ChatThread {
   id: string;

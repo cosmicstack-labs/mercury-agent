@@ -29,7 +29,7 @@ describe('default skills', () => {
   it('ships the generic defaults, and a fresh install gets exactly those', () => {
     expect(DEFAULT_SKILL_SEEDS.map((s) => s.dirName)).toEqual(DEFAULTS);
     const names = new SkillLoader(join(root, 'skills')).discover().map((s) => s.name).sort();
-    expect(names).toEqual([...DEFAULTS].sort());
+    expect(names).toEqual([...DEFAULTS, 'any-to-pdf'].sort());
   });
 
   it('every default parses, says when to use it, and grants nothing (approval stays on)', () => {
@@ -66,8 +66,8 @@ describe('default skills', () => {
     writeFileSync(join(dir, 'web-search', 'SKILL.md'), web.content);
     writeFileSync(join(dir, '.seeded-defaults.json'), JSON.stringify({ seeded: ['web-search'] }));
     const names = new SkillLoader(dir).discover().map((s) => s.name).sort();
-    expect(names).toEqual([...DEFAULTS].sort());
-    expect(JSON.parse(readFileSync(join(dir, '.seeded-defaults.json'), 'utf8')).seeded).toEqual([...DEFAULTS].sort());
+    expect(names).toEqual([...DEFAULTS, 'any-to-pdf'].sort());
+    expect(JSON.parse(readFileSync(join(dir, '.seeded-defaults.json'), 'utf8')).seeded).toEqual([...DEFAULTS, 'any-to-pdf'].sort());
   });
 
   it('the old defaults are listed for retirement with the hashes of what was seeded', () => {

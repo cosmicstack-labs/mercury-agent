@@ -9,11 +9,26 @@ import type { BotManager } from '../../bots/bot-manager.js';
 import type { BotManifest } from '../../bots/types.js';
 import { PERMISSION_TIERS, tierPermissionsFile, isPermissionTier, type PermissionTier } from '../../bots/permission-tiers.js';
 import { buildBotBundle, importBotBundle } from '../../bots/bundle.js';
-import { isValidCronExpression } from '../../bots/store.js';
+import { assertValidBotId, isValidCronExpression } from '../../bots/store.js';
 import { decodeAvatarInput, detectImage } from '../../bots/avatar.js';
 import { storeInlineAttachments } from './uploads.js';
 
 const app = new Hono();
+
+// A path segment that can't be a bot id is a bot that doesn't exist. The store throws on such ids
+// (its traversal guard), and the routes that read the manifest outside a try turned that into a bare
+// 500: a client that kept "Phone-Bot" after create lowercased it could neither edit nor message it.
+// Every fixed route under /api/bots (tiers, inbox, approvals, plan…) is itself a valid id shape.
+const badBotId = (c: Context): Response | null => {
+  try {
+    assertValidBotId(c.req.param('id') ?? '');
+    return null;
+  } catch {
+    return c.json({ error: 'Bot not found' }, 404);
+  }
+};
+app.use('/api/bots/:id', async (c, next) => badBotId(c) ?? next());
+app.use('/api/bots/:id/*', async (c, next) => badBotId(c) ?? next());
 
 let botManager: BotManager | undefined;
 let webhookSecret: string | undefined;

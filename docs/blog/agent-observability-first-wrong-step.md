@@ -77,7 +77,7 @@ Measured against the table above, we did not find the following:
 - Full arguments. The stored trace caps them at 80 characters, so you often can't reconstruct exactly what was sent.
 - An OpenTelemetry dependency in `package.json`, or an audit log.
 
-So the honest version is this. From the code we read, Mercury can show roughly what it did in the last turn. We did not find a way to show the first wrong step of a bad run from what it stores. This is the same gap our October 17 permissions post described from the other side: we can't audit access we don't record.
+So the honest version is this. From the code we read, Mercury can show roughly what it did in the last turn. We did not find a way to show the first wrong step of a bad run from what it stores. Mercury does keep a security log, `~/.mercury/security/audit.jsonl`, but it covers pairing, device and remote-action decisions, not each tool call. This is the same gap our October 17 permissions post described from the other side: we can't audit access we don't record.
 
 ## What we would instrument first
 

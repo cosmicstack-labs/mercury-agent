@@ -49,8 +49,15 @@ const CONTROL_TOOLS = new Set([
   'create_skill', 'install_skill', 'approve_scope', 'approve_command',
   // A bot scheduling its own runs, or making or retiring bots: persistence and escalation.
   'bot_schedule', 'bot_spawn', 'bot_retire',
+  // Scheduling (or cancelling) a call to the owner persists past the turn (ADR-046).
+  'schedule_call', 'cancel_scheduled_call',
 ]);
-const OUTBOUND_TOOLS = new Set(['send_message', 'send_file', 'git_push', 'create_pr', 'create_issue', 'github_api']);
+const OUTBOUND_TOOLS = new Set([
+  'send_message', 'send_file', 'git_push', 'create_pr', 'create_issue', 'github_api',
+  // Ringing or notifying the owner's phone (ADR-046): only the owner is reached, but
+  // content Mercury read must never be able to make it ring by itself.
+  'call_owner', 'notify_owner',
+]);
 
 /** Consequential, but everyday: asked only once an injection attempt was found. */
 const STRICT_TOOLS = new Set([
@@ -62,7 +69,7 @@ const STRICT_TOOLS = new Set([
 ]);
 
 /** Outbound tools a scheduled run may use unattended: the owner approved the task, prompt and all, when it was made. */
-const SCHEDULED_RUN_OUTBOUND = new Set(['send_message', 'send_file']);
+const SCHEDULED_RUN_OUTBOUND = new Set(['send_message', 'send_file', 'call_owner', 'notify_owner']);
 
 const isMcp = (name: string) => name.startsWith('mcp__');
 const isPlugin = (name: string) => /^[a-z][a-z0-9-]{1,30}[a-z0-9]__[a-z]/.test(name) && !isMcp(name);

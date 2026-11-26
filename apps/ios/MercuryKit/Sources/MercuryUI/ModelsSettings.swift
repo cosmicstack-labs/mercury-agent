@@ -8,6 +8,8 @@ struct ModelsSettings: View {
   @State var settings: ProviderSettings?
   @State var error: String?
   @State var gate: OwnerGate
+  /// Voice providers (calls and dictation), on a Mercury that has them.
+  @State var voice: VoiceProviders?
 
   init(client: MercuryClient) {
     self.client = client
@@ -41,6 +43,13 @@ struct ModelsSettings: View {
             NavigationLink { ProviderDetail(client: client, provider: p, gate: gate) { await load() } } label: { ProviderRow(provider: p) }
           }
         }
+        if let voice {
+          Section {
+            NavigationLink { VoiceSettings(client: client) } label: { VoiceSummaryRow(capabilities: voice.capabilities) }
+          } header: { Text("Voice") } footer: {
+            Text("Calls and dictation use their own providers: OpenAI (above), Gemini, Deepgram or ElevenLabs.")
+          }
+        }
       } else if error == nil {
         ProgressView().frame(maxWidth: .infinity).listRowBackground(Color.clear)
       }
@@ -66,6 +75,29 @@ struct ModelsSettings: View {
   func load() async {
     do { settings = try await client.providerSettings(); error = nil }
     catch { self.error = error.localizedDescription }
+    voice = (try? await client.voiceProvidersIfSupported()) ?? nil
+  }
+}
+
+/// "Voice" with what calls and dictation use, for the Models screen and the model picker.
+struct VoiceSummaryRow: View {
+  var capabilities: VoiceCapabilities
+  var title = "Voice"
+
+  var line: String {
+    let calls = capabilities.callName.map { "Calls: \($0)" } ?? "Calls: not set up"
+    let dictation = capabilities.dictationName.map { "Dictation: \($0)" } ?? "Dictation: not set up"
+    return "\(calls) · \(dictation)"
+  }
+
+  var body: some View {
+    HStack(spacing: 12) {
+      Image(systemName: "waveform").foregroundStyle(Theme.ink2).frame(width: 22)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title).foregroundStyle(Theme.ink)
+        Text(line).font(.system(size: 13)).foregroundStyle(Theme.ink3).lineLimit(2)
+      }
+    }
   }
 }
 

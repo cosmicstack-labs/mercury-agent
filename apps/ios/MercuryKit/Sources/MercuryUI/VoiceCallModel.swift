@@ -44,6 +44,8 @@ final class VoiceCallModel {
 
   // Live
   private(set) var brain: CallBrain?
+  /// Keeps Mercury's own voice from interrupting it (live calls).
+  @ObservationIgnored var echoGuard: CallEchoGuard?
   @ObservationIgnored let meter: CallMeter
   @ObservationIgnored private var voice: VoiceLink?
   @ObservationIgnored private var audio: CallAudioEngine?
@@ -68,8 +70,12 @@ final class VoiceCallModel {
   /// Bumped whenever the call moves on, so a listen or a reading that was overtaken stops quietly.
   @ObservationIgnored var turn = 0
 
-  init(conversation: ConversationModel, meter: CallMeter = CallMeter(), tappedAt: Date = .now) {
+  /// Mercury rang this phone and the owner answered (ADR-046): the session starts with why it called.
+  let ring: RingInvite?
+
+  init(conversation: ConversationModel, meter: CallMeter = CallMeter(), tappedAt: Date = .now, ring: RingInvite? = nil) {
     self.conversation = conversation
+    self.ring = ring
     self.meter = meter
     callId = UUID().uuidString.lowercased()
     timeline = CallTimeline(start: tappedAt)
@@ -144,6 +150,7 @@ final class VoiceCallModel {
 
   /// Starts the call (once). The screen is already up: this runs everything else.
   func start() async {
+    CallLog.note("— call starting —")
     guard startTask == nil, !isEnded else { return }
     timeline.mark(.screen)
     let t = Task { await self.run() }
@@ -185,7 +192,7 @@ final class VoiceCallModel {
   }
 
   private func fetchSession() async -> Result<VoiceSessionResult, Error> {
-    do { return .success(try await client.voiceSession()) } catch { return .failure(error) }
+    do { return .success(try await client.voiceSession(ring: ring)) } catch { return .failure(error) }
   }
 
   /// CallKit's outgoing call; without it (it refused, or not on iOS) the app runs the audio itself.
@@ -237,6 +244,7 @@ final class VoiceCallModel {
     let config = VoiceConfig(engine: s.engine, token: s.token, ephemeral: s.ephemeral, url: s.url, model: s.model, voice: s.voice,
                              instructions: s.instructions, toolsJson: s.toolsJSON)
     let listener = CallListener(model: self, audio: engine, meter: meter)
+    CallLog.note("live engine=\(s.engine) model=\(s.model ?? "-") voice=\(s.voice ?? "-")")
     let call: VoiceCall
     do { call = try VoiceCall.start(config: config, listener: listener) } catch {
       return fail("Couldn't start the voice: \(Self.plain(error))")
@@ -248,16 +256,27 @@ final class VoiceCallModel {
     gate.onDue = { [weak self] in
       DispatchQueue.main.async { MainActor.assumeIsolated { self?.brain?.bargeInDue() } }
     }
-    // Every frame goes to the voice as it is; the gate only listens.
-    engine.onFrame { [call, gate] data in
-      call.pushAudio(pcm16: data)
+    // While Mercury is audible, its own voice coming back into the mic must not count as the
+    // caller talking (it made Mercury stop itself mid-word): the echo guard sends silence in its
+    // place until a near voice is heard. When Mercury is quiet every frame goes up untouched.
+    let echo = CallEchoGuard()
+    let judge = CallTalkOverJudge(echo: echo, gate: CallBargeIn.judges(engine: s.engine) ? gate : nil)
+    echo.mercuryAudible = { [weak engine] in engine?.isPlaying ?? false }
+    echo.ownerTalking = { [judge] in judge.ownerTalking }
+    echo.onOpened = { [weak self] in
+      DispatchQueue.main.async { MainActor.assumeIsolated { self?.brain?.bargeInDue() } }
+    }
+    echoGuard = echo
+    engine.onFrame { [call, gate, echo] data in
+      for frame in echo.filter(data) { call.pushAudio(pcm16: frame) }
       gate.frame(data)
     }
     engine.onPlayback { [weak self] on in
       DispatchQueue.main.async { MainActor.assumeIsolated { self?.brain?.playbackChanged(on) } }
     }
     useLive(link: call, chat: ConversationCallChat(conversation: conversation, callId: callId), playback: engine)
-    brain?.bargeIn = gate
+    brain?.bargeIn = judge
+    brain?.logExtra = { [echo] in echo.summary() }
     brain?.begin()
   }
 
@@ -383,6 +402,7 @@ final class VoiceCallModel {
   }
 
   private func fail(_ message: String) {
+    CallLog.note("call failed: \(message.prefix(300))")
     guard !isEnded else { return }
     error = message
     if let brain, brain.ended == nil { brain.finish(.dropped(message)); return }
@@ -585,6 +605,7 @@ final class CallListener: VoiceListener, @unchecked Sendable {
   func onEvent(event: VoiceEvent) {
     switch event {
     case .audio(let pcm):
+      CallLog.count("event.audio")
       audio.play(pcm)
       lock.lock(); let first = !heardAudio; heardAudio = true; lock.unlock()
       if first { main { $0.firstAudio() } }
