@@ -1,4 +1,4 @@
-import { Check, Copy, Plus, ShieldAlert, ShieldCheck, X } from "lucide-react";
+import { Check, Copy, Plus, QrCode, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { create } from "zustand";
 import * as api from "~/api/mercury";
@@ -8,6 +8,8 @@ import { Dialog } from "~/components/ui/Dialog";
 import { Input } from "~/components/ui/Input";
 import { Switch } from "~/components/ui/Switch";
 import { Spinner } from "~/components/ui/bits";
+import { useHealth } from "~/app/health";
+import { PairPhone } from "~/views/settings/PairPhone";
 
 /**
  * Remote access (/server) as a window of its own: typed in the chat, it
@@ -16,15 +18,23 @@ import { Spinner } from "~/components/ui/bits";
  * /api/security/*, which answers only on the computer Mercury runs on.
  */
 
-export const useServerPanel = create<{ open: boolean; show: () => void; hide: () => void }>((set) => ({
+export const useServerPanel = create<{ open: boolean; pair: string | null; show: (pair?: string | null) => void; hide: () => void; startPair: (address?: string) => void; endPair: () => void }>((set) => ({
   open: false,
-  show: () => set({ open: true }),
-  hide: () => set({ open: false }),
+  pair: null,
+  show: (pair = null) => set({ open: true, pair }),
+  hide: () => set({ open: false, pair: null }),
+  startPair: (address = "") => set({ pair: address }),
+  endPair: () => set({ pair: null }),
 }));
 
 /** The composer hands "/server …" here. */
 export function isServerCommand(text: string): boolean {
   return /^\/server(\s|$)/i.test(text.trim());
+}
+
+export function pairRequest(text: string): string | null {
+  const m = /^\/server\s+pair(?:\s+(\S+))?\s*$/i.exec(text.trim());
+  return m ? m[1] ?? "" : null;
 }
 
 const TAILSCALE = "100.64.0.0/10";
@@ -63,6 +73,10 @@ function Toggle({ id, label, detail, checked, onChange, busy }: { id: string; la
 export function ServerPanel() {
   const open = useServerPanel((s) => s.open);
   const hide = useServerPanel((s) => s.hide);
+  const pair = useServerPanel((s) => s.pair);
+  const startPair = useServerPanel((s) => s.startPair);
+  const endPair = useServerPanel((s) => s.endPair);
+  const canPair = !!useHealth()?.features?.includes("auth.pairCode");
   const [status, setStatus] = useState<SecurityStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -194,6 +208,9 @@ export function ServerPanel() {
                 <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act(() => api.server.revokeDevice(d.id), `Signed out “${d.name}”.`)}>Sign out</Button>
               </div>
             ))}
+            {canPair && !token && (
+              <Button className="mt-2" size="sm" variant="outline" disabled={busy} onClick={() => startPair()}><QrCode size={13} /> Pair a phone with a QR code</Button>
+            )}
             {token ? (
               <div className="mt-2 rounded-lg border border-accent/40 bg-soft p-3">
                 <p className="text-sm font-medium text-ink">Token for “{token.name}”</p>
@@ -231,6 +248,9 @@ export function ServerPanel() {
           {busy && <div className="flex justify-end"><Spinner size={12} /></div>}
         </div>
       )}
+      <Dialog open={open && canPair && !elsewhere && pair !== null} onOpenChange={(o) => { if (!o) { endPair(); void load(); } }} title="Pair a phone" description="Scan the code with the Mercury app on your phone.">
+        {open && canPair && !elsewhere && pair !== null && <PairPhone initialAddress={pair || undefined} onPaired={() => void load()} onClose={() => { endPair(); void load(); }} />}
+      </Dialog>
     </Dialog>
   );
 }

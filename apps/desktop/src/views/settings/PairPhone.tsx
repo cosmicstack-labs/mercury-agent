@@ -50,9 +50,9 @@ const ENDED: Record<"expired" | "replaced" | "cancelled", string> = {
   cancelled: "The code was cancelled.",
 };
 
-export function PairPhone({ onPaired, onClose }: { onPaired: () => void; onClose: () => void }) {
+export function PairPhone({ onPaired, onClose, initialAddress }: { onPaired: () => void; onClose: () => void; initialAddress?: string }) {
   const [view, setView] = useState<PairView>({ kind: "loading" });
-  const [address, setAddress] = useState("");
+  const [address, setAddress] = useState(initialAddress ?? "");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -87,7 +87,7 @@ export function PairPhone({ onPaired, onClose }: { onPaired: () => void; onClose
   }
 
   useEffect(() => {
-    void start();
+    void start(initialAddress);
     return () => {
       run.current++;
       if (live.current) {
