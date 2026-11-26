@@ -8,10 +8,10 @@ import { audit, readAudit } from './audit.js';
 import { closeStreams } from './live-streams.js';
 import { securityCheck, summarizeFindings } from './check.js';
 import { pairCodes, type PairOutcome } from './pair-codes.js';
-import { choosePairAddress } from './tunnel.js';
+import { checkHereAnswers, choosePairAddress } from './tunnel.js';
 import type { PairStart, ServerOps, ServerStatus } from './server-menu.js';
 
-export function startPairing(address: string | undefined, by: string): PairStart {
+export async function startPairing(address: string | undefined, by: string): Promise<PairStart> {
   const remote = readRemoteSettings();
   if (!remote.enabled) return { ok: false, reason: 'remote-off', message: "Remote access is off, so a phone can't connect. Turn it on first." };
   const count = listDevices().length;
@@ -20,7 +20,9 @@ export function startPairing(address: string | undefined, by: string): PairStart
   }
   const chosen = choosePairAddress(address);
   if (!chosen.ok) return chosen;
-  return { ok: true, ...pairCodes().create(chosen.address, by) };
+  const here = await checkHereAnswers(chosen);
+  if (!here.ok) return here;
+  return { ok: true, ...pairCodes().create(here.address, by) };
 }
 
 /**

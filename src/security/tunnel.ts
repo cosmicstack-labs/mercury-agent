@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { createConnection } from 'node:net';
+import { hostname, networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../utils/config.js';
 import { getWebPort } from '../web/auth.js';
@@ -208,4 +210,59 @@ export function choosePairAddress(given?: string, deps: PairAddressDeps = {}): P
     return { ok: false, reason: 'insecure', message: `Tailscale Serve sends ${plain.url} to Mercury over plain http, which the phone apps refuse. In the Tailscale admin console, open DNS and turn on MagicDNS and HTTPS Certificates, then run tailscale serve --bg ${port}.` };
   }
   return { ok: false, reason: 'none', message: `Mercury doesn't know an address your phone can reach. With Tailscale, run tailscale serve --bg ${port} and pair again. With another tunnel, add its https:// address after pair (for example pair https://mercury.example.com), or set web.publicUrl in ~/.mercury/mercury.yaml.` };
+}
+
+export interface HereDeps {
+  port?: number;
+  ownHosts?: () => Set<string>;
+  answers?: (host: string, port: number) => Promise<boolean>;
+}
+
+const plainHost = (host: string): string => bareHost(host).replace(/%.*$/, '');
+
+export function ownHosts(): Set<string> {
+  const out = new Set<string>();
+  for (const list of Object.values(networkInterfaces())) {
+    for (const a of list ?? []) out.add(plainHost(a.address));
+  }
+  const name = hostname().trim().toLowerCase();
+  if (name) {
+    out.add(name);
+    out.add(`${name}.local`);
+  }
+  return out;
+}
+
+export function isOwnAddress(host: string, own: Set<string> = ownHosts()): boolean {
+  return own.has(plainHost(host));
+}
+
+export function answersHere(host: string, port: number, timeoutMs = 800): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const socket = createConnection({ host: plainHost(host), port });
+    const timer = setTimeout(() => done(false), timeoutMs);
+    const done = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
+export async function checkHereAnswers(chosen: Extract<PairAddress, { ok: true }>, deps: HereDeps = {}): Promise<PairAddress> {
+  const u = new URL(chosen.address);
+  if (!isOwnAddress(u.hostname, (deps.ownHosts ?? ownHosts)())) return chosen;
+  const target = Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
+  if (await (deps.answers ?? answersHere)(u.hostname, target)) return chosen;
+  const where = chosen.source === 'config' ? 'web.publicUrl in ~/.mercury/mercury.yaml: ' : '';
+  return {
+    ok: false,
+    reason: 'loopback',
+    message: `${where}Nothing on this computer answers at ${u.origin}, and Mercury itself only listens on 127.0.0.1, so your phone can't reach it there. Use Tailscale Serve (tailscale serve --bg ${deps.port ?? getWebPort()}), or start the proxy that should listen at that address.`,
+  };
 }

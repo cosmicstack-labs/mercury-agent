@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { choosePairAddress, hostAllowsPlainHttp, isLoopbackHost, parseServeStatus, readTailscale, type TailscaleState } from './tunnel.js';
+import { createServer, type AddressInfo } from 'node:net';
+import { hostname } from 'node:os';
+import { answersHere, checkHereAnswers, choosePairAddress, hostAllowsPlainHttp, isLoopbackHost, isOwnAddress, ownHosts, parseServeStatus, readTailscale, type TailscaleState } from './tunnel.js';
 
 const PORT = 6174;
 const HOST = 'mercury.tail1234.ts.net';
@@ -173,5 +175,77 @@ describe('the address a phone is given', () => {
     expect(r).toMatchObject({ ok: false, reason: 'none' });
     expect(r.ok ? '' : r.message).toContain('tailscale serve --bg 6174');
     expect(r.ok ? '' : r.message).toContain('web.publicUrl');
+  });
+});
+
+describe('an address on this computer', () => {
+  const own = () => new Set(['192.168.1.5', 'fd12::5', '100.101.102.103', 'mymac', 'mymac.local']);
+  const chosen = (address: string, source: 'given' | 'tailscale' | 'config' = 'given') => ({ ok: true as const, address, source });
+
+  function probe(answer: boolean) {
+    const calls: Array<[string, number]> = [];
+    const answers = async (host: string, port: number) => { calls.push([host, port]); return answer; };
+    return { calls, deps: { port: 6174, ownHosts: own, answers } };
+  }
+
+  it("doesn't probe an address on another machine", async () => {
+    const p = probe(false);
+    expect(await checkHereAnswers(chosen('http://192.168.1.9:6174'), p.deps)).toEqual(chosen('http://192.168.1.9:6174'));
+    expect(await checkHereAnswers(chosen(`https://${HOST}`, 'tailscale'), p.deps)).toEqual(chosen(`https://${HOST}`, 'tailscale'));
+    expect(p.calls).toEqual([]);
+  });
+
+  it('refuses this computer\'s own address when nothing answers there', async () => {
+    const p = probe(false);
+    const r = await checkHereAnswers(chosen('http://192.168.1.5:6174'), p.deps);
+    expect(p.calls).toEqual([['192.168.1.5', 6174]]);
+    expect(r).toEqual({
+      ok: false,
+      reason: 'loopback',
+      message: "Nothing on this computer answers at http://192.168.1.5:6174, and Mercury itself only listens on 127.0.0.1, so your phone can't reach it there. Use Tailscale Serve (tailscale serve --bg 6174), or start the proxy that should listen at that address.",
+    });
+  });
+
+  it('accepts this computer\'s own address when a proxy answers there', async () => {
+    const p = probe(true);
+    expect(await checkHereAnswers(chosen('http://192.168.1.5:8080'), p.deps)).toEqual(chosen('http://192.168.1.5:8080'));
+    expect(p.calls).toEqual([['192.168.1.5', 8080]]);
+  });
+
+  it('knows this computer by its name and name.local, in any case, and its Tailscale address', async () => {
+    const p = probe(false);
+    for (const address of ['http://MyMac:8080', 'http://mymac.LOCAL:8080', 'http://100.101.102.103:6174']) {
+      expect(await checkHereAnswers(chosen(address), p.deps)).toMatchObject({ ok: false, reason: 'loopback' });
+    }
+    expect(p.calls.map((c) => c[0].toLowerCase())).toEqual(['mymac', 'mymac.local', '100.101.102.103']);
+  });
+
+  it('probes IPv6 and the default ports', async () => {
+    const p = probe(true);
+    await checkHereAnswers(chosen('http://[fd12::5]'), p.deps);
+    await checkHereAnswers(chosen('https://192.168.1.5'), p.deps);
+    expect(p.calls).toEqual([['[fd12::5]', 80], ['192.168.1.5', 443]]);
+  });
+
+  it('says which setting is wrong when it is web.publicUrl', async () => {
+    const r = await checkHereAnswers(chosen('http://192.168.1.5:6174', 'config'), probe(false).deps);
+    expect(r.ok ? '' : r.message).toMatch(/^web\.publicUrl in ~\/\.mercury\/mercury\.yaml: Nothing on this computer answers/);
+  });
+
+  it('reads this computer\'s own names and addresses from the system', () => {
+    const name = hostname().toLowerCase();
+    expect(ownHosts().has(name)).toBe(true);
+    expect(isOwnAddress(hostname().toUpperCase())).toBe(true);
+    expect(isOwnAddress(`${name}.local`)).toBe(true);
+    expect(isOwnAddress('mercury.example.com')).toBe(false);
+  });
+
+  it('really connects: a listening port answers, a closed one does not', async () => {
+    const server = createServer((s) => s.destroy());
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const { port } = server.address() as AddressInfo;
+    expect(await answersHere('127.0.0.1', port)).toBe(true);
+    await new Promise<void>((r) => server.close(() => r()));
+    expect(await answersHere('127.0.0.1', port)).toBe(false);
   });
 });

@@ -127,7 +127,7 @@ security.delete('/api/security/devices', (c) => {
 security.post('/api/security/pair', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { address?: unknown; by?: unknown };
   const by = typeof body.by === 'string' && /^[a-z -]{2,20}$/i.test(body.by) ? body.by : 'this computer';
-  const started = startPairing(typeof body.address === 'string' ? body.address : undefined, by);
+  const started = await startPairing(typeof body.address === 'string' ? body.address : undefined, by);
   if (!started.ok) return c.json(started, 409);
   return c.json({ ...started, qrImage: `data:image/svg+xml;base64,${Buffer.from(qrSvg(started.url)).toString('base64')}` });
 });
