@@ -23,7 +23,7 @@ The quickest way to connect the Mercury app on your phone is to scan a code.
    ```
 
    This serves Mercury at `https://<your-computer>.<your-tailnet>.ts.net` (use your Mercury's port if it isn't 6174). If Tailscale asks, turn on MagicDNS and HTTPS Certificates on the DNS page of the Tailscale admin console. Using Cloudflare Tunnel or your own proxy instead? Set its address as `web.publicUrl` (see [Which address goes in the code](#which-address-goes-in-the-code)).
-2. **Show the code** on this computer: run `mercury server pair` in a terminal, type `/server pair` in the terminal chat, or open Mercury Desktop → Settings → Connections → Paired devices → **Pair a phone**.
+2. **Show the code** on this computer: run `mercury server pair` in a terminal, or type `/server pair` in the terminal chat or in Mercury Desktop's chat (it opens Desktop's remote-access window on pairing). Desktop also has it under Settings → Connections → Paired devices → **Pair a phone**.
 3. **Scan it** with the Mercury app: Connect → Scan to connect. Or type in the address and code shown with the QR code.
 
 The screen changes to "✓ Paired with …" as soon as the phone connects, and the phone appears in your device list. `mercury server pair` draws the QR code with text characters, so it works over SSH in an 80×24 terminal.
@@ -51,6 +51,10 @@ Mercury uses the first of these it finds:
 
 Plain `http://` is refused unless the address is on your own network (a private or Tailscale `100.x` address, or a `.local` name), because the phone apps refuse it too. So is `localhost`, which your phone can't reach.
 
+An address on this computer itself, such as its Wi-Fi address, needs something listening there. Mercury only listens on `127.0.0.1`, so `http://192.168.1.5:6174` on its own is refused; a proxy you run at that address is fine.
+
+When Mercury finds no address, or refuses the one you gave, `mercury server pair` and `/server pair` in the terminal ask you to type one.
+
 ## What counts as "this computer"
 
 A request is from this computer only when it comes from `127.0.0.1` **and** carries no proxy or tunnel header (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `CF-Connecting-IP`, `Tailscale-*` and similar) **and** names `localhost` as its host. Mercury Desktop and the terminal on this computer use Mercury's local attach token, which is never accepted through a tunnel.
@@ -69,7 +73,7 @@ The device that asked can never answer its own question. Nobody answering within
 
 ### New devices
 
-Signing in from another device with the dashboard password doesn't give it access straight away. The device shows "Waiting for the owner to approve this device" and the code, and gets its token once you approve. Signing in from this computer needs no approval. [Pairing a phone with a code](#connect-a-phone) skips the wait, because showing the code is your approval.
+Signing in from another device with the dashboard password doesn't give it access straight away. The device shows "Waiting for the owner to approve this device" and the code, and gets its token once you approve. Signing in from this computer needs no approval. Since Mercury 1.5.5, password sign-in from other devices is off until you turn it on with `/server password on`. [Pairing a phone with a code](#connect-a-phone) works either way and skips the wait, because showing the code is your approval.
 
 ### Sensitive actions
 
