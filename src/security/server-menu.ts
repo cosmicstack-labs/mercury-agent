@@ -39,6 +39,8 @@ export interface ServerOps {
 
 export type PairRefusal = 'remote-off' | 'limit' | 'not-running' | 'none' | 'insecure' | 'loopback' | 'invalid';
 
+const ASKS_FOR_ADDRESS: ReadonlySet<PairRefusal> = new Set(['none', 'insecure', 'loopback', 'invalid']);
+
 export type PairStart = ({ ok: true } & PairCodeShown) | { ok: false; reason: PairRefusal; message: string };
 
 export interface ServerUi {
@@ -187,6 +189,11 @@ export async function runServerCommand(args: string, ops: ServerOps, ui: ServerU
         if (on !== 'on') { await ui.say('Remote access stays off. Turn it on with /server on, then pair again.'); return true; }
         await ops.setRemote({ enabled: true });
         started = await ops.pair(arg || undefined);
+      }
+      for (let tries = 0; tries < 5 && ui.ask && !started.ok && ASKS_FOR_ADDRESS.has(started.reason); tries++) {
+        const typed = (await ui.ask(`${started.message}\n\nThe address your phone opens Mercury at`, 'For example https://mercury.example.com. Enter to use it, Esc to stop.'))?.trim();
+        if (!typed) break;
+        started = await ops.pair(typed);
       }
       if (!started.ok) { await ui.say(started.message); return true; }
       const screen = pairScreenText(started, ui.terminal === true);

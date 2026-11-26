@@ -227,4 +227,58 @@ describe('/server pair', () => {
     await serverMenu(localServerOps(), ui);
     expect(labels).toContain('Pair a phone (QR code)');
   });
+
+  function typing(answers: Array<string | null>) {
+    const s = terminalScreen(pairPhone);
+    const asked: string[] = [];
+    s.ui.ask = async (title) => { asked.push(title); return answers.length ? answers.shift()! : null; };
+    return { ...s, asked };
+  }
+
+  it('asks for the address when Mercury finds none, and pairs with the one typed', async () => {
+    const base = localServerOps({ by: 'cli' });
+    const ops = { ...base, pair: (address?: string) => (address ? base.pair(address) : Promise.resolve({ ok: false as const, reason: 'none' as const, message: "Mercury doesn't know an address your phone can reach." })) };
+    const s = typing([` ${ADDRESS} `]);
+    await runServerCommand('pair', ops, s.ui);
+    expect(s.asked).toHaveLength(1);
+    expect(s.asked[0]).toMatch(/^Mercury doesn't know an address your phone can reach\.\n\nThe address your phone opens Mercury at$/);
+    expect(s.shown[0]).toContain(`Address  ${ADDRESS}`);
+    expect(s.said.at(-1)).toBe('✓ Paired with Pixel 9 (android).');
+  });
+
+  it('asks again after a refused address, with the reason', async () => {
+    const s = typing(['http://203.0.113.8', ADDRESS]);
+    await runServerCommand('pair http://203.0.113.7', localServerOps(), s.ui);
+    expect(s.asked).toHaveLength(2);
+    expect(s.asked[0]).toContain('http://203.0.113.7 is plain http');
+    expect(s.asked[1]).toContain('http://203.0.113.8 is plain http');
+    expect(s.said.at(-1)).toBe('✓ Paired with Pixel 9 (android).');
+  });
+
+  it('stops when the owner backs out, and says why no code was made', async () => {
+    const s = typing([null]);
+    await runServerCommand('pair http://203.0.113.7', localServerOps(), s.ui);
+    expect(s.asked).toHaveLength(1);
+    expect(s.shown).toHaveLength(0);
+    expect(s.said.at(-1)).toContain('http://203.0.113.7 is plain http');
+    expect(readAudit(10).some((e) => e.kind === 'pair.code.created')).toBe(false);
+  });
+
+  it('gives up after five refused addresses', async () => {
+    const s = typing(Array.from({ length: 9 }, (_, i) => `http://203.0.113.${10 + i}`));
+    await runServerCommand('pair http://203.0.113.7', localServerOps(), s.ui);
+    expect(s.asked).toHaveLength(5);
+    expect(s.shown).toHaveLength(0);
+    expect(s.said.at(-1)).toContain('http://203.0.113.14 is plain http');
+  });
+
+  it("doesn't ask for an address when the address isn't the problem", async () => {
+    const { createDevice } = await import('../web/devices.js');
+    writeRemoteSettings({ maxDevices: 1 });
+    createDevice('Old phone', 'ios');
+    const s = typing([ADDRESS]);
+    await runServerCommand('pair http://203.0.113.7', localServerOps(), s.ui);
+    expect(s.asked).toHaveLength(0);
+    expect(s.said.at(-1)).toMatch(/the limit is 1/);
+  });
 });
