@@ -211,7 +211,7 @@ Design notes: [BOTS-ARCHITECTURE.md](BOTS-ARCHITECTURE.md).
 - **Network:** `fetch_url` blocks private address ranges and caps response sizes.
 - **Optional browser reader:** [isolated public-page rendering](docs/isolated-browser.md) uses an installed browser with a separate temporary profile per chat, approved navigation, bounded snapshots and a strict network guard. Page actions and JavaScript are disabled; no browser engine is bundled.
 - **Modes:** *Ask Me* or *Allow All* per session, changeable with `/permissions`.
-- **Secrets:** API keys live in `~/.mercury/.env`, logs redact them, and the dashboard password is random on first run.
+- **Secrets:** API keys live in `~/.mercury/.env`, logs redact them, and there is no password to guess: devices connect with a QR code or a device token, and the dashboard opens with `mercury web`.
 
 Report a vulnerability through [SECURITY.md](SECURITY.md).
 
@@ -294,7 +294,7 @@ providers:
 | `mercury skills` | `search`, `browse`, `view`, `install`, `remove`, `update`, `doctor` |
 | `mercury cloud` | `connect`, `disconnect`, `status`, `login`, `models` |
 | `mercury service` | `install`, `uninstall`, `status` |
-| `mercury web-reset-password` | Reset the dashboard password |
+| `mercury web` | Open the web dashboard here, signed in (a one-time link) |
 | `mercury uninstall [--purge-data]` | Remove Mercury, optionally with all data |
 
 </details>

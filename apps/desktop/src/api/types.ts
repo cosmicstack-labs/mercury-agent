@@ -20,25 +20,6 @@ export interface DeviceSummary {
   lastSeenAt: string | null;
 }
 
-export interface PairResponse {
-  token: string;
-  device: DeviceSummary;
-  apiVersion: number;
-  features: string[];
-}
-
-/** Pairing from another device: the runtime's owner approves it first. */
-export interface PendingPair {
-  pending: true;
-  pairingId: string;
-  pollToken: string;
-  /** Short code the owner sees ("approve K7Q2M"). */
-  code: string;
-  /** Where the owner approves it ("Telegram or this computer…"). */
-  where: string;
-  expiresAt: number;
-}
-
 /** A remote device asked for something sensitive: the owner approves it first. */
 export interface ApprovalNeeded {
   approvalRequired: true;
@@ -48,6 +29,26 @@ export interface ApprovalNeeded {
   error: string;
   expiresAt?: number;
 }
+
+export interface PairShown {
+  ok: true;
+  id: string;
+  code: string;
+  display: string;
+  address: string;
+  url: string;
+  expiresAt: number;
+  qrImage: string;
+}
+
+export type PairRefusal = "remote-off" | "limit" | "not-running" | "none" | "insecure" | "loopback" | "invalid";
+
+export interface PairedPhone {
+  name: string;
+  platform: string;
+}
+
+export type PairStatus = { status: "waiting" } | { status: "paired"; device: PairedPhone } | { status: "expired" | "replaced" | "cancelled" };
 
 /** A security question waiting for the owner (Mercury Desktop on the runtime's own computer). */
 export interface OwnerApproval {

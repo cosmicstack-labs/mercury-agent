@@ -129,7 +129,7 @@ struct MainView: View {
     .task(id: connection.id) { notifier.start(store.client(for: connection)) }
     // Mercury can ring and notify this phone (ADR-046): tell it how, and show what was missed.
     .task(id: connection.id) { await ringer.connect(store.client(for: connection)) }
-    .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await ringer.catchUp(); await ownerTasks.refresh() } } }
+    .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await conversation.resume(); await chats.load(); await ringer.catchUp(); await ownerTasks.refresh() } } }
     // Mercury rang and the owner answered: the call starts here, and Mercury says why it called.
     .onChange(of: ringer.answered, initial: true) { _, invite in
       guard let invite else { return }

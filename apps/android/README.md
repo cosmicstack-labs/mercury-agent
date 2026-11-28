@@ -171,17 +171,29 @@ Lifecycle 2.9.4, OkHttp 4.12, kotlinx.serialization 1.9, core-telecom 1.0.0, JNA
 
 ## Pair a phone
 
-1. Mercury listens only on 127.0.0.1, so relay it to your Wi-Fi while you try the app:
-   `node apps/ios/scripts/lan-relay.mjs` (port 6175).
-2. In the app: **Sign in to your Mercury**, address `http://<your-mac>.local:6175` (or the Mac's IP,
-   `http://192.168.1.7:6175`), your Mercury username and password.
-3. The phone shows a 5-character code. Approve it on Telegram or WhatsApp ("approve K7Q2M"), in
-   Mercury Desktop, or with `/server approve K7Q2M`. The app then holds a device token
-   (`mdt_…`), encrypted in the Android Keystore; the password is never kept.
-4. Or **I have a device token**: paste a token made for this phone.
-5. Name it: the computer's name is the first guess (GET /api/health's `host`), and one of twelve
-   playful Mercury logos (`ui/components/MercuryLogo.kt`, the same shapes as iOS) is picked in turn.
-   Both are kept per connection and can be changed from the drawer's switcher or Settings.
+**Scan to connect** (a Mercury with `auth.pairCode` in /api/health's features): run `/server pair`
+on the computer (or Mercury Desktop → Settings → Connections → Pair a phone). It shows a QR code,
+`mercury://pair?u=<address>&c=<25-character code>`. In the app, **Scan to connect** opens Google's
+code scanner (`play-services-code-scanner`: Play services' own camera UI, so no camera permission);
+the phone's own camera works too (the app handles `mercury://pair`). Either way the app asks
+"Connect to <host>?" first and never pairs from a link on its own; then `POST /api/auth/pair`
+`{ code, deviceName, platform: "android" }` returns a device token, kept like any other. Plain
+`http://` addresses off the local network are refused before anything is sent. Without Play
+services, or with no camera at hand, **Enter a code or token** takes the address and one field
+that holds either the pairing code (case, dashes and spaces don't matter; O reads as 0, I and L as
+1) or a device token made on the computer with `/server token <name>` (it starts with `mdt_`, and
+is checked with GET /api/health before it's kept). Anything else gets an error under the field.
+Parsing, the code-or-token check (`ConnectSecret`) and the request: `core/PairLink.kt`, tested in
+`PairLinkTest`. There is no password sign-in.
+
+To try it on your Wi-Fi: Mercury listens only on 127.0.0.1, so relay it while you try the app
+(`node apps/ios/scripts/lan-relay.mjs`, port 6175) and use `http://<your-mac>.local:6175` (or the
+Mac's IP, `http://192.168.1.7:6175`) as the address. The app keeps its device token (`mdt_…`)
+encrypted in the Android Keystore.
+
+Last, name it: the computer's name is the first guess (GET /api/health's `host`), and one of twelve
+playful Mercury logos (`ui/components/MercuryLogo.kt`, the same shapes as iOS) is picked in turn.
+Both are kept per connection and can be changed from the drawer's switcher or Settings.
 
 Plain `http://` works only to local and private addresses (as iOS's `NSAllowsLocalNetworking`);
 anything else must be `https://`. More → **Add another Mercury** pairs more; tap one to switch.

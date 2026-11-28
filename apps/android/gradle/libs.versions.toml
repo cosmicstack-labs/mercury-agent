@@ -14,6 +14,8 @@ datastore = "1.1.7"
 junit = "4.13.2"
 jna = "5.17.0"
 coreTelecom = "1.0.0"
+# Google's code scanner: scans the pairing QR in Play services' own UI, no camera permission.
+codeScanner = "16.1.0"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -38,6 +40,7 @@ okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver", version.
 junit = { module = "junit:junit", version.ref = "junit" }
 jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 androidx-core-telecom = { module = "androidx.core:core-telecom", version.ref = "coreTelecom" }
+play-services-code-scanner = { module = "com.google.android.gms:play-services-code-scanner", version.ref = "codeScanner" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

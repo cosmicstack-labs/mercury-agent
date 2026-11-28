@@ -16,7 +16,8 @@ title: Full Command Reference
 | `mercury doctor` | Reconfigure settings — press Enter to keep current values |
 | `mercury doctor --platform` | Show cross-platform terminal/daemon compatibility diagnostics |
 | `mercury doctor --mcp` | Connect to every enabled MCP server and report its status |
-| `mercury doctor --security` | Check remote access and security: password, devices, file permissions, the tunnel, and gws's stored Google sign-in |
+| `mercury web` | Open the web dashboard on this computer, signed in (a one-time link) |
+| `mercury doctor --security` | Check remote access and security: devices, file permissions, the tunnel, and gws's stored Google sign-in |
 | `mercury setup` | Re-run the setup wizard (same as doctor) |
 | `mercury help` | Show the full manual (tools, commands, config paths) |
 | `mercury service install` | Install as system service (auto-start on boot) |
@@ -48,6 +49,7 @@ Mercury updates itself safely: it waits for running work, downloads the new vers
 | `mercury server on` / `off` | Allow or refuse other devices |
 | `mercury server approve <code>` | Let a waiting device or action through (`deny <code>` refuses) |
 | `mercury server devices` | Paired devices; `revoke <id or name>`, `revoke-all` |
+| `mercury server pair [address]` | Show a QR code to [pair a phone](../desktop/remote-access#connect-a-phone) (a one-time code, 5 minutes) |
 | `mercury server token <name>` | Make a token for a device by hand (shown once) |
 | `mercury server allow-ip <ip or range>` | Allow only these addresses; `remove-ip`, `allow-any` |
 | `mercury server shell on` / `off` | The terminal for remote devices (each command still asks you) |

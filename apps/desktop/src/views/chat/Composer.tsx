@@ -1,4 +1,4 @@
-import { isServerCommand, useServerPanel } from "~/components/ServerPanel";
+import { isServerCommand, pairRequest, useServerPanel } from "~/components/ServerPanel";
 import { ArrowUp, AudioLines, ChevronDown, Clapperboard, Gauge, Image as ImageIcon, Music, Paperclip, Shield, ShieldCheck, Square, Telescope, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
@@ -254,7 +254,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
     if (isServerCommand(content) && files.length === 0) {
       setText("");
       setToken(null);
-      useServerPanel.getState().show();
+      useServerPanel.getState().show(pairRequest(content));
       return;
     }
     // Sending stops live dictation: what's in the box is what goes.

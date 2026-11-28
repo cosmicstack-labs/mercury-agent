@@ -3,7 +3,9 @@ import type { OwnerApproval } from './owner-approvals.js';
 import type { RemoteSettings } from './remote-settings.js';
 import type { AuditEntry } from './audit.js';
 import type { SecurityFinding } from './check.js';
+import type { PairCodeShown, PairOutcome } from './pair-codes.js';
 import { parseIpRule } from './ip-match.js';
+import { qrBlocks } from '../plugins/qr-svg.js';
 
 /**
  * The owner's remote-access screen: `/server` in the terminal (and in
@@ -20,6 +22,24 @@ export interface ServerStatus {
   approvalRoutes: string[];
   lastRemote: { at: number; proxied: boolean; clientIpKnown: boolean; ip: string } | null;
   check: { summary: string; findings: SecurityFinding[] };
+  /** The address pairing QR codes carry (absent from a Mercury before 1.5.6). */
+  phone?: PhoneAddress;
+}
+
+export interface PhoneAddress {
+  /** What the owner saved (web.publicUrl), if anything. */
+  saved: string | null;
+  /** What a QR code would carry now. */
+  address: string | null;
+  source: 'saved' | 'tailscale' | null;
+  /** Why there is no usable address. */
+  problem: string | null;
+}
+
+export interface AddressResult {
+  ok: boolean;
+  address: string | null;
+  message: string;
 }
 
 export interface ServerOps {
@@ -30,7 +50,18 @@ export interface ServerOps {
   revoke(id: string): Promise<boolean>;
   revokeAll(): Promise<number>;
   audit(limit: number): Promise<AuditEntry[]>;
+  pair(address?: string): Promise<PairStart>;
+  waitPair(id: string): Promise<PairOutcome>;
+  cancelPair(): Promise<void>;
+  /** Save the phone address (null clears it: automatic). */
+  setAddress(address: string | null): Promise<AddressResult>;
 }
+
+export type PairRefusal = 'remote-off' | 'limit' | 'not-running' | 'none' | 'insecure' | 'loopback' | 'invalid';
+
+const ASKS_FOR_ADDRESS: ReadonlySet<PairRefusal> = new Set(['none', 'insecure', 'loopback', 'invalid']);
+
+export type PairStart = ({ ok: true } & PairCodeShown) | { ok: false; reason: PairRefusal; message: string };
 
 export interface ServerUi {
   choose(title: string, options: Array<{ value: string; label: string }>): Promise<string | null>;
@@ -39,6 +70,28 @@ export interface ServerUi {
   secret(text: string, copy?: string): Promise<void | 'copied' | 'ok'>;
   /** One line of typed text (an address); '' or null when the owner backed out. Absent where nothing can be typed. */
   ask?(title: string, hint?: string): Promise<string | null>;
+  terminal?: boolean;
+  waitFor?<T>(text: string, until: Promise<T>): Promise<T | null>;
+}
+
+export function pairScreenText(p: PairCodeShown, terminal: boolean, now = Date.now()): string {
+  const minutes = Math.max(1, Math.round((p.expiresAt - now) / 60_000));
+  const qr = qrBlocks(p.url, { ansi: terminal });
+  return [
+    'Scan with the Mercury app (Connect → Scan to connect), or type in:',
+    `  Address  ${p.address}`,
+    `  Code     ${p.display}  (works once, for ${minutes} minutes)`,
+    '',
+    terminal ? qr : `\`\`\`text\n${qr}\n\`\`\``,
+    ...(terminal ? [] : ['', 'Clearer in Mercury Desktop: Settings → Connections → Paired devices → Pair a phone.']),
+  ].join('\n');
+}
+
+export function pairOutcomeText(o: PairOutcome): string {
+  if (o.status === 'paired') return `✓ Paired with ${o.device.name}${o.device.platform && o.device.platform !== 'unknown' ? ` (${o.device.platform})` : ''}.`;
+  if (o.status === 'expired') return 'The pairing code expired before a phone used it. Run /server pair for a new one.';
+  if (o.status === 'replaced') return 'A newer pairing code replaced this one.';
+  return 'Cancelled: that pairing code no longer works.';
 }
 
 const ago = (iso: string | null | undefined, now = Date.now()): string => {
@@ -71,14 +124,21 @@ export function statusText(s: ServerStatus): string {
     `**Remote access** ${r.enabled ? 'on' : 'off'}${r.enabled ? (r.allowIps.length ? ` · only from ${r.allowIps.join(', ')}` : ' · from any address') : ''}`,
     `**Devices** ${s.devices.length} of ${r.maxDevices}${r.idleDays ? ` · unused ones expire after ${r.idleDays} days` : ' · never expire'}`,
     ...s.devices.map((d) => `  · ${deviceLine(d)}`),
-    `**Password sign-in** ${r.passwordSignIn ? 'on (other devices may sign in with the password; you still approve each one)' : 'off (devices connect with a device token)'}`,
     `**Remote terminal** ${r.allowShell ? 'on (each command asks you)' : 'off'}`,
     `**Approvals reach you on** ${s.approvalRoutes.join(', ')}`,
     s.lastRemote ? `**Last remote request** ${ago(new Date(s.lastRemote.at).toISOString())}${s.lastRemote.proxied ? ' through a tunnel' : ''}${s.lastRemote.clientIpKnown ? ` from ${s.lastRemote.ip}` : ' (the tunnel did not say from where)'}` : '**Last remote request** none since Mercury started',
+    ...(s.phone ? [`**Phone address** ${phoneAddressLabel(s.phone)}`] : []),
     `**Security check** ${s.check.summary}`,
   ];
   if (s.pending.length) lines.push('', '**Waiting for you**', ...s.pending.map((p) => `  · ${p.title} (code ${p.code})${p.ip ? ` from ${p.ip}` : ''}`));
   return lines.join('\n');
+}
+
+export function phoneAddressLabel(p: PhoneAddress): string {
+  if (p.saved && p.address === p.saved) return `${p.saved} (saved)`;
+  if (p.source === 'tailscale' && p.address) return `${p.address} (found through Tailscale Serve)`;
+  if (p.saved) return `${p.saved} (saved, but it can't be used)`;
+  return 'not set';
 }
 
 export function findingsText(f: SecurityFinding[]): string {
@@ -90,9 +150,10 @@ export function auditText(entries: AuditEntry[]): string {
   if (!entries.length) return 'Nothing in the security log yet.';
   const label: Record<string, string> = {
     'pair.requested': 'asked to pair', 'pair.approved': 'paired (approved)', 'pair.denied': 'pairing denied', 'pair.expired': 'pairing expired', 'pair.local': 'paired on this computer',
+    'pair.code.created': 'pairing code made', 'pair.code.redeemed': 'paired with a code', 'pair.code.expired': 'pairing code ended',
     'device.revoked': 'signed out', 'device.expired': 'expired (unused)', 'device.new-location': 'connected from a new address', 'device.blocked': 'refused',
     'action.requested': 'asked to', 'action.allowed': 'allowed', 'action.denied': 'denied',
-    'remote.changed': 'remote access changed', 'login.failed': 'wrong password', 'login.locked': 'sign-in locked (too many tries)', 'password.changed': 'password changed',
+    'remote.changed': 'remote access changed', 'login.failed': 'wrong code or token', 'login.locked': 'sign-in locked (too many tries)', 'password.changed': 'password changed',
   };
   const local = (iso: string): string => {
     const d = new Date(iso);
@@ -148,6 +209,55 @@ export async function runServerCommand(args: string, ops: ServerOps, ui: ServerU
       if (shown === 'copied') await ui.say(`✓ Token for “${created.device.name}” copied. Paste it into the device (it's not shown again).`);
       return true;
     }
+    case 'pair': {
+      let started = await ops.pair(arg || undefined);
+      if (!started.ok && started.reason === 'remote-off') {
+        const on = await ui.choose("Remote access is off, so a phone can't connect. Turn it on?", [{ value: 'on', label: 'Turn remote access on' }, { value: 'off', label: 'Leave it off' }]);
+        if (on !== 'on') { await ui.say('Remote access stays off. Turn it on with /server on, then pair again.'); return true; }
+        await ops.setRemote({ enabled: true });
+        started = await ops.pair(arg || undefined);
+      }
+      let typedAddress: string | null = null;
+      for (let tries = 0; tries < 5 && ui.ask && !started.ok && ASKS_FOR_ADDRESS.has(started.reason); tries++) {
+        const typed = (await ui.ask(`${started.message}\n\nThe address your phone opens Mercury at`, 'For example https://mercury.example.com. Enter to use it, Esc to stop.'))?.trim();
+        if (!typed) break;
+        typedAddress = typed;
+        started = await ops.pair(typed);
+      }
+      if (!started.ok) { await ui.say(started.message); return true; }
+      const screen = pairScreenText(started, ui.terminal === true);
+      const until = ops.waitPair(started.id);
+      if (!ui.waitFor) {
+        await ui.say(screen);
+        void until.then((o) => ui.say(pairOutcomeText(o)), () => {});
+        return true;
+      }
+      const outcome = await ui.waitFor(screen, until);
+      if (outcome === null) {
+        await ops.cancelPair();
+        await ui.say(pairOutcomeText({ status: 'cancelled' }));
+        return true;
+      }
+      await ui.say(pairOutcomeText(outcome));
+      if (outcome.status === 'paired' && typedAddress) {
+        const keep = await ui.choose(`Save ${started.address} as the phone address, so the next QR code uses it?`, [{ value: 'save', label: 'Save it' }, { value: 'no', label: 'Not now' }]);
+        if (keep === 'save') await ui.say((await ops.setAddress(started.address)).message);
+      }
+      return true;
+    }
+    case 'address': {
+      if (!arg) {
+        const s = await ops.status();
+        await ui.say([
+          `Phone address: ${s.phone ? phoneAddressLabel(s.phone) : 'not set'}`,
+          ...(s.phone?.problem ? [s.phone.problem] : []),
+          'Set it with /server address https://your-tunnel-address, or /server address auto to let Mercury find it (Tailscale Serve).',
+        ].join('\n'));
+        return true;
+      }
+      await ui.say((await ops.setAddress(arg)).message);
+      return true;
+    }
     case 'allow-ip': {
       const rule = parseIpRule(arg);
       if (!rule) { await ui.say('Give an address or range, e.g. /server allow-ip 203.0.113.7 or /server allow-ip 100.64.0.0/10 (a Tailscale network).'); return true; }
@@ -174,11 +284,7 @@ export async function runServerCommand(args: string, ops: ServerOps, ui: ServerU
       return true;
     }
     case 'password': {
-      if (arg !== 'on' && arg !== 'off') { await ui.say('Usage: /server password on|off'); return true; }
-      await ops.setRemote({ passwordSignIn: arg === 'on' });
-      await ui.say(arg === 'on'
-        ? 'Other devices may sign in with the username and password again (you still approve each new one). Turn it off with /server password off.'
-        : 'Password sign-in is off for other devices. They connect with a device token: /server token <name>.');
+      await ui.say('Mercury has no password any more: devices connect with a QR code (/server pair) or a device token (/server token <name>), and a browser here opens with mercury web.');
       return true;
     }
     case 'expire': {
@@ -214,9 +320,10 @@ export const SERVER_HELP = [
   '  /server on | off        allow or refuse other devices',
   '  /server approve <code>  let a waiting device or action through (deny <code> to refuse)',
   '  /server devices         paired devices · /server revoke <id|name> · /server revoke-all',
+  '  /server pair [address]  show a QR code to pair a phone (a one-time code, 5 minutes)',
+  '  /server address <url|auto>  the address phones open Mercury at (pairing QR codes use it)',
   '  /server token <name>    make a token for a device by hand (shown once)',
   '  /server allow-ip <ip|range> · remove-ip <ip|range> · allow-any',
-  '  /server password on|off sign-in with the password from other devices (off: device tokens only)',
   '  /server shell on|off    the terminal for remote devices (each command still asks you)',
   '  /server expire <days>|never · /server limit <n>',
   '  /server check           the security check · /server log  the security log',
@@ -230,9 +337,10 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
     const pick = await ui.choose(statusLine(s), [
       ...(s.pending.length ? [{ value: 'pending', label: `Waiting for you (${s.pending.length})` }] : []),
       { value: 'devices', label: `Devices (${s.devices.length})` },
+      { value: 'pair', label: 'Pair a phone (QR code)' },
+      ...(s.phone ? [{ value: 'address', label: `Phone address: ${phoneAddressLabel(s.phone)}` }] : []),
       { value: 'toggle', label: r.enabled ? 'Turn remote access off' : 'Turn remote access on' },
       { value: 'ips', label: `Allowed addresses: ${r.allowIps.length ? r.allowIps.join(', ') : 'any'}` },
-      { value: 'password', label: `Password sign-in from other devices: ${r.passwordSignIn ? 'on' : 'off'}` },
       { value: 'shell', label: `Terminal for remote devices: ${r.allowShell ? 'on' : 'off'}` },
       { value: 'check', label: `Security check: ${s.check.summary}` },
       { value: 'log', label: 'Security log' },
@@ -241,17 +349,11 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
     ]);
     if (!pick || pick === 'done') return;
     if (pick === 'status') await ui.say(statusText(s));
+    if (pick === 'pair') await runServerCommand('pair', ops, ui);
+    if (pick === 'address') await phoneAddressMenu(ops, ui);
     if (pick === 'toggle') await runServerCommand(r.enabled ? 'off' : 'on', ops, ui);
     if (pick === 'check') await ui.say(findingsText(s.check.findings));
     if (pick === 'log') await ui.say(auditText(await ops.audit(20)));
-    if (pick === 'password') {
-      const v = await ui.choose('Password sign-in from other devices', [
-        { value: 'off', label: `Off${!r.passwordSignIn ? ' (now)' : ''} — devices connect with a device token made here` },
-        { value: 'on', label: `On${r.passwordSignIn ? ' (now)' : ''} — the apps may also sign in with the username and password` },
-        { value: 'back', label: 'Back' },
-      ]);
-      if (v === 'on' || v === 'off') await runServerCommand(`password ${v}`, ops, ui);
-    }
     if (pick === 'shell') {
       const v = await ui.choose('The terminal for remote devices', [
         { value: 'off', label: `Off${!r.allowShell ? ' (now)' : ''} — remote devices can't run commands` },
@@ -281,6 +383,30 @@ export async function serverMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
 const TAILSCALE = '100.64.0.0/10';
 
 /** Allowed addresses: see the list, remove one, add one by typing it (or a suggestion). */
+async function phoneAddressMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
+  for (let guard = 0; guard < 100; guard++) {
+    const p = (await ops.status()).phone;
+    const v = await ui.choose(`Phone address: ${p ? phoneAddressLabel(p) : 'not set'}${p?.problem ? `\n${p.problem}` : ''}\nPairing QR codes send phones here.`, [
+      ...(ui.ask ? [{ value: 'type', label: p?.saved ? 'Change it…' : 'Type the address…' }] : [{ value: 'how', label: 'Set an address…' }]),
+      ...(p?.saved ? [{ value: 'auto', label: 'Clear it (find it through Tailscale Serve)' }] : []),
+      { value: 'back', label: 'Back' },
+    ]);
+    if (!v || v === 'back') return;
+    if (v === 'how') { await ui.say('Type /server address https://your-tunnel-address'); return; }
+    if (v === 'auto') { await ui.say((await ops.setAddress(null)).message); continue; }
+    if (v === 'type' && ui.ask) {
+      let title = 'The https:// address your phone opens Mercury at';
+      for (let tries = 0; tries < 5; tries++) {
+        const typed = (await ui.ask(title, 'For example https://mac.tail1234.ts.net or a Cloudflare Tunnel address. Enter to save, Esc to go back.'))?.trim();
+        if (!typed) break;
+        const r = await ops.setAddress(typed);
+        if (r.ok) { await ui.say(r.message); break; }
+        title = `${r.message}\n\nTry another address`;
+      }
+    }
+  }
+}
+
 async function allowedAddressesMenu(ops: ServerOps, ui: ServerUi): Promise<void> {
   for (let guard = 0; guard < 100; guard++) {
     const s = await ops.status();

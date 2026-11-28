@@ -7,8 +7,7 @@ import { useThemeStore } from "@/stores/theme";
 import api from "@/lib/api";
 
 export function LoginPage() {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const resolved = useThemeStore((s) => s.resolved);
@@ -17,20 +16,26 @@ export function LoginPage() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    const value = token.trim();
+    if (!value) return;
     setLoading(true);
 
     try {
-      const res = await api.auth.login(username, password);
+      const res = await api.auth.login(value);
 
-      if (res.type === "opaqueredirect" || res.status === 0 || res.ok || res.status === 302) {
+      if (res.ok) {
         navigate("/", { replace: true });
         return;
       }
 
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (res.status === 401) {
-        setError("Invalid username or password.");
+        setError(body.error || "That device token wasn't accepted. Check it, or make a new one with /server token <name>.");
+      } else if (res.status === 429) {
+        const retry = Number(res.headers.get("Retry-After"));
+        setError(retry > 0 ? `Too many attempts. Try again in ${Math.ceil(retry / 60)} min.` : "Too many attempts. Try again later.");
       } else {
-        setError(`Login failed (${res.status}). Please try again.`);
+        setError(body.error || `Sign-in failed (${res.status}). Please try again.`);
       }
     } catch {
       setError("Unable to reach the server. Please try again.");
@@ -70,44 +75,36 @@ export function LoginPage() {
             <p className="text-sm text-muted-foreground">
               Sign in to Mercury
             </p>
+            <p className="text-center text-xs leading-relaxed text-muted-foreground">
+              On the computer Mercury runs on, run{" "}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">mercury web</code>{" "}
+              to open the dashboard. From another device, paste a device token
+              (make one there with{" "}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">/server token &lt;name&gt;</code>).
+            </p>
           </div>
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <label
-                htmlFor="username"
+                htmlFor="token"
                 className="text-xs font-medium text-muted-foreground"
               >
-                Username
+                Device token
               </label>
               <Input
-                id="username"
-                type="text"
-                autoComplete="username"
+                id="token"
+                name="token"
+                type="password"
+                autoComplete="off"
                 autoFocus
                 required
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Enter username"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label
-                htmlFor="password"
-                className="text-xs font-medium text-muted-foreground"
-              >
-                Password
-              </label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter password"
+                spellCheck={false}
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="mdt_…"
+                className="font-mono"
               />
             </div>
 

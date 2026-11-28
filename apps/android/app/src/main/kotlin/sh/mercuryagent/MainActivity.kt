@@ -40,7 +40,10 @@ class MainActivity : ComponentActivity() {
     handle(intent)
   }
 
-  /** A notification's tap or a mercury:// link: open that chat (or the bots); Call Mercury (the app shortcut): a call. */
+  /**
+   * A notification's tap or a mercury:// link: open that chat (or the bots); mercury://pair: the connect
+   * screen's "Connect to <host>?"; Call Mercury (the app shortcut): a call.
+   */
   private fun handle(intent: Intent?) {
     if (intent?.action == ACTION_CALL) { (application as MercuryApplication).container.requestCall(); return }
     // The ring notification's Answer (ADR-046): the call starts here and Mercury says why it called.
@@ -48,7 +51,10 @@ class MainActivity : ComponentActivity() {
       intent.getStringExtra(sh.mercuryagent.call.RingTelecom.EXTRA_RING)?.let { (application as MercuryApplication).container.answerRing(it) }
       return
     }
-    val key = sh.mercuryagent.notify.Notifier.keyOf(intent?.data) ?: return
+    // The computer's pairing QR scanned with the phone's camera: the connect screen asks first.
+    val data = intent?.data
+    if (data?.scheme == "mercury" && data.host == "pair") { (application as MercuryApplication).container.pairLink(data.toString()); return }
+    val key = sh.mercuryagent.notify.Notifier.keyOf(data) ?: return
     (application as MercuryApplication).container.open(key)
   }
 

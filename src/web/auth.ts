@@ -1,5 +1,4 @@
-import { compare, compareSync, hashSync, genSaltSync } from 'bcryptjs';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getMercuryHome, loadConfig } from '../utils/config.js';
@@ -7,16 +6,11 @@ import { getMercuryHome, loadConfig } from '../utils/config.js';
 const SESSION_COOKIE = 'mercury_session';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 
-interface WebAuth {
-  username: string;
-  password_hash: string;
-}
-
 function getWebConfigPath(): string {
   return join(getMercuryHome(), 'web-config.json');
 }
 
-/** Credential files hold bcrypt hashes and live session tokens — they must
+/** Credential files hold live session tokens — they must
  *  never be world-readable. Also repairs files written by older versions. */
 function writeCredentialFile(path: string, contents: string): void {
   writeFileSync(path, contents, { encoding: 'utf-8', mode: 0o600 });
@@ -79,112 +73,17 @@ export function readAttachToken(): string | null {
   }
 }
 
-export function loadWebAuth(): WebAuth | null {
-  const path = getWebConfigPath();
-  if (!existsSync(path)) return null;
-  try {
-    // Repair permissions on files written by older versions (0o644).
-    try { chmodSync(path, 0o600); } catch { /* best effort */ }
-    const raw = readFileSync(path, 'utf-8');
-    return JSON.parse(raw) as WebAuth;
-  } catch {
-    return null;
-  }
-}
-
-export function saveWebAuth(auth: WebAuth): void {
-  const dir = getMercuryHome();
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeCredentialFile(getWebConfigPath(), JSON.stringify(auth, null, 2));
-}
 
 /**
- * Initial password is RANDOM per install — a hardcoded default in a public
- * MIT repo is a known credential the moment the source is published. The
- * caller must display the generated password once so the user can log in
- * and change it.
+ * Mercury has no password (ADR-050): browsers, Desktop and phones sign in
+ * with a device token, a pairing code or a one-time link made on this
+ * computer. An install from before that still has web-config.json with a
+ * password hash in it; remove it so the old password is gone for good.
  */
-export function initWebAuth(): { username: string; password: string } {
-  const existing = loadWebAuth();
-  if (existing) {
-    return { username: existing.username, password: '' };
-  }
-  const generated = randomBytes(9).toString('base64url'); // 12 chars, URL-safe
-  const salt = genSaltSync(10);
-  const hash = hashSync(generated, salt);
-  const auth: WebAuth = {
-    username: 'mercury',
-    password_hash: hash,
-  };
-  saveWebAuth(auth);
-  return { username: 'mercury', password: generated };
-}
-
-export function isWebAuthInitialized(): boolean {
-  return loadWebAuth() !== null;
-}
-
-export function setWebPassword(password: string): void {
-  let auth = loadWebAuth();
-  if (!auth) {
-    auth = { username: 'mercury', password_hash: '' };
-  }
-  const salt = genSaltSync(10);
-  auth.password_hash = hashSync(password, salt);
-  saveWebAuth(auth);
-}
-
-// A hash to compare against when the username is wrong, so a wrong name
-// takes as long as a wrong password (no "this user exists" timing signal).
-const DUMMY_HASH = hashSync('mercury-dummy-password', 10);
-
-export function authenticate(username: string, password: string): boolean {
-  const auth = loadWebAuth();
-  if (!auth) return false;
-  try {
-    const ok = compareSync(password, username === auth.username ? auth.password_hash : DUMMY_HASH);
-    return ok && username === auth.username;
-  } catch {
-    return false;
-  }
-}
-
-/** The same check without blocking the server while bcrypt runs (sign-in endpoints). */
-export async function authenticateAsync(username: string, password: string): Promise<boolean> {
-  const auth = loadWebAuth();
-  if (!auth) return false;
-  try {
-    const ok = await compare(password, username === auth.username ? auth.password_hash : DUMMY_HASH);
-    return ok && username === auth.username;
-  } catch {
-    return false;
-  }
-}
-
-/** The username to sign in with (for the CLI's security screen). */
-export function webUsername(): string | null {
-  return loadWebAuth()?.username ?? null;
-}
-
-export function changePassword(currentPassword: string, newPassword: string): boolean {
-  const auth = loadWebAuth();
-  if (!auth) return false;
-  if (!authenticate(auth.username, currentPassword)) return false;
-  const salt = genSaltSync(10);
-  auth.password_hash = hashSync(newPassword, salt);
-  saveWebAuth(auth);
-  return true;
-}
-
-export function changeUsername(currentPassword: string, newUsername: string): boolean {
-  const auth = loadWebAuth();
-  if (!auth) return false;
-  if (!authenticate(auth.username, currentPassword)) return false;
-  auth.username = newUsername;
-  saveWebAuth(auth);
-  return true;
+export function retirePasswordSignIn(): boolean {
+  const path = getWebConfigPath();
+  if (!existsSync(path)) return false;
+  try { rmSync(path, { force: true }); return true; } catch { return false; }
 }
 
 export function createSessionToken(): string {

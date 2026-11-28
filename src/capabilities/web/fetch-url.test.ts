@@ -41,7 +41,9 @@ describe('SSRF guard — credential file hardening', () => {
       new URL('../../web/auth.ts', import.meta.url),
       'utf8',
     );
-    expect(src).toContain('writeCredentialFile(getWebConfigPath()');
+    // No password file is written any more (ADR-050); an old one is removed.
+    expect(src).not.toContain('writeCredentialFile(getWebConfigPath()');
+    expect(src).toContain('rmSync(path');
     expect(src).toContain('writeCredentialFile(getSessionFilePath()');
     expect(src).toContain('chmodSync(path, 0o600)');
     expect(src).not.toContain("'Mercury@123'");

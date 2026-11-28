@@ -2,8 +2,8 @@
 id: remote-access
 title: "Remote access & security"
 sidebar_label: "Remote access & security"
-description: "Let other devices use your Mercury safely: owner approvals for new devices and sensitive actions, device tokens and their lifecycle, allowed addresses, /server and mercury doctor --security."
-keywords: [mercury remote access, device token, owner approval, tunnel, tailscale, cloudflare tunnel, security, allowed ips]
+description: "Let other devices use your Mercury safely: pair a phone with a QR code, owner approvals for new devices and sensitive actions, device tokens and their lifecycle, allowed addresses, /server and mercury doctor --security."
+keywords: [mercury remote access, pair phone, qr code, device token, owner approval, tunnel, tailscale, cloudflare tunnel, security, allowed ips]
 ---
 
 # Remote access & security
@@ -11,6 +11,49 @@ keywords: [mercury remote access, device token, owner approval, tunnel, tailscal
 Mercury only listens on `127.0.0.1`. To use it from another device (Mercury Desktop on your laptop, the web dashboard from your phone), you put a tunnel or proxy in front of it, such as Tailscale or Cloudflare Tunnel. Mercury treats anything that arrives that way as remote, even when the tunnel runs on the same machine.
 
 You stay in control: a new device needs your approval, and a remote device has to ask you before it does anything that could take over your Mercury.
+
+## Connect a phone
+
+The quickest way to connect the Mercury app on your phone is to scan a code.
+
+1. **Give Mercury an HTTPS address.** With [Tailscale](https://tailscale.com) on this computer and on your phone, run:
+
+   ```bash
+   tailscale serve --bg 6174
+   ```
+
+   This serves Mercury at `https://<your-computer>.<your-tailnet>.ts.net` (use your Mercury's port if it isn't 6174). If Tailscale asks, turn on MagicDNS and HTTPS Certificates on the DNS page of the Tailscale admin console. Using Cloudflare Tunnel or your own proxy instead? Set its address as `web.publicUrl` (see [Which address goes in the code](#which-address-goes-in-the-code)).
+2. **Show the code** on this computer: run `mercury server pair` in a terminal, or type `/server pair` in the terminal chat or in Mercury Desktop's chat (it opens Desktop's remote-access window on pairing). Desktop also has it under Settings → Connections → Paired devices → **Pair a phone**.
+3. **Scan it** with the Mercury app: Connect → Scan to connect. Or type in the address and code shown with the QR code.
+
+The screen changes to "✓ Paired with …" as soon as the phone connects, and the phone appears in your device list. `mercury server pair` draws the QR code with text characters, so it works over SSH in an 80×24 terminal.
+
+### How the pairing code works
+
+- **Showing the code is your approval.** Only this computer can make one, so the phone doesn't wait for a second approval.
+- **It works once, for 5 minutes.** Making a new code cancels the old one.
+- **The other rules still apply.** The phone needs remote access to be on, an allowed address, and room under the device limit. If remote access is off, `pair` offers to turn it on.
+- **Guessing doesn't work.** Each code is 25 random characters, and 10 wrong codes from one address block it for 15 minutes.
+- **Show it only to your own phone.** Anyone who sees the code within those 5 minutes could use it. The device list shows who paired, and you can revoke any device.
+
+### Which address goes in the code
+
+Mercury uses the first of these it finds:
+
+1. An address you give: `mercury server pair https://mercury.example.com`, or the field Mercury Desktop shows when it finds none.
+2. The HTTPS address Tailscale Serve gives Mercury.
+3. `web.publicUrl` in `~/.mercury/mercury.yaml`, for Cloudflare Tunnel or your own proxy:
+
+   ```yaml
+   web:
+     publicUrl: https://mercury.example.com
+   ```
+
+Plain `http://` is refused unless the address is on your own network (a private or Tailscale `100.x` address, or a `.local` name), because the phone apps refuse it too. So is `localhost`, which your phone can't reach.
+
+An address on this computer itself, such as its Wi-Fi address, needs something listening there. Mercury only listens on `127.0.0.1`, so `http://192.168.1.5:6174` on its own is refused; a proxy you run at that address is fine.
+
+When Mercury finds no address, or refuses the one you gave, `mercury server pair` and `/server pair` in the terminal ask you to type one.
 
 ## What counts as "this computer"
 
@@ -30,7 +73,12 @@ The device that asked can never answer its own question. Nobody answering within
 
 ### New devices
 
-Signing in from another device with the dashboard password doesn't give it access straight away. The device shows "Waiting for the owner to approve this device" and the code, and gets its token once you approve. Signing in from this computer needs no approval.
+Mercury has no password. A new device gets in only one of two ways, and both start on this computer:
+
+- [Pairing with a QR code](#connect-a-phone) (`/server pair`): showing the code is your approval.
+- A device token you make with `/server token <name>` and paste into the device.
+
+A browser on this computer opens the dashboard with `mercury web`, a link that works once for 5 minutes. A browser elsewhere signs in with a device token, and revoking that device signs it out.
 
 ### Sensitive actions
 
@@ -42,7 +90,7 @@ An approved device can chat, run things under your current permission mode and r
 - installing skills from a URL, and plugins;
 - channel settings and tokens, letting someone into a channel or making them an admin, Signal linking;
 - Mercury Cloud sign-in, and changing a provider's server address without a new key;
-- restarting Mercury, changing the password or username, and revoking another device;
+- restarting Mercury and revoking another device;
 - a board's working folder;
 - starting a server update.
 
@@ -56,7 +104,6 @@ Each approved device gets a device token (`mdt_…`) that Mercury Desktop keeps 
 - **Limit.** 10 devices at most. Mercury checks the limit before it asks you.
 - **New location.** When a known device connects from an address it hasn't used before, Mercury tells you.
 - **Revoke.** Revoking a device cuts its open connections at once.
-- **Password change.** Changing the dashboard password signs out every other browser, and can sign out all devices too.
 
 To make a token by hand for a device that can't sign in itself, run `/server token <name>` (or `mercury devices add "<name>"`) on this computer. It's shown once.
 
@@ -70,6 +117,7 @@ To make a token by hand for a device that can't sign in itself, run `/server tok
 /server on | off        allow or refuse other devices
 /server approve <code>  let a waiting device or action through (deny <code> to refuse)
 /server devices         paired devices · /server revoke <id|name> · /server revoke-all
+/server pair [address]  show a QR code to pair a phone (a one-time code, 5 minutes)
 /server token <name>    make a token for a device by hand (shown once)
 /server allow-ip <ip|range> · remove-ip <ip|range> · allow-any
 /server shell on|off    the terminal for remote devices (each command still asks you)
@@ -97,9 +145,21 @@ With an address list set, Mercury refuses any client whose address isn't on it. 
 mercury doctor --security
 ```
 
-It checks the dashboard password, devices, file permissions on Mercury's secrets and how your tunnel forwards requests. Every `mercury doctor` run shows a one-line summary of it, and `/server check` shows the same findings.
+It checks devices, file permissions on Mercury's secrets and how your tunnel forwards requests. Every `mercury doctor` run shows a one-line summary of it, and `/server check` shows the same findings.
 
-The security log, `~/.mercury/security/audit.jsonl`, records failed and locked sign-ins, pairings, approvals and refusals, revocations, expired devices, new locations, blocked requests, password and setting changes, and started updates. `/server log` shows the latest entries.
+It also checks how other devices reach Mercury:
+
+| Finding | Level | What to do |
+|---|---|---|
+| Mercury is reachable over plain http from the internet | risk | Serve it over HTTPS (Tailscale Serve or Cloudflare Tunnel) and set `web.publicUrl` to the `https://` address |
+| Tailscale Serve isn't using HTTPS | warning | Turn on MagicDNS and HTTPS Certificates in the Tailscale admin console, then `tailscale serve --bg 6174` |
+| Remote access is on, but no tunnel reaches Mercury | warning if devices are paired, a note otherwise | `tailscale serve --bg 6174`, then `mercury server pair`; or set `web.publicUrl` if you use another tunnel |
+| Remote access is off, but devices are paired | note | `mercury server on`, or sign them out with `mercury server revoke-all` |
+| Remote access works over HTTPS | good | Shows the address that works |
+
+When Mercury is running, the check includes the remote requests it has seen in the last week. It reads Tailscale only on this computer, and skips it quietly when Tailscale isn't installed. It contacts nothing else.
+
+The security log, `~/.mercury/security/audit.jsonl`, records failed and locked sign-ins, pairings, pairing codes made, used and ended, approvals and refusals, revocations, expired devices, new locations, blocked requests, setting changes, and started updates. `/server log` shows the latest entries.
 
 ## Things to know
 

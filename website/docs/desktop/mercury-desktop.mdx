@@ -92,9 +92,8 @@ On this computer the app signs in with Mercury's local attach token, so there is
 
 ## Connecting to a Mercury elsewhere
 
-You need the address the other Mercury is reachable at, usually through a tunnel such as Tailscale or Cloudflare Tunnel (Mercury itself only listens on `127.0.0.1`). Then choose one of two ways to sign in:
+You need the address the other Mercury is reachable at, usually through a tunnel such as Tailscale or Cloudflare Tunnel (Mercury itself only listens on `127.0.0.1`). Then connect with a device token (Mercury has no password):
 
-- **Sign in** with that Mercury's dashboard username and password. The owner of that Mercury has to approve this device. The app shows "Waiting for the owner to approve this device" and a 5-character code. The owner approves it from Telegram or WhatsApp (`approve K7Q2M`), from `/server` or `mercury server approve K7Q2M` on that computer, or in Mercury Desktop on that computer. Nobody answering within 10 minutes means no.
 - **Device token.** The owner makes a token on that computer with `/server token <name>` (or `mercury devices add "<name>"`) and gives it to you. It starts with `mdt_` and is shown once.
 
 The app keeps each connection's credentials in your system keychain. Removing a connection in **Settings → Connections** also revokes its token on that Mercury.

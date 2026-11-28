@@ -11,6 +11,7 @@ import { getMercuryHome } from '../utils/config.js';
 
 export type AuditKind =
   | 'pair.requested' | 'pair.approved' | 'pair.denied' | 'pair.expired' | 'pair.local'
+  | 'pair.code.created' | 'pair.code.redeemed' | 'pair.code.expired'
   | 'device.revoked' | 'device.expired' | 'device.new-location' | 'device.blocked'
   | 'action.requested' | 'action.allowed' | 'action.denied'
   | 'remote.changed' | 'login.failed' | 'login.locked' | 'login.refused' | 'password.changed'

@@ -54,6 +54,7 @@ dependencies {
   implementation(project(":core"))
   implementation(project(":voice"))
   implementation(libs.androidx.core.telecom)
+  implementation(libs.play.services.code.scanner)
 
   implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.activity.compose)

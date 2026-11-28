@@ -29,6 +29,8 @@ export const MIME: Record<string, string> = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', xls: 'application/vnd.ms-excel',
   odt: 'application/vnd.oasis.opendocument.text', ods: 'application/vnd.oasis.opendocument.spreadsheet', odp: 'application/vnd.oasis.opendocument.presentation',
   epub: 'application/epub+zip', csv: 'text/csv', md: 'text/markdown', markdown: 'text/markdown', txt: 'text/plain',
+  // Not an artifact kind of its own (code isn't a deliverable), but a page Mercury hands over previews as one.
+  html: 'text/html', htm: 'text/html',
 };
 
 export function extOf(path: string): string {

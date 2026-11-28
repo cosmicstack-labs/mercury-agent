@@ -12,9 +12,9 @@ struct LiveTests {
     #expect(h.apiVersion == 1)
   }
 
-  @Test(.enabled(if: url != nil)) func wrongPasswordSaysSo() async {
-    await #expect(throws: MercuryError.badCredentials) {
-      try await MercuryClient(baseURL: Self.url!).signIn(username: "nobody", password: "wrong", deviceName: "test")
+  @Test(.enabled(if: url != nil)) func wrongPairCodeSaysSo() async {
+    await #expect(throws: MercuryError.badPairCode) {
+      try await MercuryClient(baseURL: Self.url!).pair(code: "00000-00000-00000-00000-00000", deviceName: "test")
     }
   }
 }

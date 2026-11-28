@@ -2006,14 +2006,17 @@ export class CLIChannel extends BaseChannel {
 
   showPrompt(): void {}
 
-  async withMenu<T>(runner: (select: (title: string, options: Array<{ value: string; label: string }>) => Promise<string>, input: (title: string, helperText?: string) => Promise<string>) => Promise<T>): Promise<T | undefined> {
+  async withMenu<T>(runner: (select: (title: string, options: Array<{ value: string; label: string }>, signal?: AbortSignal) => Promise<string>, input: (title: string, helperText?: string) => Promise<string>) => Promise<T>): Promise<T | undefined> {
     this.menuDepth += 1;
     const { selectWithArrowKeys, inputWithKeys } = await import('../utils/arrow-select.js');
     this.menuAbortController = new AbortController();
 
     try {
       return await runner(
-        (title, options) => selectWithArrowKeys(title, options, { signal: this.menuAbortController?.signal }),
+        (title, options, signal) => {
+          const menu = this.menuAbortController?.signal;
+          return selectWithArrowKeys(title, options, { signal: signal && menu ? AbortSignal.any([menu, signal]) : signal ?? menu });
+        },
         (title, helperText) => inputWithKeys(title, { helperText, signal: this.menuAbortController?.signal }),
       );
     } catch (error) {

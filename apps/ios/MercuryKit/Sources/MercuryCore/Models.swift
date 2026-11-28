@@ -43,41 +43,14 @@ public struct Device: Decodable, Sendable, Hashable {
   public var platform: String?
 }
 
-/// The result of asking a Mercury for a device token (POST /api/auth/token).
-public enum SignInResult: Sendable {
-  /// Signed in straight away (only happens on the runtime's own computer).
-  case signedIn(token: String, device: Device?)
-  /// The owner must approve this phone with `code` before a token is handed out.
-  case pending(Pairing)
-}
-
-public struct Pairing: Sendable, Hashable {
-  public var pairingId: String
-  public var pollToken: String
-  /// 5 characters, e.g. "K7Q2M"
-  public var code: String
-  /// Where the owner can approve, as the runtime words it.
-  public var message: String?
-  public var expiresAt: Date?
-
-  public init(pairingId: String, pollToken: String, code: String, message: String? = nil, expiresAt: Date? = nil) {
-    self.pairingId = pairingId; self.pollToken = pollToken; self.code = code; self.message = message; self.expiresAt = expiresAt
-  }
-}
-
-public enum PairingStatus: Sendable {
-  case pending
-  case approved(token: String, device: Device?)
-  case denied(String)
-  case expired(String)
-}
-
 public enum MercuryError: LocalizedError, Equatable {
   case badAddress
   case unreachable(String)
-  case badCredentials
+  /// A pasted device token that Mercury doesn't know (GET /api/health said 401 or 404).
+  case badToken
+  /// POST /api/auth/pair said 401: a wrong, used or expired pairing code.
+  case badPairCode
   case tooManyAttempts(retryAfter: Int?)
-  case deviceLimit
   case unauthorized
   case server(Int, String?)
   /// The owner must allow this change first (approve the code, then it's repeated).
@@ -87,9 +60,9 @@ public enum MercuryError: LocalizedError, Equatable {
     switch self {
     case .badAddress: "That doesn't look like a web address. Try something like https://mercury.example.com"
     case .unreachable(let why): "Couldn't reach that Mercury. \(why)"
-    case .badCredentials: "That username or password isn't right."
-    case .tooManyAttempts(let s): s.map { "Too many tries. Wait \($0) seconds and try again." } ?? "Too many tries, or a sign-in is already waiting. Try again in a minute."
-    case .deviceLimit: "This Mercury already has the most devices it allows. Remove one in Mercury Desktop, then try again."
+    case .badToken: "That Mercury doesn't know this token. Check the address, or make a new token with /server token on the computer it runs on."
+    case .badPairCode: "This pairing code isn't valid. Make a new one on the computer Mercury runs on."
+    case .tooManyAttempts(let s): s.map { "Too many tries. Wait \($0) seconds and try again." } ?? "Too many tries. Try again in a minute."
     case .unauthorized: "This phone isn't signed in to that Mercury any more. Connect again."
     case .server(let code, let msg): msg ?? "Mercury answered with an error (\(code))."
     case .needsOwner(let q): q.message

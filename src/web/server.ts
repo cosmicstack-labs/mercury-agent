@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { logger } from '../utils/logger.js';
 import { authGuard, errorHandler } from './middleware.js';
 import { apiCors } from './cors.js';
-import { initWebAuth, getWebPort } from './auth.js';
+import { retirePasswordSignIn, getWebPort } from './auth.js';
 import { loadConfig } from '../utils/config.js';
 import authRoutes from './api/auth.js';
 import statusRoutes, { updateStatus } from './api/status.js';
@@ -307,7 +307,8 @@ process.on('unhandledRejection', (reason: any) => {
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();
-  initWebAuth();
+  // No password any more (ADR-050): an old install's password file goes.
+  if (retirePasswordSignIn()) logger.info('Removed the old dashboard password: sign in with mercury web or a device token');
   // Devices from before idle expiry start their clock now (they keep working).
   try { migrateDevices(); } catch { /* checked again next start */ }
 

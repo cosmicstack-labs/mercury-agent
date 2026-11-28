@@ -134,47 +134,10 @@ class MercuryClient(
     }
   }
 
-  // MARK: Pairing (ADR-035)
+  // MARK: Connecting a phone (QR pairing code in PairLink.kt, or a device token; no password sign-in)
 
-  /** POST /api/auth/token. Off the runtime's own computer this starts a pairing the owner must approve. */
-  suspend fun signIn(username: String, password: String, deviceName: String, platform: String = "android"): SignInResult {
-    val body = buildJsonObject {
-      put("username", username); put("password", password); put("deviceName", deviceName); put("platform", platform)
-    }
-    val reply = send(request("POST", "/api/auth/token", body))
-    val j = parseObject(reply.body)
-    return when (reply.code) {
-      200 -> SignInResult.SignedIn(j.str("token") ?: throw MercuryException.Server(200, "Mercury didn't send a token."), device(j["device"]))
-      202 -> {
-        val id = j.str("pairingId"); val poll = j.str("pollToken"); val code = j.str("code")
-        if (id == null || poll == null || code == null) throw MercuryException.Server(202, "Mercury started a pairing but left out its code.")
-        SignInResult.Pending(Pairing(id, poll, code, j.str("message"), j["expiresAt"].asInstant()))
-      }
-      401 -> throw MercuryException.BadCredentials()
-      404 -> throw MercuryException.Unreachable("That address answers, but it isn't a Mercury (or it's too old to pair a phone).")
-      409 -> throw MercuryException.DeviceLimit()
-      429 -> throw MercuryException.TooManyAttempts(reply.retryAfter?.trim()?.toIntOrNull())
-      else -> throw MercuryException.Server(reply.code, j.str("error"))
-    }
-  }
-
-  /** POST /api/auth/token/pending: holds for up to about 25 s, then answers with the pairing's status. */
-  suspend fun pairingStatus(p: Pairing): PairingStatus {
-    val body = buildJsonObject { put("pairingId", p.pairingId); put("pollToken", p.pollToken); put("waitMs", 25_000) }
-    val reply = send(request("POST", "/api/auth/token/pending", body), 40)
-    val j = parseObject(reply.body)
-    val error = j.str("error")
-    return when (j.str("status")) {
-      "pending" -> PairingStatus.Waiting
-      "approved" -> PairingStatus.Approved(
-        j.str("token") ?: throw MercuryException.Server(reply.code, "Approved, but Mercury didn't send a token."), device(j["device"]),
-      )
-      "denied" -> PairingStatus.Denied(error ?: "The owner said no.")
-      "expired" -> PairingStatus.Expired(error ?: "The code expired.")
-      else -> if (reply.code == 410 || reply.code == 404) PairingStatus.Expired(error ?: "The code expired.")
-      else throw MercuryException.Server(reply.code, error)
-    }
-  }
+  /** Checks a pasted device token (mdt_…) by asking for GET /api/health with it. */
+  suspend fun checkToken(): Health = try { health() } catch (_: MercuryException.Unauthorized) { throw MercuryException.BadToken() }
 
   /** POST /api/auth/token/revoke: forget this phone on the runtime. Never throws. */
   suspend fun revoke() {
@@ -339,6 +302,7 @@ class MercuryClient(
   fun events(path: String): Flow<ServerEvent> = flow {
     val parser = SseParser()
     var delayMs = 1000L
+    var connected = false
     while (true) {
       try {
         val r = request("GET", path).newBuilder().header("Accept", "text/event-stream").apply {
@@ -352,6 +316,9 @@ class MercuryClient(
             call.execute().use { res ->
               if (res.code != 200) throw IOException("stream refused (${res.code})")
               delayMs = 1000
+              // Back after a drop: events sent meanwhile may be lost, so listeners re-read what they show.
+              if (connected) emit(ServerEvent(ServerEvent.RECONNECTED, "{}"))
+              connected = true
               val source = res.body?.source() ?: throw IOException("no body")
               while (true) {
                 val line = source.readUtf8Line() ?: break

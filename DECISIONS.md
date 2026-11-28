@@ -837,3 +837,80 @@
   - **One owner-in-the-loop path for CAPTCHAs, codes and manual steps**, on every device the owner uses.
   - **Out-of-process plugins** don't get `owner.ask` or `models.lookAt` yet; that needs a host JSON-RPC method.
   - **Desktop and the phone apps** receive `owner_task` events and the API. Their answer screens come next; until then, the owner answers from a chat or the terminal.
+
+## ADR-049: Pairing a phone with a code the owner shows — showing it is the approval
+
+- **Context**: Issue #311. ADR-035 listed QR pairing as a follow-up, and the iOS and Android apps shipped in 1.5.3. Connecting a phone took two hard steps:
+  - **An address.** Mercury binds `127.0.0.1`, so a phone needs a tunnel, and the apps refuse plain `http://` outside the local network: iOS through `NSAllowsLocalNetworking`, Android through `LocalNetwork.allowsCleartext`.
+  - **A token.** Either sign in with the password and wait for the owner to approve a 5-character code, or copy a 77-character `mdt_…` token by hand. Since 1.5.5, password sign-in from other devices is off by default (ADR-035's amendment), so copying a token became the default way in.
+
+  People gave up at the address.
+- **Decision**:
+  - **A new approval path: a code the owner shows.** Only `POST /api/security/pair` makes one, and it works only on this computer (ADR-035): the attach token, never through a tunnel. The phone uses it at the public `POST /api/auth/pair`. Holding the code is the owner's approval, so no second question follows. The phone gets the same device token as `/api/auth/token`.
+  - **The code** (`src/security/pair-codes.ts`):
+    - 25 characters from Crockford base32 via `crypto.randomInt`, which is 125 bits, shown as five groups of five. Typed input ignores case, spaces and dashes, and reads `O` as `0` and `I`/`L` as `1`.
+    - Only its SHA-256 is kept, in memory, so a restart ends it. It's compared in constant time, against a random decoy when no code exists.
+    - One code at a time: a new one replaces the old. It works once and ends after 5 minutes.
+    - The security log records `pair.code.created`, `pair.code.redeemed` (device name, platform, IP) and `pair.code.expired` (unused, replaced or cancelled).
+  - **Using the code.** `POST /api/auth/pair { code, deviceName, platform }` answers `{ token, device, apiVersion, features }`.
+    - The guard still applies the remote-access switch and `allowIps` first.
+    - It doesn't depend on `passwordSignIn`: using a code isn't password sign-in, so pairing works while password sign-in is off.
+    - It has its own per-client limiter, separate from sign-in: 10 failures in 15 minutes lock the client out for 15 minutes.
+    - A wrong, used or expired code always gets the same 401.
+    - The device limit is checked after the code matches and before it's used up, so a 409 leaves the code valid.
+    - Matching, creating the device and using the code run without an `await` between them, so one code can't pair twice.
+    - Feature flag `auth.pairCode`.
+  - **The QR** holds `mercury://pair?u=<origin>&c=<code>`, with `:` and `/` left unescaped in `u` to keep it short. It never holds a token.
+    - Terminals: half-block characters in white on black with a 2-module border, and the address and code above it. A long Tailscale name gives 41×21 characters, so it fits 80×24.
+    - Mercury Desktop: an SVG the runtime renders. Both use the QR encoder Mercury already ships in `qrcode-terminal`.
+  - **The address** (`src/security/tunnel.ts`), first found:
+    1. One the owner gives.
+    2. Tailscale Serve over HTTPS. Mercury reads `tailscale status --json --peers=false` and `tailscale serve status --json`, which only talk to the local Tailscale service, and takes a `Web` entry whose `/` handler proxies to Mercury's port. A 2-second timeout, a 30-second cache, and nothing at all when Tailscale is missing or stopped.
+    3. `web.publicUrl`.
+
+    It's reduced to an origin. Refused: anything not http(s), loopback addresses, and plain http to a host outside the phone apps' local-network rule, which is ported exactly.
+
+    An address on this computer itself (one of its own IP addresses, Tailscale's included, or its name or `name.local`) must have something listening there. Mercury only listens on `127.0.0.1`, so it opens a TCP connection to that address and port, with a 0.8 s limit, and refuses the address (`loopback`) if nothing answers. A proxy listening there is accepted. Addresses on other machines aren't probed.
+  - **The owner's screens.** `mercury server pair [address]`, `/server pair` and the `/server` menu, Mercury Desktop's `/server` window (1.5.5), and its Settings → Paired devices → Pair a phone.
+    - `/api/security/pair` (this computer only): POST makes a code and answers with the code, link and SVG, or 409 with a reason (`remote-off`, `limit`, `none`, `insecure`, `loopback`, `invalid`). `GET /:id` waits up to 25 s for the outcome. DELETE cancels.
+    - The screens wait for the outcome and change to "✓ Paired with …". Cancelling ends the code.
+    - If remote access is off, the command offers to turn it on.
+    - When no address is found, or the one given is refused, the terminal screens ask for one with 1.5.5's typed input (up to 5 tries; Esc stops). Screens that can't take typing show the reason only.
+    - In Mercury Desktop's chat, `/server pair [address]` opens the `/server` window straight on pairing. In `mercury attach`, the screen is posted as a message and the outcome follows.
+  - **`mercury doctor --security`.**
+    - `request-origin.ts` records each request's scheme, from `X-Forwarded-Proto`, `Forwarded` or `CF-Visitor`. A Tailscale request without a proto header counts as plain http, since Serve sets it only over TLS. It also records the tunnel: Tailscale, Funnel, Cloudflare or another proxy.
+    - The middleware keeps the last plain-http request from a public address.
+    - New findings: plain http from the internet (risk); no tunnel reaches Mercury (warn with paired devices, info without); Tailscale Serve without HTTPS or with MagicDNS/HTTPS Certificates off (warn); devices paired while remote access is off (info); the HTTPS address that works (ok).
+    - Doctor asks the running Mercury first, because only it has seen remote requests. It contacts nothing but that Mercury and the local Tailscale service.
+- **Alternatives considered**:
+  - **Sending "paired" on the `owner_approval` event stream:** Mercury Desktop listens to it, but `mercury server` doesn't. One long-poll serves both.
+  - **An https link the apps open (universal or app links):** needs association files on a domain we control, which each Mercury's own address can't serve. A later option is a link on mercuryagent.sh that carries the data in the URL fragment, which never reaches the site.
+  - **A short numeric code:** easy to type, but only safe with a global attempt limit that ends the code, and that would let anyone cancel the owner's code by guessing. At 125 bits, guessing is pointless without one.
+  - **Keeping codes on disk:** they would survive a restart, but it puts a secret at rest for a 5-minute window.
+  - **Probing the tunnel address from this computer:** `/api/health` answers 404 to anonymous remote callers, so a probe can't prove it reached this Mercury. Tailscale's proxy target and recent HTTPS requests say so instead.
+  - **Warning about "no tunnel" whenever remote access is on:** remote access is on by default, so it would nag every owner who never uses it.
+- **Consequence**: A phone pairs in one scan, and the owner sees which device paired. Phones never get an address they'd refuse, and the security check says how other devices reach Mercury. Known limits:
+  - Whoever sees the QR within its 5 minutes can pair once. The owner sees it and can revoke the device.
+  - In `mercury attach` the code stays in the transcript. It's dead after use or after 5 minutes.
+  - The `/server` menu inside the terminal chat needs about 30 rows to show the whole QR; `mercury server pair` fits 80×24.
+  - A hung `tailscale` command can hold a security check for up to 4 s. The answer is cached for 30 s.
+  - Tailscale Services (`svc:` names) aren't read.
+  - On Windows a closed port isn't refused at once, so checking an address on this computer where nothing listens takes the full 0.8 s.
+  - A name the home network resolves to this computer by another route, such as a router's DNS name, isn't recognised as this computer, so it isn't checked.
+  - Scheme detection trusts proxy headers, so a misconfigured proxy can make the plain-http finding wrong.
+  - Follow-ups: Scan to connect in the phone apps, and an https pairing link on mercuryagent.sh.
+
+## ADR-050: No password — devices connect with a pairing code or a device token
+
+- **Status:** accepted, 2026-11-28.
+- **Context:** a password is the one credential anyone online can try. Many owners never change it or choose a weak one, and a reachable Mercury is then a few guesses from being taken. Device tokens and pairing codes are long and random, and are made only on the computer Mercury runs on.
+- **Decision:** Mercury has no password.
+  - Phones and Desktop elsewhere connect with a QR pairing code (`/server pair`, ADR-049) or a device token (`/server token <name>`). The phone apps have one fallback, "Enter a code or token".
+  - A browser on this computer opens the dashboard with `mercury web` (or Desktop's "Open in browser"): `GET /login/once?c=…`, which works once, for 5 minutes, and only from this computer. It gives the browser a session cookie.
+  - A browser elsewhere signs in on `/login` with a device token (`POST /api/auth/login { token }`), rate-limited per address and refused from another site. The token itself becomes the cookie, so revoking the device signs the browser out.
+  - `POST /api/auth/token`, `/api/auth/token/pending`, `/api/auth/password` and `/api/auth/username` answer 410 `password_removed`. The `passwordSignIn` setting and `/server password` are gone. `mercury web-reset-password` only explains the change.
+  - On start, Mercury deletes `~/.mercury/web-config.json`, the old password hash.
+- **Consequences:**
+  - Older phone and Desktop builds that only sign in with a password can no longer connect; they need a device token or an update.
+  - Browser sessions made before the upgrade stay valid until they expire (7 days), or until the owner signs everything out.
+  - `mercury web` needs Mercury running, and only a browser on this computer can use its link.

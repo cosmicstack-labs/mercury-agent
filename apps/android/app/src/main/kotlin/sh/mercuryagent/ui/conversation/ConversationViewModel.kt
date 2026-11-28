@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import sh.mercuryagent.core.ServerEvent
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -168,7 +169,20 @@ class ConversationViewModel(
     }
   }
 
+  /**
+   * Re-read the chat and its running turn: a reply that finished while nobody watched (the app in
+   * the background, the screen locked, the stream dropped) and whether a turn still runs or waits.
+   */
+  private suspend fun resync() {
+    val id = id ?: return
+    val t = try { client.thread(id) } catch (e: Exception) { if (e is CancellationException) throw e; return }
+    if (this.id != id) return
+    _ui.update { it.withMessages(t.messages).copy(title = t.displayTitle, savedAt = t.savedAt, queued = null) }
+    catchUp(id)
+  }
+
   fun handle(event: String, raw: String) {
+    if (event == ServerEvent.RECONNECTED) { viewModelScope.launch { resync() }; return }
     // The runtime's live status: Ask Me / Allow All changed anywhere (Desktop, a terminal, a phone).
     if (event == "status") permissions.applyStatus(raw)
     val r = ConversationEvents.reduce(_ui.value, event, raw)
@@ -481,8 +495,12 @@ class ConversationViewModel(
 
   /** The screen came into view or left it: the list marks the chat read. */
   fun setOnScreen(visible: Boolean) {
+    val back = visible && !onScreen && _ui.value.loaded
     onScreen = visible
     id?.let { onSeen(it, visible) }
+    // Back from another app or a locked screen: the stream may have died quietly and the reply may
+    // have finished meanwhile, so connect again and re-read the chat.
+    if (back && id != null) { listen(); viewModelScope.launch { resync() } }
   }
 
   /**

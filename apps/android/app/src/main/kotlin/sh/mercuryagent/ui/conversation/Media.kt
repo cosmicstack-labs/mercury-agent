@@ -79,6 +79,8 @@ import sh.mercuryagent.ui.theme.Mercury
 object ReplyMediaRules {
   /** Made by a media model (generate_image, _video, _music, _speech): shown large and playable. */
   fun isGenerated(a: ArtifactRef): Boolean = a.tool?.startsWith("generate_") == true && a.kind in setOf("image", "video", "audio")
+  /** Pictures, clips and sounds are shown large and playable, generated or downloaded alike. */
+  fun isPlayable(a: ArtifactRef): Boolean = a.kind in setOf("image", "video", "audio")
 
   fun prompt(items: List<ArtifactRef>): String? {
     val p = items.mapNotNull { it.prompt?.trim()?.ifEmpty { null } }.toSet()
@@ -108,8 +110,8 @@ fun ReplyMedia(artifacts: List<ArtifactRef>, fresh: Boolean, onError: (String) -
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var viewing by remember { mutableStateOf<Int?>(null) }
-  val media = artifacts.filter(ReplyMediaRules::isGenerated)
-  val rest = artifacts.filterNot(ReplyMediaRules::isGenerated)
+  val media = artifacts.filter(ReplyMediaRules::isPlayable)
+  val rest = artifacts.filterNot(ReplyMediaRules::isPlayable)
   val images = media.filter { it.kind == "image" }
   val others = media.filter { it.kind != "image" }
   Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

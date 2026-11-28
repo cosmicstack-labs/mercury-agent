@@ -63,6 +63,7 @@ public struct MercuryClient: Sendable {
     case .cannotConnectToHost: "Nothing is answering there. Is Mercury running?"
     case .notConnectedToInternet: "This phone is offline."
     case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate: "Its HTTPS certificate isn't trusted."
+    case .appTransportSecurityRequiresSecureConnection: "Plain http:// works only on your own network. Use https:// for anything else."
     default: e.localizedDescription
     }
   }
@@ -83,46 +84,32 @@ public struct MercuryClient: Sendable {
     }
   }
 
-  // MARK: Pairing (ADR-035)
+  // MARK: Connecting a phone (QR pairing code or device token; no password sign-in)
 
-  /// POST /api/auth/token. Off the runtime's own computer this starts a pairing the owner must approve.
-  public func signIn(username: String, password: String, deviceName: String, platform: String = "ios") async throws -> SignInResult {
-    let body: [String: Any] = ["username": username, "password": password, "deviceName": deviceName, "platform": platform]
-    let (data, res) = try await send(request("POST", "/api/auth/token", body: body))
+  /// Checks a pasted device token (mdt_…) by asking for GET /api/health with it.
+  public func checkToken() async throws -> Health {
+    do { return try await health() } catch MercuryError.unauthorized { throw MercuryError.badToken }
+  }
+
+  /// POST /api/auth/pair: trades a one-time code from the computer's QR code (or typed) for a
+  /// device token. Runtimes that can say `auth.pairCode`.
+  public func pair(code: String, deviceName: String, platform: String = "ios") async throws -> (token: String, device: Device?) {
+    let body: [String: Any] = ["code": PairCode.normalize(code), "deviceName": deviceName, "platform": platform]
+    let (data, res) = try await send(request("POST", "/api/auth/pair", body: body))
     let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     switch res.statusCode {
     case 200:
       guard let token = json["token"] as? String else { throw MercuryError.server(200, "Mercury didn't send a token.") }
-      return .signedIn(token: token, device: Self.device(json["device"]))
-    case 202:
-      guard let id = json["pairingId"] as? String, let poll = json["pollToken"] as? String, let code = json["code"] as? String else {
-        throw MercuryError.server(202, "Mercury started a pairing but left out its code.")
-      }
-      return .pending(Pairing(pairingId: id, pollToken: poll, code: code, message: json["message"] as? String, expiresAt: Self.date(json["expiresAt"])))
-    case 401: throw MercuryError.badCredentials
-    case 404: throw MercuryError.unreachable("That address answers, but it isn't a Mercury (or it's too old to pair a phone).")
-    case 409: throw MercuryError.deviceLimit
+      return (token, Self.device(json["device"]))
+    case 401: throw MercuryError.badPairCode
+    case 404: throw MercuryError.unreachable("That Mercury is too old to pair with a code. Update it, or connect with a device token.")
     case 429: throw MercuryError.tooManyAttempts(retryAfter: (res.value(forHTTPHeaderField: "Retry-After")).flatMap { Int($0) })
+    // Remote access is off (`remoteOff`) or this address isn't allowed (`addressBlocked`); Mercury words both.
+    case 403:
+      throw MercuryError.server(403, json["error"] as? String
+        ?? (json["remoteOff"] != nil ? "Remote access is turned off on this Mercury. Turn it on with /server on the computer it runs on."
+          : json["addressBlocked"] != nil ? "This address is not allowed to connect to this Mercury." : nil))
     default: throw MercuryError.server(res.statusCode, json["error"] as? String)
-    }
-  }
-
-  /// POST /api/auth/token/pending: holds for up to about 25 s, then answers with the pairing's status.
-  public func pairingStatus(_ p: Pairing) async throws -> PairingStatus {
-    let body: [String: Any] = ["pairingId": p.pairingId, "pollToken": p.pollToken, "waitMs": 25_000]
-    let (data, res) = try await send(request("POST", "/api/auth/token/pending", body: body, timeout: 40))
-    let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
-    let error = json["error"] as? String
-    switch json["status"] as? String {
-    case "pending": return .pending
-    case "approved":
-      guard let token = json["token"] as? String else { throw MercuryError.server(res.statusCode, "Approved, but Mercury didn't send a token.") }
-      return .approved(token: token, device: Self.device(json["device"]))
-    case "denied": return .denied(error ?? "The owner said no.")
-    case "expired": return .expired(error ?? "The code expired.")
-    default:
-      if res.statusCode == 410 || res.statusCode == 404 { return .expired(error ?? "The code expired.") }
-      throw MercuryError.server(res.statusCode, error)
     }
   }
 

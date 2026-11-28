@@ -3,7 +3,6 @@ import * as api from "~/api/mercury";
 import { Button } from "~/components/ui/Button";
 import { Field, Input } from "~/components/ui/Input";
 import { Switch } from "~/components/ui/Switch";
-import { Mono } from "~/components/ui/bits";
 import { desktop, isTauri, type InstallProgress } from "./tauri";
 import { LOCAL_CONNECTION_ID, useConnections } from "./connections";
 import { localIsOutdated, restartLocalRuntime } from "./updateLocal";
@@ -22,7 +21,6 @@ export function InstallRuntime({ platform, onInstalled }: { platform: string; on
   const [step, setStep] = useState<Step>("idle");
   const [progress, setProgress] = useState<InstallProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [credentials, setCredentials] = useState<{ username: string; password: string } | null>(null);
   const unlisten = useRef<(() => void) | null>(null);
   const add = useConnections((s) => s.add);
   const setActive = useConnections((s) => s.setActive);
@@ -41,10 +39,6 @@ export function InstallRuntime({ platform, onInstalled }: { platform: string; on
       setStep("setup");
       const setup = await desktop.runMercury(["setup", "--headless", "--owner", owner.trim() || "Owner", "--json"]);
       if (setup.code !== 0) throw new Error(firstLine(setup.stderr || setup.stdout) || "mercury setup failed");
-      try {
-        const parsed = JSON.parse(lastJsonLine(setup.stdout)) as { username?: string; password?: string | null };
-        if (parsed.username && parsed.password) setCredentials({ username: parsed.username, password: parsed.password });
-      } catch { /* courtesy only */ }
 
       if (autostart) {
         setStep("service");
@@ -97,7 +91,6 @@ export function InstallRuntime({ platform, onInstalled }: { platform: string; on
         </div>
       )}
       {error && <div className="rounded-md border border-red/30 bg-red/[0.06] px-2.5 py-1.5 text-xs text-red">{error}</div>}
-      {credentials && <Mono className="block">Browser login (shown once): {credentials.username} / {credentials.password}</Mono>}
       <Button variant="primary" size="lg" onClick={() => void run()} disabled={busy || !isTauri} loading={busy} title={isTauri ? undefined : "Available inside the desktop app"}>
         {step === "failed" ? "Try again" : `Install Mercury on ${platform}`}
       </Button>
@@ -121,9 +114,4 @@ function stepLabel(step: Step, progress: InstallProgress | null): string {
 
 function firstLine(text: string): string {
   return text.trim().split(/\r?\n/)[0] ?? "";
-}
-
-function lastJsonLine(text: string): string {
-  const lines = text.trim().split(/\r?\n/).filter((l) => l.trim().startsWith("{"));
-  return lines[lines.length - 1] ?? "{}";
 }

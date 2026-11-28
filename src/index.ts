@@ -120,7 +120,7 @@ import { setSkillBuilder } from './web/api/system.js';
 import { setArtifactOutputDir, setArtifactSessions } from './web/api/artifacts.js';
 import { setSuggestionEngine } from './web/api/suggestions.js';
 import { artifactStore } from './artifacts/store.js';
-import { isWebAuthInitialized, setWebPassword, writeAttachToken, initWebAuth } from './web/auth.js';
+import { writeAttachToken } from './web/auth.js';
 import { startLoopLagMonitor } from './utils/loop-lag.js';
 import { McpManager, probeMcpServer, validateMcpConfig, type McpServerStatus } from './capabilities/mcp/index.js';
 import {
@@ -2187,36 +2187,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     }
     console.log(chalk.dim(`  Mercury Web will be available at http://localhost:${config.web.port}`));
 
-    if (isWebAuthInitialized()) {
-      console.log(chalk.dim('  You can change your password below, or press Enter to keep it.'));
-      const webPassword = await ask(chalk.white('  New web dashboard password [keep current]: '));
-      if (webPassword.trim()) {
-        setWebPassword(webPassword.trim());
-        console.log(chalk.green('  ✓ Web dashboard password updated.'));
-      } else {
-        console.log(chalk.dim('  Password unchanged.'));
-      }
-    } else {
-      console.log(chalk.dim('  This password signs in the dashboard and new devices (Mercury Desktop, phones).'));
-      console.log(chalk.dim('  Press Enter to have Mercury make a strong one for you.'));
-      console.log('');
-      let chosen = '';
-      for (let attempt = 0; attempt < 3 && !chosen; attempt++) {
-        const typed = (await ask(chalk.white('  Web dashboard password [generate one]: '))).trim();
-        if (!typed) break;
-        if (typed.length < 10) { console.log(chalk.yellow('  Use at least 10 characters (or press Enter to generate one).')); continue; }
-        chosen = typed;
-      }
-      if (chosen) {
-        setWebPassword(chosen);
-        console.log(chalk.green('  ✓ Web dashboard password set.'));
-      } else {
-        const { initWebAuth: makeAuth, isWebAuthInitialized } = await import('./web/auth.js');
-        const generated = !isWebAuthInitialized() ? makeAuth().password : (() => { const p = randomBytes(12).toString('base64url'); setWebPassword(p); return p; })();
-        console.log(chalk.green(`  ✓ Username: mercury   Password: ${chalk.bold(generated)}`));
-        console.log(chalk.dim('  Save it in your password manager — it is shown only now. Change it any time with /server.'));
-      }
-    }
+    console.log(chalk.dim('  Open it with `mercury web` (a one-time sign-in link). Phones and other computers connect with /server pair or a device token.'));
   } else {
     console.log(chalk.dim('  Web dashboard disabled. You can enable it later with `mercury doctor`.'));
   }
@@ -4325,14 +4296,12 @@ program
       const port = opts.port !== undefined ? Number(opts.port) : undefined;
       const { changed } = applyHeadlessSetup(config, { owner: opts.owner, agentName: opts.agentName, port });
       saveConfig(ensureCreatorField(config));
-      // The dashboard password exists from now on; shown once, like the wizard does.
-      const webAuth = initWebAuth();
-      const result = { ok: true, owner: config.identity.owner, agentName: config.identity.name, webPort: config.web.port, changed, username: webAuth.username, password: webAuth.password || null };
+      const result = { ok: true, owner: config.identity.owner, agentName: config.identity.name, webPort: config.web.port, changed };
       if (opts.json) {
         console.log(JSON.stringify(result));
       } else {
         console.log(chalk.green(`  ✓ Mercury configured for ${config.identity.owner} · dashboard on port ${config.web.port}`));
-        if (webAuth.password) console.log(`  Dashboard login: ${webAuth.username} / ${webAuth.password}  ${chalk.dim('(shown once; change it in Settings)')}`);
+        console.log(chalk.dim('  Open the dashboard with mercury web.'));
       }
       return;
     }
@@ -4350,14 +4319,18 @@ program
   .option('--storage', 'Show SQLite backend, database files and row counts')
   .option('--mcp', 'Connect to each configured MCP server and report its status')
   .option('--plugins', 'Check installed plugins and why any are turned off')
-  .option('--security', 'Check remote access and security (password, devices, file permissions, tunnel)')
+  .option('--security', 'Check remote access and security (devices, file permissions, tunnel)')
   .action(async (opts) => {
     if (opts.security) {
       const { securityCheck, summarizeFindings } = await import('./security/check.js');
       const { findingsText } = await import('./security/server-menu.js');
-      const findings = securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
+      const { opsForThisComputer } = await import('./cli/server-cli.js');
+      const { ops, live } = await opsForThisComputer();
+      if (!live) await (await import('./security/tunnel.js')).refreshTailscale({ port: (await import('./web/auth.js')).getWebPort() });
+      const findings = live ? (await ops.status()).check.findings : securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
       console.log(`\n  Security: ${summarizeFindings(findings)}\n`);
       console.log(findingsText(findings).split('\n').map((l) => `  ${l}`).join('\n'));
+      if (!live) console.log(chalk.dim('\n  Mercury is not running, so this check could not include recent remote requests.'));
       console.log(chalk.dim('\n  Manage remote access with `mercury server` (or /server in the terminal chat).\n'));
       if (findings.some((f) => f.level === 'risk')) process.exitCode = 1;
       return;
@@ -4387,7 +4360,10 @@ program
     {
       // One line about security on every doctor run; details with --security.
       const { securityCheck, summarizeFindings } = await import('./security/check.js');
-      const findings = securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
+      const { opsForThisComputer } = await import('./cli/server-cli.js');
+      const { ops, live } = await opsForThisComputer();
+      if (!live) await (await import('./security/tunnel.js')).refreshTailscale({ port: (await import('./web/auth.js')).getWebPort() });
+      const findings = live ? (await ops.status()).check.findings : securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
       const summary = summarizeFindings(findings);
       const line = `  Security: ${summary}${summary === 'All good' ? '' : ' — run `mercury doctor --security`'}`;
       console.log(findings.some((f) => f.level === 'risk') ? chalk.yellow(line) : chalk.dim(line));
@@ -5450,24 +5426,42 @@ program
   });
 
 program
-  .command('web-reset-password')
-  .description('Reset the web dashboard password')
-  .argument('[password]', 'New password (prompted if omitted)')
-  .action(async (password?: string) => {
-    console.log('');
-    if (!password) {
-      password = await ask(chalk.white('  New web dashboard password: '));
-    }
-    if (!password) {
-      console.log(chalk.red('  Password cannot be empty.'));
-      console.log('');
-      process.exit(1);
-    }
-    setWebPassword(password);
-    console.log(chalk.green('  ✓ Web dashboard password updated.'));
-    console.log(chalk.dim(`  Login at http://localhost:${loadConfig().web.port}`));
-    console.log('');
+  .command('web-reset-password', { hidden: true })
+  .description('Removed: Mercury has no password')
+  .action(() => {
+    console.log(chalk.yellow('\n  Mercury no longer has a password.'));
+    console.log(chalk.dim('  Open the dashboard here with mercury web. Phones and other computers: /server pair (QR code) or /server token <name>.\n'));
   });
+
+program
+  .command('web')
+  .description('Open the web dashboard here, signed in (a one-time link)')
+  .option('--print', 'Print the link instead of opening the browser')
+  .action(async (opts: { print?: boolean }) => {
+    const { readAttachToken, getWebPort } = await import('./web/auth.js');
+    const token = readAttachToken();
+    const base = `http://127.0.0.1:${getWebPort()}`;
+    let url: string | null = null;
+    try {
+      const res = token ? await fetch(`${base}/api/security/browser-link`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000) }) : null;
+      if (res?.ok) url = ((await res.json()) as { url: string }).url;
+    } catch { /* not running */ }
+    if (!url) {
+      console.log(chalk.yellow('\n  Mercury is not running. Start it with mercury start, then run mercury web.\n'));
+      process.exitCode = 1;
+      return;
+    }
+    if (opts.print) { console.log(url); return; }
+    const { openUrl } = await import('./utils/open-url.js');
+    try {
+      await openUrl(url);
+      console.log(chalk.green('\n  ✓ Opened the dashboard in your browser.'));
+      console.log(chalk.dim('  The link works once, for 5 minutes.\n'));
+    } catch {
+      console.log(`\n  Open this link in your browser (it works once, for 5 minutes):\n  ${url}\n`);
+    }
+  });
+
 
 interface McpAddOptions {
   stdio?: string;

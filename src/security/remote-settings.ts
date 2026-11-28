@@ -20,15 +20,9 @@ export interface RemoteSettings {
   maxDevices: number;
   /** A device unused this many days stops working until approved again. 0 = never. */
   idleDays: number;
-  /**
-   * Other devices (the apps, a browser elsewhere) may sign in with the
-   * username and password. Off by default: devices connect with a device
-   * token made on this computer (/server token, mercury devices add).
-   */
-  passwordSignIn: boolean;
 }
 
-export const DEFAULT_REMOTE: RemoteSettings = { enabled: true, allowIps: [], allowShell: false, maxDevices: 10, idleDays: 30, passwordSignIn: false };
+export const DEFAULT_REMOTE: RemoteSettings = { enabled: true, allowIps: [], allowShell: false, maxDevices: 10, idleDays: 30 };
 
 export function remoteSettingsPath(): string {
   return join(getMercuryHome(), 'remote.json');
@@ -44,7 +38,6 @@ function normalize(raw: Partial<RemoteSettings>): RemoteSettings {
     allowShell: raw.allowShell === true,
     maxDevices: num(raw.maxDevices, DEFAULT_REMOTE.maxDevices, 1, 200),
     idleDays: num(raw.idleDays, DEFAULT_REMOTE.idleDays, 0, 3650),
-    passwordSignIn: raw.passwordSignIn === true,
   };
 }
 

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { createDevice, getDevice, listDevices, revokeAllDevices, revokeDevice } from '../devices.js';
-import { authenticateRequest, isThisComputer, lastRemoteRequest, principalKey } from '../middleware.js';
+import { authenticateRequest, isThisComputer, lastPlainHttpRequest, lastRemoteRequest, principalKey } from '../middleware.js';
 import { approvalRoutes } from '../owner-gate.js';
 import { ownerApprovals } from '../../security/owner-approvals.js';
 import { readRemoteSettings, writeRemoteSettings, type RemoteSettings } from '../../security/remote-settings.js';
@@ -8,7 +8,12 @@ import { parseIpRule } from '../../security/ip-match.js';
 import { audit, readAudit } from '../../security/audit.js';
 import { closeStreams } from '../../security/live-streams.js';
 import { securityCheck, summarizeFindings } from '../../security/check.js';
-import { sessionCount } from '../auth.js';
+import { getWebPort, sessionCount } from '../auth.js';
+import { phoneAddressStatus, savePhoneAddress, startPairing } from '../../security/server-ops.js';
+import { refreshTailscale } from '../../security/tunnel.js';
+import { browserLinkUrl, browserLinks } from '../../security/browser-links.js';
+import { pairCodes, type PairOutcome } from '../../security/pair-codes.js';
+import { qrSvg } from '../../plugins/qr-svg.js';
 
 /**
  * Remote access and its security, for the owner on this computer (`/server`,
@@ -17,7 +22,7 @@ import { sessionCount } from '../auth.js';
  * owner can ask how its own question stands.
  *
  *   GET    /api/security/status                  settings, devices, waiting questions, last remote request, check
- *   PUT    /api/security/remote                  { enabled?, allowIps?, allowShell?, maxDevices?, idleDays?, passwordSignIn? }
+ *   PUT    /api/security/remote                  { enabled?, allowIps?, allowShell?, maxDevices?, idleDays? }
  *   GET    /api/security/approvals               questions waiting for the owner
  *   POST   /api/security/approvals/:id           { decision: "allow" | "deny" } (id or code)
  *   GET    /api/security/approvals/:id/status    the asking device's own question
@@ -38,8 +43,9 @@ security.use('/api/security/*', async (c, next) => {
   return next();
 });
 
-function status() {
-  const findings = securityCheck({ lastRemote: lastRemoteRequest(), cloudConnected: cloudConnected() });
+async function status() {
+  const phone = await phoneAddressStatus();
+  const findings = securityCheck({ lastRemote: lastRemoteRequest(), lastPlainHttp: lastPlainHttpRequest(), cloudConnected: cloudConnected() });
   return {
     remote: readRemoteSettings(),
     devices: listDevices(),
@@ -48,10 +54,11 @@ function status() {
     approvalRoutes: approvalRoutes(),
     lastRemote: lastRemoteRequest(),
     check: { summary: summarizeFindings(findings), findings },
+    phone,
   };
 }
 
-security.get('/api/security/status', (c) => c.json(status()));
+security.get('/api/security/status', async (c) => c.json(await status()));
 
 security.put('/api/security/remote', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Partial<RemoteSettings>;
@@ -60,7 +67,6 @@ security.put('/api/security/remote', async (c) => {
   if (typeof body.allowShell === 'boolean') patch.allowShell = body.allowShell;
   if (typeof body.maxDevices === 'number') patch.maxDevices = body.maxDevices;
   if (typeof body.idleDays === 'number') patch.idleDays = body.idleDays;
-  if (typeof body.passwordSignIn === 'boolean') patch.passwordSignIn = body.passwordSignIn;
   if (Array.isArray(body.allowIps)) {
     const bad = body.allowIps.find((r) => !parseIpRule(String(r)));
     if (bad !== undefined) return c.json({ error: `“${bad}” is not an address or range (e.g. 203.0.113.7 or 100.64.0.0/10).` }, 400);
@@ -70,7 +76,7 @@ security.put('/api/security/remote', async (c) => {
   const next = writeRemoteSettings(patch);
   const changes = (Object.keys(patch) as Array<keyof RemoteSettings>).filter((k) => JSON.stringify(before[k]) !== JSON.stringify(next[k]));
   if (changes.length) audit('remote.changed', { by: 'this computer', detail: changes.map((k) => `${k}: ${JSON.stringify(next[k])}`).join(', ') });
-  return c.json(status());
+  return c.json(await status());
 });
 
 security.get('/api/security/approvals', (c) => c.json({ pending: ownerApprovals().pending(), routes: approvalRoutes() }));
@@ -121,10 +127,49 @@ security.delete('/api/security/devices', (c) => {
   return c.json({ revoked: ids.length });
 });
 
+security.post('/api/security/pair', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { address?: unknown; by?: unknown };
+  const by = typeof body.by === 'string' && /^[a-z -]{2,20}$/i.test(body.by) ? body.by : 'this computer';
+  const started = await startPairing(typeof body.address === 'string' ? body.address : undefined, by);
+  if (!started.ok) return c.json(started, 409);
+  return c.json({ ...started, qrImage: `data:image/svg+xml;base64,${Buffer.from(qrSvg(started.url)).toString('base64')}` });
+});
+
+security.get('/api/security/pair/:id', async (c) => {
+  const codes = pairCodes();
+  const id = c.req.param('id');
+  const now = codes.status(id);
+  if (now === null) return c.json({ status: 'expired' });
+  if (now !== 'waiting') return c.json(now);
+  const waitMs = Math.min(25_000, Math.max(0, Number(c.req.query('waitMs')) || 25_000));
+  const later = await Promise.race<PairOutcome | 'waiting'>([
+    codes.wait(id),
+    new Promise((r) => { const t = setTimeout(() => r('waiting'), waitMs); t.unref?.(); }),
+  ]);
+  return c.json(later === 'waiting' ? { status: 'waiting' } : later);
+});
+
+security.delete('/api/security/pair', (c) => c.json({ cancelled: pairCodes().cancel() }));
+
 security.get('/api/security/audit', (c) => c.json({ entries: readAudit(Math.min(500, Math.max(1, Number(c.req.query('limit')) || 50))) }));
 
-security.get('/api/security/check', (c) => {
-  const findings = securityCheck({ lastRemote: lastRemoteRequest(), cloudConnected: cloudConnected() });
+/** A one-time link that opens the dashboard signed in, for a browser on this computer. */
+security.post('/api/security/browser-link', (c) => {
+  const { code, expiresAt } = browserLinks().create();
+  return c.json({ url: browserLinkUrl(getWebPort(), code), expiresAt });
+});
+
+security.put('/api/security/address', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { address?: unknown; by?: unknown };
+  const by = typeof body.by === 'string' && /^[a-z -]{2,20}$/i.test(body.by) ? body.by : 'this computer';
+  const address = typeof body.address === 'string' ? body.address : null;
+  const saved = await savePhoneAddress(address, { live: true, by });
+  return c.json({ ...saved, ...(saved.ok ? {} : { error: saved.message }), phone: await phoneAddressStatus() }, saved.ok ? 200 : 400);
+});
+
+security.get('/api/security/check', async (c) => {
+  await refreshTailscale({ port: getWebPort() });
+  const findings = securityCheck({ lastRemote: lastRemoteRequest(), lastPlainHttp: lastPlainHttpRequest(), cloudConnected: cloudConnected() });
   return c.json({ summary: summarizeFindings(findings), findings });
 });
 

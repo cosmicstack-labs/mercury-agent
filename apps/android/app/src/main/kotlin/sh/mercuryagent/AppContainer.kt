@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import sh.mercuryagent.core.ConnectionStore
@@ -142,6 +143,18 @@ class AppContainer(context: Context) {
   val openChat: kotlinx.coroutines.flow.Flow<String> = opens.receiveAsFlow()
 
   fun open(key: String) { opens.trySend(key) }
+
+  /**
+   * A mercury://pair link opened from outside (the phone's camera): the connect screen takes it (once)
+   * and asks "Connect to <host>?" before anything is sent. With a Mercury connected, Add another
+   * Mercury opens for it.
+   */
+  val pendingPairLink = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+  fun pairLink(raw: String) { pendingPairLink.value = raw }
+
+  /** The pending pairing link, taken once. */
+  fun takePairLink(): String? = pendingPairLink.getAndUpdate { null }
 
   /**
    * Call Mercury was asked for from outside the chat (the drawer, the launcher's app shortcut): the

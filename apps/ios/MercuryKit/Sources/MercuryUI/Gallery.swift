@@ -90,16 +90,14 @@ public enum Gallery {
     let store = ConnectionStore(defaults: UserDefaults(suiteName: "gallery")!)
     func connect(_ step: ConnectModel.Step, error: String? = nil) -> AnyView {
       let m = ConnectModel(store: store)
-      m.step = step; m.address = "mercury.tail1234.ts.net"; m.username = "salman"; m.error = error
+      m.step = step; m.address = "mercury.tail1234.ts.net"; m.error = error
       return AnyView(ConnectView(model: m))
     }
-    let pairing = Pairing(pairingId: "p1", pollToken: "t", code: "K7Q2M", message: nil, expiresAt: nil)
     return [
       ("01a-connect-welcome", connect(.welcome)),
-      ("01b-connect-signin", connect(.signIn)),
-      ("01c-connect-signin-error", connect(.signIn, error: MercuryError.badCredentials.errorDescription)),
-      ("01d-connect-waiting", connect(.waiting(pairing))),
-      ("01e-connect-token", connect(.token)),
+      ("01e-connect-enter", connect(.enter)),
+      ("01j-connect-scan", connect(.scan)),
+      ("01k-connect-enter-error", connect(.enter, error: ConnectSecret.Problem.neither.errorDescription)),
       ("01f-connect-name", AnyView(IdentityGallery.nameStep(store: store))),
       ("01g-logo-sheet", AnyView(IdentityGallery.sheet)),
       ("01h-mercury-switcher", AnyView(IdentityGallery.switcher())),

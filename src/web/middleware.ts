@@ -5,18 +5,22 @@ import { checkDeviceToken, looksLikeDeviceToken, noteDeviceSeen } from './device
 import { requestOrigin, hostName, type RequestOrigin } from '../security/request-origin.js';
 import { readRemoteSettings } from '../security/remote-settings.js';
 import { ipAllowed } from '../security/ip-match.js';
+import { hostAllowsPlainHttp } from '../security/tunnel.js';
 import { audit } from '../security/audit.js';
 import { loadConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
-const PUBLIC_PATHS = new Set(['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/token', '/api/auth/token/pending', '/api/health']);
+const PUBLIC_PATHS = new Set(['/login', '/login/once', '/api/auth/login', '/api/auth/logout', '/api/auth/token', '/api/auth/token/pending', '/api/auth/pair', '/api/health']);
 
 export type Principal =
   | { kind: 'session'; key: string; via: 'cookie' | 'bearer' }
   | { kind: 'attach' }
-  | { kind: 'device'; deviceId: string; deviceName: string };
+  | { kind: 'device'; deviceId: string; deviceName: string; viaCookie?: boolean };
 
 const origins = new WeakMap<Request, RequestOrigin>();
+/** The cookie a browser signed in with a device token carries (POST /api/auth/login). */
+export const DEVICE_COOKIE = 'mercury_device';
+
 const principals = new WeakMap<Request, Principal | null>();
 const expiredDevices = new WeakMap<Request, { name: string }>();
 
@@ -59,6 +63,13 @@ export function authenticateRequest(c: Context): Principal | null {
 function resolvePrincipal(c: Context): Principal | null {
   const cookieToken = getCookie(c, getSessionCookieName());
   if (cookieToken && validateSession(cookieToken)) return { kind: 'session', key: sessionKey(cookieToken), via: 'cookie' };
+  // A browser signed in with a device token keeps that token as its cookie,
+  // so revoking the device signs the browser out at once.
+  const deviceCookie = getCookie(c, DEVICE_COOKIE);
+  if (deviceCookie && looksLikeDeviceToken(deviceCookie)) {
+    const r = checkDeviceToken(deviceCookie);
+    if (r.ok) return { kind: 'device', deviceId: r.device.id, deviceName: r.device.name, viaCookie: true };
+  }
 
   const bearer = bearerToken(c);
   if (!bearer) return null;
@@ -142,8 +153,11 @@ function crossSite(c: Context): boolean {
 }
 
 /** The last request from outside this computer: what the security screen says about the tunnel. */
-let lastRemote: { at: number; proxied: boolean; clientIpKnown: boolean; ip: string } | null = null;
+let lastRemote: { at: number; proxied: boolean; clientIpKnown: boolean; ip: string; scheme: RequestOrigin['scheme']; via: RequestOrigin['via'] } | null = null;
 export function lastRemoteRequest(): typeof lastRemote { return lastRemote; }
+
+let lastPlainHttp: { at: number; ip: string } | null = null;
+export function lastPlainHttpRequest(): typeof lastPlainHttp { return lastPlainHttp; }
 
 const blockedLogged = new Map<string, number>();
 function logBlocked(ip: string, detail: string): void {
@@ -171,7 +185,8 @@ export async function authGuard(c: Context, next: Next) {
 
   // Remote clients: remote access has to be on, and their address allowed.
   if (!origin.local) {
-    lastRemote = { at: Date.now(), proxied: origin.proxied, clientIpKnown: origin.clientIpKnown, ip: origin.clientIp };
+    lastRemote = { at: Date.now(), proxied: origin.proxied, clientIpKnown: origin.clientIpKnown, ip: origin.clientIp, scheme: origin.scheme, via: origin.via };
+    if (origin.scheme === 'http' && origin.clientIpKnown && !hostAllowsPlainHttp(origin.clientIp)) lastPlainHttp = { at: lastRemote.at, ip: origin.clientIp };
     const remote = readRemoteSettings();
     if (!remote.enabled) {
       logBlocked(origin.clientIp, 'remote access is off');
@@ -202,7 +217,7 @@ export async function authGuard(c: Context, next: Next) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
     // Cookies ride along with any request the browser makes; a change needs a same-site page.
-    if (principal.kind === 'session' && principal.via === 'cookie' && !SAFE_METHODS.has(c.req.method) && crossSite(c)) {
+    if (((principal.kind === 'session' && principal.via === 'cookie') || (principal.kind === 'device' && principal.viaCookie)) && !SAFE_METHODS.has(c.req.method) && crossSite(c)) {
       return c.json({ error: 'Cross-site request refused' }, 403);
     }
     if (principal.kind === 'device') {
