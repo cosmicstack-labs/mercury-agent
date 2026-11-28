@@ -1,8 +1,39 @@
 import { requireOwner } from '../owner-gate.js';
 import { Hono } from 'hono';
-import { getActiveProviders, isProviderConfigured, loadConfig, saveConfig, type MercuryConfig, type ProviderConfig, type ProviderName } from '../../utils/config.js';
+import { getActiveProviders, isProviderConfigured, loadConfig, saveConfig, type MercuryConfig, type ProviderConfig, type ProviderName, type ProviderRouting } from '../../utils/config.js';
 import { PROVIDER_META, validateApiKey, validateBaseUrl, validateModelName } from '../../providers/provider-meta.js';
 import { logger } from '../../utils/logger.js';
+
+/**
+ * OpenRouter's endpoint pin, read from a request body. Unknown keys are
+ * dropped rather than stored: `mercury.yaml` is hand-editable, and a typo that
+ * sat there unread would look like a routing setting that does nothing.
+ *
+ * Returns null for a body that cannot be honoured, so the route can answer 400
+ * instead of writing half a pin.
+ */
+function parseRouting(raw: unknown): ProviderRouting | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const source = raw as Record<string, unknown>;
+  const routing: ProviderRouting = {};
+
+  for (const key of ['order', 'quantizations'] as const) {
+    const value = source[key];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || entry.trim().length === 0)) {
+      return null;
+    }
+    const cleaned = value.map((entry) => (entry as string).trim());
+    if (cleaned.length > 0) routing[key] = cleaned;
+  }
+
+  if (source.allowFallbacks !== undefined) {
+    if (typeof source.allowFallbacks !== 'boolean') return null;
+    routing.allowFallbacks = source.allowFallbacks;
+  }
+
+  return routing;
+}
 
 function maskApiKey(key: string): string {
   if (!key || key.length < 8) return key ? '••••••' : '';
@@ -70,6 +101,8 @@ function describe(name: ProviderName, p: ProviderConfig, config: MercuryConfig) 
     baseUrl: p.baseUrl,
     model: p.model,
     enabled: p.enabled,
+    // OpenRouter only, and absent when nothing is pinned.
+    ...(p.routing ? { routing: p.routing } : {}),
     configured: isProviderConfigured(p),
     isDefault: config.providers.default === name,
     recommended: name === RECOMMENDED_PROVIDER,
@@ -239,12 +272,26 @@ providers.put('/api/providers/roles', async (c) => {
 providers.post('/api/providers/:name', async (c) => {
   const name = c.req.param('name');
   if (!isName(name)) return c.json({ error: 'Unknown provider' }, 400);
-  const body = (await c.req.json().catch(() => ({}))) as { apiKey?: unknown; baseUrl?: unknown; model?: unknown; enabled?: unknown };
+  const body = (await c.req.json().catch(() => ({}))) as { apiKey?: unknown; baseUrl?: unknown; model?: unknown; enabled?: unknown; routing?: unknown };
   const config = loadConfig();
   const p = config.providers[name];
   const meta = PROVIDER_META[name];
   if (meta.signInOnly && (body.apiKey !== undefined || body.baseUrl !== undefined)) {
     return c.json({ error: `${meta.label} signs in with your account (run \`mercury doctor\`); it has no key to set.` }, 400);
+  }
+
+  if (body.routing !== undefined) {
+    // A pin on a gateway that does not read it would be a config line that
+    // never applies, so it is refused rather than stored.
+    if (name !== 'openrouter') {
+      return c.json({ error: 'Endpoint routing is OpenRouter-only' }, 400);
+    }
+    const routing = parseRouting(body.routing);
+    if (routing === null) {
+      return c.json({ error: 'Invalid routing: order and quantizations are lists of names' }, 400);
+    }
+    if (Object.keys(routing).length === 0) delete p.routing;
+    else p.routing = routing;
   }
 
   // Pointing a saved key or password at another server, from another device, is the owner's call.
