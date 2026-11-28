@@ -164,7 +164,7 @@ export const chat = {
   permission: (id: string, action: string, targetId?: string) =>
     post<{ resolved: boolean }>(`/api/chat/permission/${id}`, { action, targetId }),
   models: {
-    list: () => get<ModelsResponse>("/api/chat/models"),
+    list: (refresh = false) => get<ModelsResponse>(refresh ? "/api/chat/models?refresh=1" : "/api/chat/models"),
     switch: (provider: string, model?: string) =>
       post<{ ok: boolean; message: string }>("/api/chat/models/switch", {
         provider,
@@ -665,6 +665,7 @@ export interface ModelDescription {
 export interface ModelsResponse {
   current: { name: string; model: string } & ModelDescription;
   providers: ({ name: string; model: string; available: boolean; isCurrent?: boolean } & ModelDescription)[];
+  notices?: string[];
 }
 
 export interface CodeStatus {

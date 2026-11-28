@@ -545,7 +545,7 @@ chat.post('/api/chat/permission/:id', async (c) => {
 
 /**
  * Failed model lookups are remembered briefly so that opening the picker
- * while Ollama is down (or ChatGPT is signed out) doesn't wait on a timeout
+ * while a provider is down doesn't wait on a timeout
  * every time.
  */
 const LOOKUP_RETRY_MS = 30_000;
@@ -569,30 +569,6 @@ async function listOllamaModels(server: Pick<ProviderConfig, 'baseUrl' | 'userna
     return (data.models ?? []).map((m) => m.name ?? '').filter(Boolean).sort();
   } catch {
     failedLookups.set(lookup, Date.now());
-    return [];
-  }
-}
-
-/** Models the signed-in ChatGPT plan offers; cached because the lookup is slow. */
-let chatgptModelCache: { at: number; models: string[] } | null = null;
-const CHATGPT_MODEL_TTL_MS = 10 * 60 * 1000;
-
-async function listChatGPTModels(): Promise<string[]> {
-  if (chatgptModelCache && Date.now() - chatgptModelCache.at < CHATGPT_MODEL_TTL_MS) {
-    return chatgptModelCache.models;
-  }
-  if (recentlyFailed('chatgpt')) return [];
-  try {
-    const { getValidChatGPTSession } = await import('../../auth/chatgpt-session.js');
-    const { fetchChatGPTModels } = await import('../../auth/chatgpt-models.js');
-    const session = await getValidChatGPTSession();
-    if (!session) throw new Error('not signed in');
-    const catalog = await fetchChatGPTModels(session.accessToken, session.accountId);
-    chatgptModelCache = { at: Date.now(), models: catalog.models };
-    failedLookups.delete('chatgpt');
-    return catalog.models;
-  } catch {
-    failedLookups.set('chatgpt', Date.now());
     return [];
   }
 }
@@ -635,9 +611,13 @@ async function listMercuryCloudModels(): Promise<string[]> {
 }
 
 /** Providers that serve many models list each one; others list their configured model. */
-async function listProviderModels(p: ProviderConfig): Promise<string[]> {
+async function listProviderModels(p: ProviderConfig, forceRefresh: boolean): Promise<string[]> {
   if (p.name === 'ollamaLocal') return listOllamaModels(p);
-  if (p.name === 'chatgptWeb') return [...(await listChatGPTModels())];
+  if (p.name === 'chatgptWeb') {
+    const { fetchProviderModelCatalog } = await import('../../utils/provider-models.js');
+    const catalog = await fetchProviderModelCatalog('chatgptWeb', p, { forceRefresh });
+    return [catalog.recommendedModel, ...catalog.models];
+  }
   if (p.name === 'mercuryCloud') return listMercuryCloudModels();
   return [];
 }
@@ -678,15 +658,25 @@ chat.get('/api/chat/models', async (c) => {
   const currentPc = active.find((p) => p.name === current.name);
   if (currentPc && current.model) await discoverReasoningCaps(currentPc, current.model).catch(() => undefined);
   const entries: ({ name: string; model: string; available: boolean; isCurrent: boolean } & ReturnType<typeof describeModel>)[] = [];
-  const perProvider = await Promise.all(active.map((p) => listProviderModels(p)));
+  const forceRefresh = c.req.query('refresh') === '1';
+  const notices: string[] = [];
+  const perProvider = await Promise.all(active.map(async (p) => {
+    try {
+      return await listProviderModels(p, forceRefresh);
+    } catch (err) {
+      notices.push(err instanceof Error ? err.message : 'Could not load the model catalog.');
+      return [];
+    }
+  }));
   for (const [i, p] of active.entries()) {
     const models = perProvider[i];
+    const configuredAvailable = p.name !== 'chatgptWeb' || !models.length || models.includes(p.model);
     if (models.length && !models.includes(p.model)) models.unshift(p.model);
     for (const model of models.length ? models : [p.model]) {
       entries.push({
         name: p.name,
         model,
-        available: true,
+        available: model !== p.model || configuredAvailable,
         isCurrent: p.name === current.name && model === current.model,
         ...describeModel(p.name, model),
       });
@@ -697,8 +687,7 @@ chat.get('/api/chat/models', async (c) => {
   const chatKey = sessionId && isValidModelRef(sessionId) ? sessionId : undefined;
   const effort = effortFor(current.name, current.model, chatKey);
   return c.json({
-    // Lookups that failed, said plainly (an expired Mercury Cloud sign-in).
-    notices: active.some((p) => p.name === 'mercuryCloud') && cloudProblem ? [cloudProblem] : [],
+    notices: active.some((p) => p.name === 'mercuryCloud') && cloudProblem ? [...notices, cloudProblem] : notices,
     current: {
       ...current,
       ...describeModel(current.name, current.model),

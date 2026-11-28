@@ -114,13 +114,7 @@ const OPENAI_COMPAT_PREFERRED_MODELS = [] as const;
 const LM_STUDIO_PREFERRED_MODELS = [] as const;
 const ATOMIC_CHAT_PREFERRED_MODELS = [] as const;
 
-const CHATGPT_WEB_PREFERRED_MODELS = [
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.5',
-  'gpt-6-astra',
-  'gpt-5.6-luna',
-] as const;
+const CHATGPT_WEB_PREFERRED_MODELS = [] as const;
 
 const GITHUB_COPILOT_PREFERRED_MODELS = [
   'claude-sonnet-4.6',
@@ -626,13 +620,14 @@ async function fetchMercuryCloudModels(config: ProviderConfig): Promise<Provider
 export async function fetchProviderModelCatalog(
   provider: ProviderName,
   config: ProviderConfig,
-  opts: { limit?: number } = {},
+  opts: { limit?: number; forceRefresh?: boolean } = {},
 ): Promise<ProviderModelCatalog> {
-  if (opts.limit !== undefined) return modelLimit.run(Math.max(1, opts.limit), () => fetchCatalog(provider, config));
-  return fetchCatalog(provider, config);
+  const lookup = () => fetchCatalog(provider, config, opts.forceRefresh);
+  if (opts.limit !== undefined) return modelLimit.run(Math.max(1, opts.limit), lookup);
+  return lookup();
 }
 
-async function fetchCatalog(provider: ProviderName, config: ProviderConfig): Promise<ProviderModelCatalog> {
+async function fetchCatalog(provider: ProviderName, config: ProviderConfig, forceRefresh?: boolean): Promise<ProviderModelCatalog> {
   if (provider === 'mercuryCloud') {
     return fetchMercuryCloudModels(config);
   }
@@ -678,7 +673,7 @@ async function fetchCatalog(provider: ProviderName, config: ProviderConfig): Pro
         'ChatGPT Web is not authenticated. Run `mercury doctor` to set up OAuth.',
       );
     }
-    return fetchChatGPTModels(session.accessToken, session.accountId);
+    return fetchChatGPTModels(session, { forceRefresh });
   }
 
   if (provider === 'githubCopilot') {

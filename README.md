@@ -259,6 +259,8 @@ Mercury tries your default provider first and falls back to the others if it fai
 
 LiteLLM and GitHub Copilot endpoints are also available through `mercury doctor`.
 
+For **OpenAI (ChatGPT Plus/Pro)**, Mercury discovers models from the signed-in account's Codex catalog. Open the dashboard's chat model picker to see the catalog. Mercury refreshes it on demand, reusing successful lookups for up to ten minutes. Click **Refresh ChatGPT models** in the picker to check immediately. Refreshing the list leaves your configured model in place.
+
 A server behind a reverse proxy with a username and password (for example Ollama behind nginx) works with Ollama Local, OpenAI-compatible, LM Studio, LiteLLM and Atomic Chat. Set `username` and `password` on the provider in `mercury.yaml`; Mercury then sends `Authorization: Basic ...` instead of the API key. Use `https://` for any server that is not on your own machine. Behind Cloudflare, set SSL/TLS mode to Full (strict): in Flexible mode the hop from Cloudflare to your server is plain http.
 
 ```yaml

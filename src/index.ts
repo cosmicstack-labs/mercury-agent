@@ -1426,7 +1426,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
             try {
               const { fetchChatGPTModels } = await import('./auth/chatgpt-models.js');
               console.log(chalk.dim('  Fetching available models...'));
-              const catalog = await fetchChatGPTModels(session.accessToken, session.accountId);
+              const catalog = await fetchChatGPTModels(session, { forceRefresh: true });
               const model = await chooseProviderModel(
                 'ChatGPT Plus/Pro',
                 catalog.recommendedModel,
@@ -1438,7 +1438,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
               console.log(chalk.green(`  ✓ OpenAI (ChatGPT Plus/Pro) configured with model: ${model}`));
             } catch (err: any) {
               console.log(chalk.yellow(`  Could not fetch models: ${err.message || err}`));
-              const defaultModel = 'gpt-5.4-mini';
+              const defaultModel = config.providers.chatgptWeb.model;
               const manualModel = await ask(chalk.white(`  Enter model name [Enter for ${defaultModel}]: `));
               const model = manualModel || defaultModel;
               config.providers.chatgptWeb.apiKey = '';

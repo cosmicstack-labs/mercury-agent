@@ -98,6 +98,13 @@ describe('providers settings', () => {
     expect(yaml()).not.toContain('sk-ant-abcdefghijklmnopqrstuvwx');
   });
 
+  it('refreshes the account catalog during an explicit ChatGPT check', async () => {
+    catalog.fn.mockResolvedValue({ recommendedModel: 'gpt-6.2-sol', models: ['gpt-6.1-sol'] });
+    const res = await call('POST', '/api/providers/chatgptWeb/check');
+    expect(await res.json()).toMatchObject({ ok: true, models: ['gpt-6.2-sol', 'gpt-6.1-sol'] });
+    expect(catalog.fn.mock.calls[0][2]).toEqual({ limit: 5000, forceRefresh: true });
+  });
+
   it('points a vendor rejection at the key field', async () => {
     catalog.fn.mockRejectedValue(new Error('Anthropic rejected the API key (401). Please re-enter it.'));
     const body = await (await call('POST', '/api/providers/anthropic/check', { apiKey: 'sk-ant-abcdefghijklmnopqrstuvwx' })).json();
