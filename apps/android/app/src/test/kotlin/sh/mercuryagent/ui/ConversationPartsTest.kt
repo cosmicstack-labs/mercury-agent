@@ -114,6 +114,8 @@ class ConversationPartsTest {
     val doc = ArtifactRef("2", "r.pdf", kind = "pdf", size = 1_500_000)
     assertTrue(ReplyMediaRules.isGenerated(img))
     assertFalse(ReplyMediaRules.isGenerated(doc))
+    assertFalse(ReplyMediaRules.isPlayable(doc))
+    assertTrue(ReplyMediaRules.isPlayable(img.copy(tool = "run_command")))
     assertEquals("cats", ReplyMediaRules.prompt(listOf(img, img.copy(id = "3"))))
     assertNull(ReplyMediaRules.prompt(listOf(img, img.copy(prompt = "dogs"))))
     assertEquals("PDF · 1.5 MB", ReplyMediaRules.caption(doc))

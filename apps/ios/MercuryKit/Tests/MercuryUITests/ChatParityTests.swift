@@ -164,6 +164,9 @@ struct ChatParityTests {
     #expect(ReplyMedia.isGenerated(ArtifactRef(id: "1", name: "a.png", kind: "image", mime: nil, size: nil, tool: "generate_image")))
     #expect(!ReplyMedia.isGenerated(ArtifactRef(id: "2", name: "shot.png", kind: "image", mime: nil, size: nil, tool: "run_command")))
     #expect(ReplyMedia.isGenerated(ArtifactRef(id: "3", name: "song.mp3", kind: "audio", mime: nil, size: nil, tool: "generate_music")))
+    // Shown large either way: a downloaded picture too, but not a document.
+    #expect(ReplyMedia.isPlayable(ArtifactRef(id: "2", name: "shot.png", kind: "image", mime: nil, size: nil, tool: "run_command")))
+    #expect(!ReplyMedia.isPlayable(ArtifactRef(id: "4", name: "a.pdf", kind: "pdf", mime: nil, size: nil, tool: nil)))
   }
 
   @Test func mediaPendingAndReady() {

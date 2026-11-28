@@ -1,6 +1,6 @@
-import { ChevronDown, Copy, Download, FileText, FolderOpen, MessageSquareText, Trash2 } from "lucide-react";
+import { ChevronDown, Copy, Download, ExternalLink, FileText, FolderOpen, MessageSquareText, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { artifactBlobUrl, artifactText, artifactsApi, canExportAsDocument, exportArtifact, formatBytes, KIND_LABEL, type ArtifactItem, type ArtifactKind, type ExportFormat } from "~/api/artifacts";
+import { artifactBlobUrl, artifactText, artifactsApi, canExportAsDocument, exportArtifact, formatBytes, KIND_LABEL, type ArtifactItem, type ExportFormat } from "~/api/artifacts";
 import { Menu, MenuItem } from "~/components/ui/Menu";
 import { Markdown } from "~/components/Markdown";
 import { Button } from "~/components/ui/Button";
@@ -13,8 +13,8 @@ import { ArtifactIcon } from "./ArtifactCard";
 
 /**
  * One artifact, previewed for its kind: an image, a video or audio player,
- * the PDF itself, rendered Markdown, text, a CSV table. Office files can't
- * be previewed here, so they offer saving and opening instead. Actions:
+ * the PDF itself, a web page, rendered Markdown, text, a CSV table. Anything
+ * else opens in its own app (or saves). Actions:
  * save a copy, show it in Finder, copy its path, open the conversation it
  * came from, delete Mercury's copy.
  */
@@ -115,11 +115,22 @@ function useBlob(id: string): { url: string | null; failed: boolean } {
   return { url, failed };
 }
 
+/** A web page Mercury saved or made (.html). */
+export function isWebPage(a: { name: string; mime: string }): boolean {
+  return a.mime === "text/html" || /\.html?$/i.test(a.name);
+}
+
+/** Opened in its own app instead (a file Desktop can't show), never something that would run. */
+export function canOpenOutside(a: { name: string }): boolean {
+  return !/\.(app|command|sh|bash|zsh|exe|bat|cmd|msi|pkg|dmg|jar|scpt|applescript|workflow|terminal|tool|ps1|vbs|js|py|rb|pl)$/i.test(a.name);
+}
+
 function Preview({ a }: { a: ArtifactItem }) {
+  if (isWebPage(a)) return <WebPagePreview a={a} />;
   const textual = a.kind === "text" || (a.kind === "document" && a.mime === "text/csv") || (a.kind === "file" && a.mime.startsWith("text/"));
   if (textual) return <TextPreview a={a} />;
   if (a.kind === "image" || a.kind === "video" || a.kind === "audio" || a.kind === "pdf") return <MediaPreview a={a} />;
-  return <NoPreview kind={a.kind} />;
+  return <NoPreview a={a} />;
 }
 
 function MediaPreview({ a }: { a: ArtifactItem }) {
@@ -130,6 +141,29 @@ function MediaPreview({ a }: { a: ArtifactItem }) {
   if (a.kind === "video") return <video src={url} controls className="mx-auto max-h-full max-w-full rounded-lg bg-black" />;
   if (a.kind === "audio") return <audio src={url} controls className="w-full" />;
   return <iframe src={url} title={a.name} className="h-full min-h-[480px] w-full rounded-lg border border-line bg-white" />;
+}
+
+/**
+ * A web page drawn as a page, in a sandbox: its own scripts don't run (Desktop's policy applies to
+ * it too) and it can't reach Desktop or Mercury. "Source" shows the HTML.
+ */
+function WebPagePreview({ a }: { a: ArtifactItem }) {
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [source, setSource] = useState(false);
+  useEffect(() => { let live = true; artifactText(a.id).then((t) => { if (live) setText(t); }).catch((e) => { if (live) setError(errorText(e)); }); return () => { live = false; }; }, [a.id]);
+  if (error) return <p className="text-sm text-red">{error}</p>;
+  if (text === null) return <Spinner size={13} />;
+  return (
+    <div className="flex h-full min-h-[480px] flex-col gap-2">
+      <div className="flex justify-end">
+        <Button size="sm" variant="ghost" onClick={() => setSource((v) => !v)}>{source ? "Page" : "Source"}</Button>
+      </div>
+      {source
+        ? <pre className="whitespace-pre-wrap break-words font-mono text-[12.5px] leading-relaxed text-ink" data-selectable>{text}</pre>
+        : <iframe srcDoc={text} sandbox="allow-popups allow-popups-to-escape-sandbox" title={a.name} className="min-h-[480px] w-full flex-1 rounded-lg border border-line bg-white" />}
+    </div>
+  );
 }
 
 function TextPreview({ a }: { a: ArtifactItem }) {
@@ -180,11 +214,23 @@ function CsvTable({ text }: { text: string }) {
   );
 }
 
-function NoPreview({ kind }: { kind: ArtifactKind }) {
+function NoPreview({ a }: { a: ArtifactItem }) {
+  const local = useConnections((s) => s.connections.find((c) => c.id === s.activeId)?.kind === "local");
+  const [note, setNote] = useState<string | null>(null);
+  const outside = isTauri && local && a.originalExists && canOpenOutside(a);
+  async function open() {
+    setNote(null);
+    const { openPath, revealItemInDir } = await import("@tauri-apps/plugin-opener");
+    // Desktop may open files in Mercury's own folder directly; anything else is shown in Finder.
+    try { await openPath(a.originalPath); }
+    catch { try { await revealItemInDir(a.originalPath); setNote("Shown in Finder: open it from there."); } catch (e) { setNote(errorText(e)); } }
+  }
   return (
-    <div className="flex flex-col items-center gap-2 py-12 text-center">
-      <FileText size={28} className="text-ink4" />
-      <p className="text-sm text-ink3">{kind === "document" ? "Office files can't be previewed here." : "No preview for this kind of file."} Save it or show it in Finder to open it.</p>
+    <div className="flex flex-col items-center gap-3 py-12 text-center">
+      <ArtifactIcon kind={a.kind} name={a.name} size={40} />
+      <p className="text-sm text-ink3">{a.kind === "document" ? "Office files can't be previewed here." : "No preview for this kind of file."}{outside ? " Open it in its own app." : " Save it to open it."}</p>
+      {outside && <Button size="sm" variant="primary" onClick={() => void open()}><ExternalLink size={13} /> Open</Button>}
+      {note && <p className="text-xs text-ink3">{note}</p>}
     </div>
   );
 }

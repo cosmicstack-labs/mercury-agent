@@ -20,9 +20,14 @@ struct ReplyMedia: View {
     (a.tool?.hasPrefix("generate_") ?? false) && ["image", "video", "audio"].contains(a.kind ?? "")
   }
 
+  /// Pictures, clips and sounds are shown large and playable, generated or downloaded alike.
+  static func isPlayable(_ a: ArtifactRef) -> Bool {
+    ["image", "video", "audio"].contains(a.kind ?? "")
+  }
+
   var body: some View {
-    let media = artifacts.filter(Self.isGenerated)
-    let rest = artifacts.filter { !Self.isGenerated($0) }
+    let media = artifacts.filter(Self.isPlayable)
+    let rest = artifacts.filter { !Self.isPlayable($0) }
     let images = media.filter { $0.kind == "image" }
     let others = media.filter { $0.kind != "image" }
     VStack(alignment: .leading, spacing: 10) {

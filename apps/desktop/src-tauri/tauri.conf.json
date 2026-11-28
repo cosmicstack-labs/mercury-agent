@@ -36,7 +36,7 @@
         "media-src": "'self' blob: data: http: https:",
         "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* http: https: ws: wss:",
         "worker-src": "'self' blob:",
-        "frame-src": "'none'",
+        "frame-src": "blob:",
         "object-src": "'none'"
       }
     },

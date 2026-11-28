@@ -49,14 +49,17 @@ export function ArtifactThumb({ id, kind, name, className }: { id: string; kind:
 }
 
 /** Under a reply: what this turn made, one tap from a preview. */
-/** Made by a media model (generate_image, _video, _music, _speech): shown large and playable. */
-function isGenerated(a: ArtifactRef): boolean {
-  return !!a.tool?.startsWith("generate_") && (a.kind === "image" || a.kind === "video" || a.kind === "audio");
+/**
+ * Pictures, clips and sounds are shown large and playable in the reply, whether a media model
+ * made them (generate_image, _video, _music, _speech) or Mercury downloaded or saved them.
+ */
+export function isPlayable(a: Pick<ArtifactRef, "kind">): boolean {
+  return a.kind === "image" || a.kind === "video" || a.kind === "audio";
 }
 
 /**
- * A generated picture, clip or sound in the reply itself, where its
- * placeholder was (MediaSkeleton); `fresh` reveals it from soft to sharp.
+ * A picture, clip or sound in the reply itself (a generated one where its
+ * placeholder was, MediaSkeleton); `fresh` reveals it from soft to sharp.
  */
 function GeneratedMedia({ a, fresh, onOpen, tile = false, delay = 0 }: { a: ArtifactRef; fresh: boolean; onOpen: () => void; tile?: boolean; delay?: number }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -95,13 +98,16 @@ function GeneratedMedia({ a, fresh, onOpen, tile = false, delay = 0 }: { a: Arti
   );
 }
 
+/** Picture tiles shown in a reply; more open in the full-screen viewer. */
+const SHOWN = 9;
+
 export function ArtifactStrip({ items, onOpenThread, fresh = false }: { items: ArtifactRef[]; onOpenThread?: (threadId: string) => void; fresh?: boolean }) {
   const [open, setOpen] = useState<string | null>(null);
   /** Which picture the full-screen slider shows (pictures open there; the rest in the viewer). */
   const [viewing, setViewing] = useState<number | null>(null);
   if (!items.length) return null;
-  const media = items.filter(isGenerated);
-  const rest = items.filter((a) => !isGenerated(a));
+  const media = items.filter(isPlayable);
+  const rest = items.filter((a) => !isPlayable(a));
   // Several pictures from one reply: one grid, laid out like their placeholder (mediaGrid).
   const images = media.filter((a) => a.kind === "image");
   const grid = mediaGrid(images.length);
@@ -112,7 +118,15 @@ export function ArtifactStrip({ items, onOpenThread, fresh = false }: { items: A
       {images.length > 1 && (
         <div className="flex flex-col gap-1.5" style={{ maxWidth: grid.maxWidth }}>
           <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${grid.cols}, minmax(0, 1fr))` }}>
-            {images.map((a, i) => <GeneratedMedia key={a.id} a={a} fresh={fresh} tile delay={i * 90} onOpen={() => setViewing(i)} />)}
+            {images.slice(0, SHOWN).map((a, i) => (
+              <div key={a.id} className="relative">
+                <GeneratedMedia a={a} fresh={fresh} tile delay={i * 90} onOpen={() => setViewing(i)} />
+                {/* A reply with many pictures (a download, a folder): nine tiles, the rest in the viewer. */}
+                {i === SHOWN - 1 && images.length > SHOWN && (
+                  <button onClick={() => setViewing(i)} className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/55 text-lg font-medium text-white">+{images.length - SHOWN + 1}</button>
+                )}
+              </div>
+            ))}
           </div>
           <p className="line-clamp-1 text-2xs text-ink4" title={prompt}>{images.length} images{prompt ? ` · ${prompt}` : ""}</p>
         </div>
