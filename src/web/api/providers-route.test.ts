@@ -98,6 +98,16 @@ describe('providers settings', () => {
     expect(yaml()).not.toContain('sk-ant-abcdefghijklmnopqrstuvwx');
   });
 
+  it('checks Bedrock with a configured AWS credential chain and no API key or URL', async () => {
+    const model = 'us.anthropic.claude-sonnet-4-6';
+    catalog.fn.mockResolvedValue({ recommendedModel: model, models: [] });
+    const before = yaml();
+    const res = await call('POST', '/api/providers/bedrock/check');
+    expect(await res.json()).toMatchObject({ ok: true, models: [model] });
+    expect(catalog.fn).toHaveBeenCalledWith('bedrock', expect.objectContaining({ name: 'bedrock' }), { limit: 5000 });
+    expect(yaml()).toBe(before);
+  });
+
   it('points a vendor rejection at the key field', async () => {
     catalog.fn.mockRejectedValue(new Error('Anthropic rejected the API key (401). Please re-enter it.'));
     const body = await (await call('POST', '/api/providers/anthropic/check', { apiKey: 'sk-ant-abcdefghijklmnopqrstuvwx' })).json();

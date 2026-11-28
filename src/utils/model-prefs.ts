@@ -366,6 +366,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   chatgptWeb: 'ChatGPT',
   openai: 'OpenAI API',
   anthropic: 'Claude (API)',
+  bedrock: 'Amazon Bedrock',
   deepseek: 'DeepSeek',
   grok: 'Grok',
   ollamaLocal: 'Ollama · this PC',
