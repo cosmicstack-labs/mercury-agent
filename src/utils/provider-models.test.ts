@@ -319,6 +319,38 @@ describe('fetchProviderModelCatalog', () => {
     expect(catalog.recommendedModel).toBe('deepseek-v4.1-flash');
     expect(catalog.models).toEqual(['glm-5.2']);
   });
+
+  it('keeps TeamoRouter chat models and sends the key as a bearer token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [
+        { id: 'glm-5.3' },
+        { id: 'claude-sonnet-5-5' },
+        { id: 'gpt-image-2' },
+        { id: 'gemini-3-pro-image' },
+        { id: 'gemini-nano-banana-2.1' },
+        { id: 'mj_imagine' },
+      ],
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const catalog = await fetchProviderModelCatalog('teamorouter', {
+      name: 'teamorouter',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.teamorouter.com/v1/',
+      model: 'glm-5.3',
+      enabled: true,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.teamorouter.com/v1/models');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer sk-test' });
+    expect(catalog.recommendedModel).toBe('glm-5.3');
+    expect(catalog.models).toContain('claude-sonnet-5-5');
+    expect(catalog.models).not.toContain('gpt-image-2');
+    expect(catalog.models).not.toContain('gemini-3-pro-image');
+    expect(catalog.models).not.toContain('gemini-nano-banana-2.1');
+    expect(catalog.models).not.toContain('mj_imagine');
+  });
 });
 
 describe('model lists behind Basic auth', () => {

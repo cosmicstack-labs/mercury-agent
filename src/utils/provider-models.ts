@@ -81,6 +81,19 @@ const CLOUDGPU_PREFERRED_MODELS = [
   'qwen3.5-397b',
 ] as const;
 
+// Verified present on GET https://api.teamorouter.com/v1/models on 2026-11-25.
+// TeamoRouter is an OpenAI-compatible model API gateway.
+const TEAMOROUTER_PREFERRED_MODELS = [
+  'glm-5.3',
+  'deepseek-v4-pro',
+  'kimi-k3.1-pro',
+  'qwen3.8-max',
+  'claude-sonnet-5-5',
+  'gpt-6.2-astra',
+  'deepseek-v4-flash',
+  'glm-5.3-flash',
+] as const;
+
 const OLLAMA_CLOUD_PREFERRED_MODELS = [
   'gpt-oss:120b',
   'gpt-oss:120b-cloud',
@@ -160,6 +173,7 @@ export function getPreferredModelsForProvider(provider: ProviderName): string[] 
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
     cloudgpu: CLOUDGPU_PREFERRED_MODELS,
+    teamorouter: TEAMOROUTER_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -287,6 +301,7 @@ function chooseRecommendedModel(
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
     cloudgpu: CLOUDGPU_PREFERRED_MODELS,
+    teamorouter: TEAMOROUTER_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -339,6 +354,7 @@ export function buildModelCatalog(
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     runcrate: RUNCRATE_PREFERRED_MODELS,
     cloudgpu: CLOUDGPU_PREFERRED_MODELS,
+    teamorouter: TEAMOROUTER_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -376,6 +392,8 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
     errorMessage = 'Mercury could not fetch models for this Runcrate key. Please re-enter it.';
   } else if (provider === 'cloudgpu') {
     errorMessage = 'Mercury could not fetch models for this CloudGPU key. Please re-enter it.';
+  } else if (provider === 'teamorouter') {
+    errorMessage = 'Mercury could not fetch models for this TeamoRouter key. Please re-enter it.';
   } else if (provider === 'deepseek') {
     errorMessage = 'Mercury could not fetch models for this DeepSeek key. Please re-enter it.';
   } else if (provider === 'aimlapi') {
@@ -436,6 +454,15 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
           && !lower.includes('whisper')
           && !lower.endsWith('-asr')
           && !lower.includes('transcri');
+      }
+      if (provider === 'teamorouter') {
+        // TeamoRouter lists image-generation models on the same endpoint without an
+        // output modality, so those are dropped by id.
+        const lower = id.toLowerCase();
+        return id.length > 0
+          && !lower.includes('image')
+          && !lower.includes('nano-banana')
+          && !lower.startsWith('mj_');
       }
       return isOpenAIChatModel(id);
     })

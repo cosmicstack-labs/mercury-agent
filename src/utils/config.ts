@@ -79,6 +79,7 @@ export type ProviderName =
   | 'atlascloud'
   | 'runcrate'
   | 'cloudgpu'
+  | 'teamorouter'
   | 'ollamaCloud'
   | 'ollamaLocal'
   | 'atomicChat'
@@ -125,6 +126,7 @@ export interface MercuryConfig {
     atlascloud: ProviderConfig;
     runcrate: ProviderConfig;
     cloudgpu: ProviderConfig;
+    teamorouter: ProviderConfig;
     ollamaCloud: ProviderConfig;
     ollamaLocal: ProviderConfig;
     atomicChat: ProviderConfig;
@@ -455,6 +457,13 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('CLOUDGPU_BASE_URL', 'https://cloudgpu.app/v1'),
         model: getEnv('CLOUDGPU_MODEL', 'deepseek-v4.1-flash'),
         enabled: getEnvBool('CLOUDGPU_ENABLED', true),
+      },
+      teamorouter: {
+        name: 'teamorouter',
+        apiKey: getEnv('TEAMOROUTER_API_KEY', ''),
+        baseUrl: getEnv('TEAMOROUTER_BASE_URL', 'https://api.teamorouter.com/v1'),
+        model: getEnv('TEAMOROUTER_MODEL', 'glm-5.3'),
+        enabled: getEnvBool('TEAMOROUTER_ENABLED', true),
       },
       ollamaCloud: {
         name: 'ollamaCloud',
@@ -877,7 +886,7 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
   if (provider.name === 'ollamaCloud') {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0;
   }
-  if (provider.name === 'atlascloud' || provider.name === 'runcrate' || provider.name === 'cloudgpu') {
+  if (provider.name === 'atlascloud' || provider.name === 'runcrate' || provider.name === 'cloudgpu' || provider.name === 'teamorouter') {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0 && provider.model.length > 0;
   }
   if (provider.name === 'openaiCompat' || provider.name === 'litellm') {
