@@ -8,7 +8,7 @@ import type { ChatEffort, ImageIntent, MediaModelsResponse, TurnsInfo, VoiceRepl
 import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
   BotActivityEvent, BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
-  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, OwnerTask, PluginItem, ReasoningChoice, Skill, DeviceSummary, PairShown, PairStatus,
+  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, OwnerApproval, OwnerTask, PluginItem, ReasoningChoice, Skill, DeviceSummary, PairShown, PairStatus,
 } from "./types";
 
 export const health = {
@@ -28,30 +28,6 @@ export const health = {
 };
 
 export const auth = {
-  /** Sign in for a device token. From another device the owner approves it first (a PendingPair). */
-  pair: async (baseUrl: string, username: string, password: string, deviceName: string, platform: string): Promise<PairResponse | PendingPair> => {
-    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password, deviceName, platform }),
-    });
-    const body = (await res.json().catch(() => ({}))) as Partial<PairResponse & PendingPair> & { error?: string };
-    if (!res.ok) {
-      const retry = res.headers.get("Retry-After");
-      throw new ApiError(body.error || `Pairing failed (${res.status})`, res.status, retry ? Number(retry) : null);
-    }
-    return body as PairResponse | PendingPair;
-  },
-  /** Ask how a pairing stands; the runtime answers within ~25 s if the owner decides meanwhile. */
-  pollPair: async (baseUrl: string, pairingId: string, pollToken: string, signal?: AbortSignal): Promise<{ status: "pending" | "approved" | "denied" | "expired" | "error"; token?: string; device?: DeviceSummary; error?: string }> => {
-    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token/pending`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pairingId, pollToken }),
-      signal,
-    });
-    return (await res.json().catch(() => ({ status: "error", error: `Mercury answered ${res.status}` }))) as { status: "pending" | "approved" | "denied" | "expired" | "error"; token?: string; device?: DeviceSummary; error?: string };
-  },
   /** Sign a device out on a runtime it may not be connected to right now (removing a remote connection). */
   revokeAt: async (baseUrl: string, token: string): Promise<void> => {
     await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token/revoke`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000) });
@@ -68,7 +44,7 @@ export const ownerTasks = {
   decline: (id: string) => http.post<{ task: OwnerTask }>(`/api/owner/tasks/${encodeURIComponent(id)}`, { decline: true }),
 };
 
-export interface RemoteSettings { enabled: boolean; allowIps: string[]; allowShell: boolean; maxDevices: number; idleDays: number; passwordSignIn: boolean }
+export interface RemoteSettings { enabled: boolean; allowIps: string[]; allowShell: boolean; maxDevices: number; idleDays: number }
 export interface SecurityFinding { level: "ok" | "info" | "warn" | "risk"; title: string; detail?: string; fix?: string }
 export interface PairedDevice { id: string; name: string; platform: string; createdAt: string; lastSeenAt: string | null; lastIp?: string; approvedBy?: string; expiresAt?: string | null }
 export interface SecurityStatus {
@@ -79,6 +55,8 @@ export interface SecurityStatus {
   approvalRoutes: string[];
   lastRemote: { at: number; proxied: boolean; clientIpKnown: boolean; ip: string } | null;
   check: { summary: string; findings: SecurityFinding[] };
+  /** The address pairing QR codes carry (Mercury 1.5.6+). */
+  phone?: { saved: string | null; address: string | null; source: "saved" | "tailscale" | null; problem: string | null };
 }
 
 /** Remote access and its security (/server), on the runtime's own computer only. */
@@ -88,6 +66,10 @@ export const server = {
   createDevice: (name: string) => http.post<{ token: string; device: PairedDevice }>("/api/security/devices", { name, platform: "manual" }),
   revokeDevice: (id: string) => http.delete<{ success: boolean }>(`/api/security/devices/${encodeURIComponent(id)}`),
   revokeAll: () => http.delete<{ revoked: number }>("/api/security/devices"),
+  /** The address pairing QR codes send phones to; null clears it (Mercury finds Tailscale Serve itself). */
+  /** A one-time link that signs this computer's browser into the dashboard (this computer only). */
+  browserLink: () => http.post<{ url: string }>("/api/security/browser-link", {}),
+  setAddress: (address: string | null) => http.put<{ ok: boolean; address: string | null; message: string }>("/api/security/address", { address, by: "desktop" }),
 };
 
 /** The owner's security questions, on the runtime's own computer. */

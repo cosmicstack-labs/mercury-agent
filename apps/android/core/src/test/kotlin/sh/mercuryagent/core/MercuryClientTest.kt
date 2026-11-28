@@ -55,50 +55,15 @@ class MercuryClientTest {
     try { MercuryClient(base).health(); fail() } catch (e: MercuryException.Unauthorized) { }
   }
 
-  @Test fun signInStartsPairingThenApproved() = runBlocking {
-    server.enqueue(json(202, """{"pairingId":"p1","pollToken":"pt","code":"K7Q2M","message":"Approve it","expiresAt":"2026-11-16T10:00:00.000Z"}"""))
-    server.enqueue(json(200, """{"status":"pending"}"""))
-    server.enqueue(json(200, """{"status":"approved","token":"mdt_ab12cd34_ff","device":{"id":"ab12cd34","name":"Pixel","platform":"android"}}"""))
-    val c = MercuryClient(base)
-    val r = c.signIn("owner", "pw", "Pixel · Mercury for Android") as SignInResult.Pending
-    assertEquals("K7Q2M", r.pairing.code)
-    val body = server.takeRequest().body.readUtf8()
-    assertEquals("""{"username":"owner","password":"pw","deviceName":"Pixel · Mercury for Android","platform":"android"}""", body)
-    assertEquals(PairingStatus.Waiting, c.pairingStatus(r.pairing))
-    val poll = server.takeRequest()
-    assertEquals("/api/auth/token/pending", poll.path)
-    assertEquals("""{"pairingId":"p1","pollToken":"pt","waitMs":25000}""", poll.body.readUtf8())
-    val ok = c.pairingStatus(r.pairing) as PairingStatus.Approved
-    assertEquals("mdt_ab12cd34_ff", ok.token)
-    assertEquals("ab12cd34", ok.device!!.id)
-  }
-
-  @Test fun pairingDeniedExpiredAndGone() = runBlocking {
-    server.enqueue(json(200, """{"status":"denied"}"""))
-    server.enqueue(json(200, """{"status":"expired","error":"Too late."}"""))
-    server.enqueue(json(410, """{}"""))
-    val c = MercuryClient(base); val p = Pairing("p", "t", "AAAAA")
-    assertEquals(PairingStatus.Denied("The owner said no."), c.pairingStatus(p))
-    assertEquals(PairingStatus.Expired("Too late."), c.pairingStatus(p))
-    assertEquals(PairingStatus.Expired("The code expired."), c.pairingStatus(p))
-  }
-
-  @Test fun signInErrors() = runBlocking {
-    server.enqueue(json(401, """{"error":"no"}"""))
-    server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "30"))
-    server.enqueue(json(409, "{}"))
-    server.enqueue(json(200, "{}"))
-    val c = MercuryClient(base)
-    try { c.signIn("a", "b", "d"); fail() } catch (_: MercuryException.BadCredentials) {}
-    try { c.signIn("a", "b", "d"); fail() } catch (e: MercuryException.TooManyAttempts) { assertEquals(30, e.retryAfter) }
-    try { c.signIn("a", "b", "d"); fail() } catch (_: MercuryException.DeviceLimit) {}
-    try { c.signIn("a", "b", "d"); fail() } catch (e: MercuryException.Server) { assertEquals("Mercury didn't send a token.", e.message) }
-  }
-
-  @Test fun signedInOnOwnComputer() = runBlocking {
-    server.enqueue(json(200, """{"token":"mdt_1_2","device":{"id":"1"}}"""))
-    val r = MercuryClient(base).signIn("a", "b", "d") as SignInResult.SignedIn
-    assertEquals("mdt_1_2", r.token)
+  @Test fun checkTokenSaysWhenMercuryDoesntKnowIt() = runBlocking {
+    server.enqueue(json(200, """{"ok":true,"host":"studio"}"""))
+    server.enqueue(json(401, "{}"))
+    server.enqueue(json(404, "{}"))
+    val c = MercuryClient(base, "mdt_ab12cd34_ff")
+    assertEquals("studio", c.checkToken().host)
+    assertEquals("Bearer mdt_ab12cd34_ff", server.takeRequest().getHeader("Authorization"))
+    try { c.checkToken(); fail() } catch (_: MercuryException.BadToken) {}
+    try { c.checkToken(); fail() } catch (_: MercuryException.BadToken) {}
   }
 
   @Test fun ownerGate428() = runBlocking {
@@ -154,8 +119,9 @@ class MercuryClientTest {
       .setBody("event: connected\ndata: {}\n\nid: 41\nevent: activity\ndata: {\"kind\":\"done\",\"sessionId\":\"s\"}\n\n"))
     server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream")
       .setBody("event: activity\nid: 42\ndata: {\"kind\":\"started\",\"sessionId\":\"s\"}\n\n").setBodyDelay(0, TimeUnit.MILLISECONDS))
-    val events = withTimeout(10_000) { MercuryClient(base, "tok").events("/api/chat/activity").take(3).toList() }
-    assertEquals(listOf("connected", "activity", "activity"), events.map { it.name })
+    val events = withTimeout(10_000) { MercuryClient(base, "tok").events("/api/chat/activity").take(4).toList() }
+    // After the drop the stream says it reconnected, so listeners re-read what they missed.
+    assertEquals(listOf("connected", "activity", ServerEvent.RECONNECTED, "activity"), events.map { it.name })
     val first = server.takeRequest()
     assertEquals("text/event-stream", first.getHeader("Accept"))
     assertEquals("Bearer tok", first.getHeader("Authorization"))

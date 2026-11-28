@@ -129,7 +129,12 @@ data class ActivityEvent(
 )
 
 /** One server-sent event: its name and its raw JSON data. */
-data class ServerEvent(val name: String, val data: String, val id: String? = null)
+data class ServerEvent(val name: String, val data: String, val id: String? = null) {
+  companion object {
+    /** Not from Mercury: the stream connected again after a drop (events in between may be lost). */
+    const val RECONNECTED = "mercury.reconnected"
+  }
+}
 
 /** One reply's tokens, steps, time and model (text_done's `usage`, and stored replies). */
 data class ReplyUsage(

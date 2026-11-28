@@ -58,6 +58,9 @@ export function PairPhone({ onPaired, onClose, initialAddress }: { onPaired: () 
   const [now, setNow] = useState(() => Date.now());
   const run = useRef(0);
   const live = useRef<string | null>(null);
+  /** The address the owner typed for the code on screen, offered for saving once a phone pairs. */
+  const [typed, setTyped] = useState<string | null>(null);
+  const [saved, setSaved] = useState<string | null>(null);
 
   async function start(addr?: string) {
     const mine = ++run.current;
@@ -66,6 +69,8 @@ export function PairPhone({ onPaired, onClose, initialAddress }: { onPaired: () 
       const pair = await api.security.pair(addr);
       if (mine !== run.current) return;
       live.current = pair.id;
+      setTyped(addr ? pair.address : null);
+      setSaved(null);
       setNow(Date.now());
       setView({ kind: "showing", pair });
     } catch (e) {
@@ -155,7 +160,16 @@ export function PairPhone({ onPaired, onClose, initialAddress }: { onPaired: () 
     return (
       <div className="flex flex-col gap-4">
         <p className="flex items-center gap-2 text-sm text-accent"><CheckCircle2 size={16} /> Paired with {view.device.name}{view.device.platform && view.device.platform !== "unknown" ? ` (${view.device.platform})` : ""}</p>
-        <div className="flex justify-end"><Button variant="primary" onClick={onClose}>Done</Button></div>
+        {saved && <p className="text-xs text-ink3">{saved}</p>}
+        <div className="flex justify-end gap-2">
+          {typed && !saved && (
+            <Button variant="ghost" loading={busy} onClick={() => {
+              setBusy(true);
+              void api.server.setAddress(typed).then((r) => setSaved(r.message), (e) => setSaved(errorText(e))).finally(() => setBusy(false));
+            }}>Save {typed} for next time</Button>
+          )}
+          <Button variant="primary" onClick={onClose}>Done</Button>
+        </div>
       </div>
     );
   }

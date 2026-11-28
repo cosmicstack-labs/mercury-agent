@@ -2,6 +2,8 @@ import Foundation
 
 /// One server-sent event: its name and its raw JSON data.
 public struct ServerEvent: Sendable {
+  /// Not from Mercury: the stream connected again after a drop (events in between may be lost).
+  public static let reconnected = "mercury.reconnected"
   public var name: String
   public var data: String
   public var id: String?
@@ -15,6 +17,7 @@ extension MercuryClient {
       let task = Task {
         var lastId: String?
         var delay: Double = 1
+        var connected = false
         while !Task.isCancelled {
           do {
             var r = try request("GET", path, timeout: 3600)
@@ -23,6 +26,9 @@ extension MercuryClient {
             let (bytes, res) = try await session.bytes(for: r)
             guard (res as? HTTPURLResponse)?.statusCode == 200 else { throw MercuryError.unreachable("stream refused") }
             delay = 1
+            // Back after a drop: events sent meanwhile may be lost, so listeners re-read what they show.
+            if connected { continuation.yield(ServerEvent(name: ServerEvent.reconnected, data: "{}", id: nil)) }
+            connected = true
             // Mercury writes "event: <name>" then one "data: <json>" line per event, so each
             // data line is a whole event. (AsyncBytes.lines drops the blank separator lines.)
             var name = "message"

@@ -7,8 +7,6 @@ import {
   Sun,
   Moon,
   Monitor,
-  User,
-  Lock,
   Sparkles,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -116,18 +114,6 @@ export function SettingsPage() {
   const [identitySaving, setIdentitySaving] = useState(false);
   const [identityFb, showIdentityFb] = useFeedback();
 
-  /* Account state */
-  const [unCurrent, setUnCurrent] = useState("");
-  const [newUsername, setNewUsername] = useState("");
-  const [unSaving, setUnSaving] = useState(false);
-  const [unFb, showUnFb] = useFeedback();
-
-  const [pwCurrent, setPwCurrent] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [pwSaving, setPwSaving] = useState(false);
-  const [pwFb, showPwFb] = useFeedback();
-
   /* Theme */
   const { theme, setTheme } = useThemeStore();
 
@@ -165,53 +151,6 @@ export function SettingsPage() {
     }
   };
 
-  const changeUsername = async () => {
-    if (!unCurrent || !newUsername) {
-      showUnFb({ type: "error", message: "Both fields are required" });
-      return;
-    }
-    setUnSaving(true);
-    try {
-      await api.auth.changeUsername(unCurrent, newUsername);
-      showUnFb({ type: "success", message: "Username updated" });
-      setUnCurrent("");
-      setNewUsername("");
-    } catch (e) {
-      showUnFb({
-        type: "error",
-        message: e instanceof Error ? e.message : "Update failed",
-      });
-    } finally {
-      setUnSaving(false);
-    }
-  };
-
-  const changePassword = async () => {
-    if (!pwCurrent || !newPassword) {
-      showPwFb({ type: "error", message: "All fields are required" });
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      showPwFb({ type: "error", message: "Passwords do not match" });
-      return;
-    }
-    setPwSaving(true);
-    try {
-      await api.auth.changePassword(pwCurrent, newPassword);
-      showPwFb({ type: "success", message: "Password updated" });
-      setPwCurrent("");
-      setNewPassword("");
-      setConfirmPassword("");
-    } catch (e) {
-      showPwFb({
-        type: "error",
-        message: e instanceof Error ? e.message : "Update failed",
-      });
-    } finally {
-      setPwSaving(false);
-    }
-  };
-
   const themeOptions: { value: "dark" | "light" | "system"; label: string; icon: typeof Sun }[] = [
     { value: "light", label: "Light", icon: Sun },
     { value: "dark", label: "Dark", icon: Moon },
@@ -245,7 +184,7 @@ export function SettingsPage() {
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Settings</h1>
           <p className="text-sm text-muted-foreground">
-            Manage agent identity, credentials, and preferences
+            Manage agent identity and preferences
           </p>
         </div>
       </div>
@@ -315,129 +254,6 @@ export function SettingsPage() {
                   <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                 )}
                 Save
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </motion.div>
-
-      <Separator className="bg-border/40" />
-
-      {/* ── Account Section ── */}
-      <motion.div {...fadeIn} transition={{ ...fadeIn.transition, delay: 0.1 }}>
-        <Card className="border-border/50 bg-card/60 backdrop-blur">
-          <CardHeader className="pb-4">
-            <div className="flex items-center gap-2">
-              <User className="h-4 w-4 text-[#00d4ff]" />
-              <h2 className="text-lg font-medium text-foreground">Account</h2>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Update your login credentials
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {/* Change Username */}
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <User className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-sm font-medium text-foreground">
-                  Change Username
-                </span>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    Current Password
-                  </label>
-                  <Input
-                    type="password"
-                    placeholder="Enter current password"
-                    value={unCurrent}
-                    onChange={(e) => setUnCurrent(e.target.value)}
-                    className="bg-background/50"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    New Username
-                  </label>
-                  <Input
-                    placeholder="Enter new username"
-                    value={newUsername}
-                    onChange={(e) => setNewUsername(e.target.value)}
-                    className="bg-background/50"
-                  />
-                </div>
-              </div>
-              <FeedbackBanner feedback={unFb} />
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={changeUsername}
-                disabled={unSaving}
-              >
-                {unSaving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-                Update Username
-              </Button>
-            </div>
-
-            <Separator className="bg-border/30" />
-
-            {/* Change Password */}
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Lock className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-sm font-medium text-foreground">
-                  Change Password
-                </span>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    Current Password
-                  </label>
-                  <Input
-                    type="password"
-                    placeholder="Current"
-                    value={pwCurrent}
-                    onChange={(e) => setPwCurrent(e.target.value)}
-                    className="bg-background/50"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    New Password
-                  </label>
-                  <Input
-                    type="password"
-                    placeholder="New"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    className="bg-background/50"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    Confirm Password
-                  </label>
-                  <Input
-                    type="password"
-                    placeholder="Confirm"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="bg-background/50"
-                  />
-                </div>
-              </div>
-              <FeedbackBanner feedback={pwFb} />
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={changePassword}
-                disabled={pwSaving}
-              >
-                {pwSaving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-                Update Password
               </Button>
             </div>
           </CardContent>

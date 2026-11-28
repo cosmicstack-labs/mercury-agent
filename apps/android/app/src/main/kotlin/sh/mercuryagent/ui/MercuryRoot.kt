@@ -79,10 +79,19 @@ fun MercuryRoot(container: AppContainer) {
       val vm: ConnectViewModel = viewModel(key = "connect-first", factory = viewModelFactory {
         initializer { ConnectViewModel(container.connections, container.deviceName) }
       })
+      PairLinks(container, vm)
       ConnectScreen(vm)
     } else key(active.id) {
       Home(container, active)
     }
+  }
+}
+
+/** Hands a mercury://pair link opened from outside to the connect screen on show (it asks before pairing). */
+@Composable
+private fun PairLinks(container: AppContainer, vm: ConnectViewModel) {
+  LaunchedEffect(vm) {
+    container.pendingPairLink.collect { if (it != null) container.takePairLink()?.let(vm::openLink) }
   }
 }
 
@@ -130,6 +139,10 @@ private fun Home(container: AppContainer, connection: Connection) {
         if (r == androidx.compose.material3.SnackbarResult.ActionPerformed) m.undoDelete?.let(chats::undoDelete)
       }
     }
+  }
+  // A pairing link from outside (the phone's camera): Add another Mercury takes it and asks first.
+  LaunchedEffect(container) {
+    container.pendingPairLink.collect { if (it != null) { drawer.close(); nav.navigate(AddMercuryRoute) { launchSingleTop = true } } }
   }
   // A deep link from a notification opens that chat.
   LaunchedEffect(container) {
@@ -247,6 +260,7 @@ private fun Home(container: AppContainer, connection: Connection) {
             val vm: ConnectViewModel = viewModel(factory = viewModelFactory {
               initializer { ConnectViewModel(container.connections, container.deviceName) }
             })
+            PairLinks(container, vm)
             ConnectScreen(vm, onClose = { nav.popBackStack() })
           }
         }

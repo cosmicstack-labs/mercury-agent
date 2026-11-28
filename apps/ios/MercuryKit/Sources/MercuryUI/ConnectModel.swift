@@ -1,22 +1,23 @@
 import SwiftUI
 import MercuryCore
 
-/// The connect flow: an address and the owner's sign-in, then (off the owner's computer)
-/// a 5-character code the owner approves before Mercury hands this phone a token. Last, once it's
-/// connected, a friendly name (the computer's name as a first guess) and a logo, as Mercury Desktop
-/// names a remote when it's added; the Mercury is saved when that step is done.
+/// The connect flow: scan the pairing QR code the computer shows, or type its address with a
+/// pairing code or a device token. There is no password sign-in. Last, once it's connected, a
+/// friendly name (the computer's name as a first guess) and a logo, as Mercury Desktop names a
+/// remote when it's added; the Mercury is saved when that step is done.
 @MainActor @Observable
 final class ConnectModel {
-  enum Step: Equatable { case welcome, signIn, token, waiting(Pairing), name }
+  enum Step: Equatable { case welcome, scan, enter, name }
 
   /// Connected, not saved yet: what the name step saves.
   struct Pending: Equatable { var url: URL; var token: String; var deviceId: String? }
 
   var step: Step = .welcome
   var address = ""
-  var username = ""
-  var password = ""
-  var pastedToken = ""
+  /// "Enter a code or token": a pairing code (any grouping) or a device token (mdt_…).
+  var secret = ""
+  /// A scanned or opened pairing link, waiting for the person to say yes: never paired silently.
+  var confirm: PairLink?
   var busy = false
   var error: String?
   var pending: Pending?
@@ -25,7 +26,6 @@ final class ConnectModel {
   /// The name as first guessed, until the person types their own.
   var suggestedName = ""
   let store: ConnectionStore
-  var poll: Task<Void, Never>?
 
   init(store: ConnectionStore) { self.store = store }
 
@@ -37,57 +37,75 @@ final class ConnectModel {
     #endif
   }
 
-  var canSignIn: Bool { !address.isEmpty && !username.isEmpty && !password.isEmpty && !busy }
+  /// Another screen of the flow, without the last screen's error.
+  func go(_ s: Step) { error = nil; step = s }
 
-  func signIn() async {
-    guard let url = MercuryClient.normalize(address) else { error = MercuryError.badAddress.errorDescription; return }
-    busy = true; error = nil
-    defer { busy = false }
+  var canConnectTyped: Bool {
+    !address.trimmingCharacters(in: .whitespaces).isEmpty && !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !busy
+  }
+
+  /// What the camera read. A pairing link is asked about first; anything else is the problem to
+  /// show under the viewfinder (the camera keeps looking).
+  func scanned(_ text: String) -> String? {
     do {
-      switch try await MercuryClient(baseURL: url).signIn(username: username, password: password, deviceName: deviceName) {
-      case .signedIn(let token, let device):
-        finish(url: url, token: token, device: device)
-      case .pending(let p):
-        password = ""
-        step = .waiting(p)
-        wait(for: p, at: url)
+      error = nil
+      confirm = try PairLink.parse(text)
+      return nil
+    } catch {
+      return error.localizedDescription
+    }
+  }
+
+  /// A `mercury://pair?…` link opened from outside the app (the iPhone's Camera, a message): asked
+  /// about first. One that can't be used opens "Enter a code or token" with what it held and why.
+  func open(_ url: URL) {
+    guard PairLink.isPairLink(url), pending == nil else { return }
+    do {
+      error = nil
+      confirm = try PairLink.parse(url)
+    } catch {
+      let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+      if let u = items.first(where: { $0.name == "u" })?.value { address = u }
+      if let c = items.first(where: { $0.name == "c" })?.value { secret = PairCode.display(PairCode.normalize(c)) }
+      self.error = error.localizedDescription
+      step = .enter
+    }
+  }
+
+  /// "Enter a code or token": a token (mdt_…) is checked with the Mercury and kept; anything
+  /// else must be a whole pairing code, traded for a token (POST /api/auth/pair).
+  func connectTyped() async {
+    do {
+      let url = try PairLink.checkedAddress(address)
+      switch try ConnectSecret.read(secret) {
+      case .pairCode(let code): await pair(PairLink(address: url, code: code))
+      case .token(let token): await useToken(token, at: url)
       }
     } catch {
       self.error = error.localizedDescription
     }
   }
 
-  /// Long-polls until the owner approves, denies, or the code expires.
-  func wait(for p: Pairing, at url: URL) {
-    poll?.cancel()
-    poll = Task {
-      let client = MercuryClient(baseURL: url)
-      while !Task.isCancelled {
-        do {
-          switch try await client.pairingStatus(p) {
-          case .pending: continue
-          case .approved(let token, let device): finish(url: url, token: token, device: device); return
-          case .denied(let why), .expired(let why): error = why; step = .signIn; return
-          }
-        } catch {
-          if Task.isCancelled { return }
-          try? await Task.sleep(for: .seconds(3))
-        }
-      }
-    }
-  }
-
-  func cancelWaiting() { poll?.cancel(); poll = nil; step = .signIn }
-
-  /// Connect with a device token made elsewhere (mdt_…), checked with a health probe first.
-  func useToken() async {
-    guard let url = MercuryClient.normalize(address) else { error = MercuryError.badAddress.errorDescription; return }
-    let token = pastedToken.trimmingCharacters(in: .whitespacesAndNewlines)
+  /// Connect with a device token made on the computer (`/server token <name>`), checked first.
+  func useToken(_ token: String, at url: URL) async {
     busy = true; error = nil
     defer { busy = false }
     do {
-      _ = try await MercuryClient(baseURL: url, token: token).health()
+      _ = try await MercuryClient(baseURL: url, token: token).checkToken()
       finish(url: url, token: token, device: nil)
+    } catch {
+      self.error = error.localizedDescription
+    }
+  }
+
+  /// Trades a pairing code for a device token, then the name step.
+  func pair(_ link: PairLink) async {
+    busy = true; error = nil
+    defer { busy = false }
+    do {
+      let (token, device) = try await MercuryClient(baseURL: link.address).pair(code: link.code, deviceName: deviceName)
+      confirm = nil
+      finish(url: link.address, token: token, device: device)
     } catch {
       self.error = error.localizedDescription
     }

@@ -899,3 +899,18 @@
   - A name the home network resolves to this computer by another route, such as a router's DNS name, isn't recognised as this computer, so it isn't checked.
   - Scheme detection trusts proxy headers, so a misconfigured proxy can make the plain-http finding wrong.
   - Follow-ups: Scan to connect in the phone apps, and an https pairing link on mercuryagent.sh.
+
+## ADR-050: No password — devices connect with a pairing code or a device token
+
+- **Status:** accepted, 2026-11-28.
+- **Context:** a password is the one credential anyone online can try. Many owners never change it or choose a weak one, and a reachable Mercury is then a few guesses from being taken. Device tokens and pairing codes are long and random, and are made only on the computer Mercury runs on.
+- **Decision:** Mercury has no password.
+  - Phones and Desktop elsewhere connect with a QR pairing code (`/server pair`, ADR-049) or a device token (`/server token <name>`). The phone apps have one fallback, "Enter a code or token".
+  - A browser on this computer opens the dashboard with `mercury web` (or Desktop's "Open in browser"): `GET /login/once?c=…`, which works once, for 5 minutes, and only from this computer. It gives the browser a session cookie.
+  - A browser elsewhere signs in on `/login` with a device token (`POST /api/auth/login { token }`), rate-limited per address and refused from another site. The token itself becomes the cookie, so revoking the device signs the browser out.
+  - `POST /api/auth/token`, `/api/auth/token/pending`, `/api/auth/password` and `/api/auth/username` answer 410 `password_removed`. The `passwordSignIn` setting and `/server password` are gone. `mercury web-reset-password` only explains the change.
+  - On start, Mercury deletes `~/.mercury/web-config.json`, the old password hash.
+- **Consequences:**
+  - Older phone and Desktop builds that only sign in with a password can no longer connect; they need a device token or an update.
+  - Browser sessions made before the upgrade stay valid until they expire (7 days), or until the owner signs everything out.
+  - `mercury web` needs Mercury running, and only a browser on this computer can use its link.

@@ -73,7 +73,12 @@ The device that asked can never answer its own question. Nobody answering within
 
 ### New devices
 
-Signing in from another device with the dashboard password doesn't give it access straight away. The device shows "Waiting for the owner to approve this device" and the code, and gets its token once you approve. Signing in from this computer needs no approval. Since Mercury 1.5.5, password sign-in from other devices is off until you turn it on with `/server password on`. [Pairing a phone with a code](#connect-a-phone) works either way and skips the wait, because showing the code is your approval.
+Mercury has no password. A new device gets in only one of two ways, and both start on this computer:
+
+- [Pairing with a QR code](#connect-a-phone) (`/server pair`): showing the code is your approval.
+- A device token you make with `/server token <name>` and paste into the device.
+
+A browser on this computer opens the dashboard with `mercury web`, a link that works once for 5 minutes. A browser elsewhere signs in with a device token, and revoking that device signs it out.
 
 ### Sensitive actions
 
@@ -85,7 +90,7 @@ An approved device can chat, run things under your current permission mode and r
 - installing skills from a URL, and plugins;
 - channel settings and tokens, letting someone into a channel or making them an admin, Signal linking;
 - Mercury Cloud sign-in, and changing a provider's server address without a new key;
-- restarting Mercury, changing the password or username, and revoking another device;
+- restarting Mercury and revoking another device;
 - a board's working folder;
 - starting a server update.
 
@@ -99,7 +104,6 @@ Each approved device gets a device token (`mdt_…`) that Mercury Desktop keeps 
 - **Limit.** 10 devices at most. Mercury checks the limit before it asks you.
 - **New location.** When a known device connects from an address it hasn't used before, Mercury tells you.
 - **Revoke.** Revoking a device cuts its open connections at once.
-- **Password change.** Changing the dashboard password signs out every other browser, and can sign out all devices too.
 
 To make a token by hand for a device that can't sign in itself, run `/server token <name>` (or `mercury devices add "<name>"`) on this computer. It's shown once.
 
@@ -141,7 +145,7 @@ With an address list set, Mercury refuses any client whose address isn't on it. 
 mercury doctor --security
 ```
 
-It checks the dashboard password, devices, file permissions on Mercury's secrets and how your tunnel forwards requests. Every `mercury doctor` run shows a one-line summary of it, and `/server check` shows the same findings.
+It checks devices, file permissions on Mercury's secrets and how your tunnel forwards requests. Every `mercury doctor` run shows a one-line summary of it, and `/server check` shows the same findings.
 
 It also checks how other devices reach Mercury:
 
@@ -155,7 +159,7 @@ It also checks how other devices reach Mercury:
 
 When Mercury is running, the check includes the remote requests it has seen in the last week. It reads Tailscale only on this computer, and skips it quietly when Tailscale isn't installed. It contacts nothing else.
 
-The security log, `~/.mercury/security/audit.jsonl`, records failed and locked sign-ins, pairings, pairing codes made, used and ended, approvals and refusals, revocations, expired devices, new locations, blocked requests, password and setting changes, and started updates. `/server log` shows the latest entries.
+The security log, `~/.mercury/security/audit.jsonl`, records failed and locked sign-ins, pairings, pairing codes made, used and ended, approvals and refusals, revocations, expired devices, new locations, blocked requests, setting changes, and started updates. `/server log` shows the latest entries.
 
 ## Things to know
 

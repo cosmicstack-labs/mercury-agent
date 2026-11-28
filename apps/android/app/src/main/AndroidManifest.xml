@@ -61,6 +61,14 @@
         <data android:scheme="mercury" android:host="bot" />
         <data android:scheme="mercury" android:host="task" />
       </intent-filter>
+      <!-- The computer's pairing QR, scanned with the phone's own camera: mercury://pair?u=<address>&c=<code>.
+           The app asks "Connect to <host>?" before it pairs. -->
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="mercury" android:host="pair" />
+      </intent-filter>
       <!-- The launcher's Call Mercury shortcut (long-press the icon). -->
       <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
     </activity>
@@ -85,6 +93,9 @@
       android:name=".call.CallService"
       android:exported="false"
       android:foregroundServiceType="phoneCall|microphone" />
+
+    <!-- Google's code scanner (Scan to connect): Play services fetches its module at install. -->
+    <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="barcode_ui" />
 
     <provider
       android:name="androidx.core.content.FileProvider"

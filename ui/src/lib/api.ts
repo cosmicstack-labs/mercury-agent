@@ -104,49 +104,19 @@ export interface DeviceSummary {
   lastSeenAt: string | null;
 }
 
-export interface PairResponse {
-  token: string;
-  device: DeviceSummary;
-  apiVersion: number;
-  features: string[];
-}
-
-export class PairError extends Error {
-  constructor(message: string, public readonly status: number, public readonly retryAfterSeconds: number | null) {
-    super(message);
-    this.name = "PairError";
-  }
-}
-
 // ── Auth ──
 export const auth = {
-  /** Cookie session for the runtime-served dashboard. */
-  login: (username: string, password: string) =>
+  /**
+   * Cookie session for the runtime-served dashboard, signed in with a device
+   * token (mdt_…). Mercury has no username/password sign-in.
+   */
+  login: (token: string) =>
     fetch(apiUrl("/api/auth/login"), {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ username, password }),
-      redirect: "manual",
-    }),
-  /**
-   * Device token for a hosted client (Mercury Desktop, phones). Unlike
-   * login() this never touches cookies and the token is the only secret
-   * the client keeps. Pass the runtime URL explicitly: nothing is
-   * configured yet when a connection is being added.
-   */
-  pair: async (baseUrl: string, username: string, password: string, deviceName: string, platform: string) => {
-    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token`, {
-      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password, deviceName, platform }),
-    });
-    const body = (await res.json().catch(() => ({}))) as Partial<PairResponse> & { error?: string };
-    if (!res.ok) {
-      const retry = res.headers.get("Retry-After");
-      throw new PairError(body.error || `Pairing failed (${res.status})`, res.status, retry ? Number(retry) : null);
-    }
-    return body as PairResponse;
-  },
+      body: JSON.stringify({ token }),
+      credentials: "same-origin",
+    }),
   /** Sign out of whatever we are signed in as, then hand control to the shell (or /login). */
   signOut: async () => {
     try {
@@ -163,16 +133,6 @@ export const auth = {
   devices: () => get<{ devices: DeviceSummary[]; current: string | null }>("/api/auth/devices"),
   revokeDevice: (id: string) => del<{ success: boolean }>(`/api/auth/devices/${encodeURIComponent(id)}`),
   logout: () => get<void>("/api/auth/logout"),
-  changePassword: (currentPassword: string, newPassword: string) =>
-    post<{ success: boolean }>("/api/auth/password", {
-      currentPassword,
-      newPassword,
-    }),
-  changeUsername: (currentPassword: string, newUsername: string) =>
-    post<{ success: boolean }>("/api/auth/username", {
-      currentPassword,
-      newUsername,
-    }),
 };
 
 // ── Config ──

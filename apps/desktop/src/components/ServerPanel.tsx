@@ -1,4 +1,4 @@
-import { Check, Copy, Plus, QrCode, ShieldAlert, ShieldCheck, X } from "lucide-react";
+import { Check, Copy, ExternalLink, Plus, QrCode, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { create } from "zustand";
 import * as api from "~/api/mercury";
@@ -10,6 +10,7 @@ import { Switch } from "~/components/ui/Switch";
 import { Spinner } from "~/components/ui/bits";
 import { useHealth } from "~/app/health";
 import { PairPhone } from "~/views/settings/PairPhone";
+import { desktop } from "~/shell/tauri";
 
 /**
  * Remote access (/server) as a window of its own: typed in the chat, it
@@ -79,6 +80,7 @@ export function ServerPanel() {
   const canPair = !!useHealth()?.features?.includes("auth.pairCode");
   const [status, setStatus] = useState<SecurityStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [phoneAddress, setPhoneAddress] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [ip, setIp] = useState("");
@@ -97,7 +99,7 @@ export function ServerPanel() {
 
   // Fresh every time it opens; nothing lingers once it's closed (a token least of all).
   useEffect(() => {
-    if (!open) { setToken(null); setNote(null); setIp(""); setTokenName(""); setStatus(null); return; }
+    if (!open) { setToken(null); setNote(null); setIp(""); setTokenName(""); setPhoneAddress(""); setStatus(null); return; }
     void load();
   }, [open, load]);
 
@@ -117,6 +119,16 @@ export function ServerPanel() {
     const rule = value.trim();
     if (!rule || !r) return;
     void act(async () => { await api.server.setRemote({ allowIps: [...new Set([...r.allowIps, rule])] }); setIp(""); }, `Allowed ${rule}. Only listed addresses can connect now.`);
+  }
+
+  function savePhoneAddress(e?: FormEvent, value: string | null = phoneAddress) {
+    e?.preventDefault();
+    if (value !== null && !value.trim()) return;
+    void act(async () => {
+      const saved = await api.server.setAddress(value === null ? null : value.trim());
+      setNote(saved.message);
+      setPhoneAddress("");
+    });
   }
 
   function makeToken(e: FormEvent) {
@@ -170,10 +182,15 @@ export function ServerPanel() {
           <Section title="Access">
             <Toggle id="srv-remote" label="Remote access" detail={r!.enabled ? "Approved devices can connect from other computers and phones." : "Only this computer can use Mercury."} checked={r!.enabled} busy={busy}
               onChange={(v) => void act(() => api.server.setRemote({ enabled: v }), v ? "Remote access is on." : "Remote access is off: every other device is refused.")} />
-            <Toggle id="srv-password" label="Password sign-in from other devices" detail={r!.passwordSignIn ? "The apps may also sign in with the username and password (you approve each new one)." : "Off: devices connect with a device token made here."} checked={r!.passwordSignIn} busy={busy}
-              onChange={(v) => void act(() => api.server.setRemote({ passwordSignIn: v }), v ? "Password sign-in is on for other devices." : "Password sign-in is off: devices use a device token.")} />
             <Toggle id="srv-shell" label="Terminal for remote devices" detail={r!.allowShell ? "On: each command still asks you first." : "Off: remote devices can't run commands."} checked={r!.allowShell} busy={busy}
               onChange={(v) => void act(() => api.server.setRemote({ allowShell: v }), v ? "Remote devices may use the terminal; each command asks you." : "The terminal is off for remote devices.")} />
+            <div className="flex items-start justify-between gap-4 py-1.5">
+              <div className="min-w-0">
+                <p className="text-sm text-ink">Web dashboard</p>
+                <p className="text-xs text-ink3">Opens signed in on this computer. Other devices sign in with a device token.</p>
+              </div>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(async () => { const { url } = await api.server.browserLink(); await desktop.openExternal(url); }, "Opened the dashboard in your browser.")}><ExternalLink size={13} /> Open in browser</Button>
+            </div>
           </Section>
 
           <Section title="Allowed addresses" hint={r!.allowIps.length ? "Only these addresses can connect." : "Any address (approved devices from anywhere)."}>
@@ -196,6 +213,21 @@ export function ServerPanel() {
               <p className="mt-2 text-xs text-amber">Your tunnel doesn't pass client addresses, so this list refuses every remote device until it does.</p>
             )}
           </Section>
+
+          {status.phone && (
+            <Section title="Phone address" hint="Pairing QR codes send phones here: your https tunnel to Mercury (Tailscale Serve, Cloudflare Tunnel…).">
+              <div className="flex items-center justify-between gap-2 py-0.5">
+                <span className="truncate font-mono text-sm text-ink">{status.phone.address ?? "Not set"}</span>
+                <span className="shrink-0 text-xs text-ink4">{status.phone.address ? (status.phone.source === "saved" ? "saved" : "found through Tailscale Serve") : ""}</span>
+              </div>
+              {status.phone.problem && <p className="mt-1 text-xs text-amber">{status.phone.problem}</p>}
+              <form className="mt-1.5 flex gap-2" onSubmit={(e) => savePhoneAddress(e)}>
+                <Input value={phoneAddress} onChange={(e) => setPhoneAddress(e.target.value)} placeholder="https://mac.tail1234.ts.net" mono aria-label="Address phones open Mercury at" autoComplete="off" spellCheck={false} />
+                <Button type="submit" size="md" variant="outline" disabled={busy || !phoneAddress.trim()}>{status.phone.saved ? "Change" : "Save"}</Button>
+              </form>
+              {status.phone.saved && <Button className="mt-2" size="sm" variant="ghost" disabled={busy} onClick={() => savePhoneAddress(undefined, null)}>Clear (find it through Tailscale Serve)</Button>}
+            </Section>
+          )}
 
           <Section title={`Devices (${status.devices.length} of ${r!.maxDevices})`} hint={r!.idleDays ? `Unused devices stop working after ${r!.idleDays} days.` : "Devices never expire."}>
             {status.devices.length === 0 && <p className="text-sm text-ink3">No devices are paired.</p>}

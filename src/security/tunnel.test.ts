@@ -150,9 +150,10 @@ describe('the address a phone is given', () => {
     expect(choosePairAddress('https://', none)).toMatchObject({ ok: false, reason: 'invalid' });
   });
 
-  it('takes the Tailscale Serve HTTPS address first, then web.publicUrl', () => {
+  it('takes the saved address (web.publicUrl) first, then the Tailscale Serve HTTPS address', () => {
     const tailscale = state([{ url: `http://${HOST}`, https: false, funnel: false }, { url: `https://${HOST}`, https: true, funnel: false }]);
-    expect(choosePairAddress(undefined, { port: PORT, tailscale, publicUrl: 'https://config.example.com' })).toEqual({ ok: true, address: `https://${HOST}`, source: 'tailscale' });
+    expect(choosePairAddress(undefined, { port: PORT, tailscale, publicUrl: 'https://config.example.com' })).toEqual({ ok: true, address: 'https://config.example.com', source: 'config' });
+    expect(choosePairAddress(undefined, { port: PORT, tailscale, publicUrl: null })).toEqual({ ok: true, address: `https://${HOST}`, source: 'tailscale' });
     expect(choosePairAddress(undefined, { port: PORT, tailscale: null, publicUrl: 'https://config.example.com/' })).toEqual({ ok: true, address: 'https://config.example.com', source: 'config' });
     expect(choosePairAddress('  ', { port: PORT, tailscale: state([]), publicUrl: 'https://config.example.com' })).toMatchObject({ ok: true, source: 'config' });
   });

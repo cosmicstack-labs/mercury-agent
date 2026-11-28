@@ -1,14 +1,13 @@
 import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { compareSync } from 'bcryptjs';
 import { getMercuryHome } from '../utils/config.js';
 import { resolveFromDirs } from '../capabilities/shell/argv-lane.js';
 import { pinnedServicePath } from '../cli/service.js';
 import { mercuryGwsDir } from '../google/gws-binary.js';
 import { loadPermissionMode } from '../capabilities/permission-mode-store.js';
 import { listDevices } from '../web/devices.js';
-import { getWebPort, loadWebAuth } from '../web/auth.js';
+import { getWebPort } from '../web/auth.js';
 import { readRemoteSettings, type RemoteSettings } from './remote-settings.js';
 import { configuredPublicUrl, hostAllowsPlainHttp, isLoopbackHost, readTailscale, toUrl, type TailscaleState } from './tunnel.js';
 
@@ -25,7 +24,6 @@ export interface SecurityFinding {
   fix?: string;
 }
 
-const KNOWN_WEAK = ['Mercury@123', 'mercury', 'password', 'admin', '123456', '12345678', 'changeme'];
 const CREDENTIAL_FILES = ['devices.json', 'web-config.json', 'web-sessions.json', 'attach-token', 'remote.json', 'mercury.yaml', '.env'];
 
 export interface CheckContext {
@@ -111,21 +109,11 @@ export function securityCheck(ctx: CheckContext = {}): SecurityFinding[] {
   const remote = readRemoteSettings();
   const devices = listDevices();
 
-  // Password
-  const auth = loadWebAuth();
-  if (!auth) {
-    out.push({ level: 'info', title: 'No sign-in password yet', detail: 'Nobody can sign in from another device until one is set.', fix: 'mercury web-reset-password' });
-  } else {
-    const weak = KNOWN_WEAK.find((p) => { try { return compareSync(p, auth.password_hash); } catch { return false; } });
-    if (weak) out.push({ level: 'risk', title: 'The sign-in password is a well-known one', detail: `It is “${weak}”, which anyone can guess.`, fix: 'Change it: /server → Password, or mercury web-reset-password' });
-    else out.push({ level: 'ok', title: 'The sign-in password is not a well-known one' });
-  }
-
   // Remote access
   if (!remote.enabled) {
     out.push({ level: 'ok', title: 'Remote access is off', detail: 'Only this computer can use Mercury.' });
   } else {
-    out.push({ level: 'info', title: `Remote access is on · ${devices.length} device${devices.length === 1 ? '' : 's'}`, detail: remote.allowIps.length ? `Only from: ${remote.allowIps.join(', ')}` : `From any address, with a device token${remote.passwordSignIn ? ' or the password (password sign-in is on)' : ''}.`, fix: devices.length ? undefined : 'Turn it off with /server if you never connect from elsewhere.' });
+    out.push({ level: 'info', title: `Remote access is on · ${devices.length} device${devices.length === 1 ? '' : 's'}`, detail: remote.allowIps.length ? `Only from: ${remote.allowIps.join(', ')}` : 'From any address, with a device token.', fix: devices.length ? undefined : 'Turn it off with /server if you never connect from elsewhere.' });
     const stale = devices.filter((d) => now - Date.parse(d.lastSeenAt ?? d.createdAt) > 30 * 86_400_000);
     if (stale.length) out.push({ level: 'warn', title: `${stale.length} device${stale.length === 1 ? '' : 's'} not used in 30 days`, detail: stale.map((d) => d.name).join(', '), fix: 'Revoke the ones you no longer use: /server → Devices' });
     if (remote.idleDays === 0 && devices.length) out.push({ level: 'warn', title: 'Unused devices never expire', fix: 'Set an idle limit: /server → Devices' });

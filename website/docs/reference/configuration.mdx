@@ -28,7 +28,7 @@ web:
   port: 6174        # default
 ```
 
-The sign-in password is set during `mercury setup` (or `mercury web-reset-password`) and stored as a bcrypt hash, never in this file. The port can also come from `MERCURY_PORT`.
+Mercury has no sign-in password: devices use a QR code or a device token, and `mercury web` opens the dashboard here. The port can also come from `MERCURY_PORT`.
 
 Remote access (other devices, the IP allow-list, device limits) is managed with `/server` in the terminal or `mercury server`.
 

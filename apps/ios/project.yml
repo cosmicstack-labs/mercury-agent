@@ -26,7 +26,7 @@ targets:
         CFBundleDisplayName: Mercury
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
-        NSCameraUsageDescription: Mercury uses the camera to scan the pairing code shown in Mercury Desktop.
+        NSCameraUsageDescription: Mercury uses the camera to scan the pairing code your computer shows.
         NSMicrophoneUsageDescription: Mercury uses the microphone for voice calls and dictation.
         NSSpeechRecognitionUsageDescription: When your Mercury has no speech service, Mercury types what you say with this iPhone's own speech recognition.
         # Calls are CallKit calls: audio keeps them going in the background, and CallKit
@@ -39,6 +39,11 @@ targets:
           - UIApplicationShortcutItemType: sh.mercuryagent.call
             UIApplicationShortcutItemTitle: Call Mercury
             UIApplicationShortcutItemIconSymbolName: phone.fill
+        # mercury://pair?u=<address>&c=<code>: the computer's pairing QR code, scanned with the
+        # iPhone's own Camera, opens Mercury (RootView's onOpenURL), which asks before pairing.
+        CFBundleURLTypes:
+          - CFBundleURLName: sh.mercuryagent.pair
+            CFBundleURLSchemes: [mercury]
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     settings:

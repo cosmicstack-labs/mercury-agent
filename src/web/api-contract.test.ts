@@ -3,7 +3,7 @@ import { Hono, type Context } from 'hono';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initWebAuth, createSession } from './auth.js';
+import { createSession } from './auth.js';
 import { authGuard } from './middleware.js';
 import { createDevice, _resetDeviceState } from './devices.js';
 import { apiCors, allowedOrigins, normalizeOrigin } from './cors.js';
@@ -13,8 +13,8 @@ import { API_VERSION, API_FEATURES } from './api-contract.js';
  * The contract a remote client (Mercury Desktop, phones) relies on:
  *  - a device token opens /api/* from any address;
  *  - /api/health answers an authenticated remote peer with apiVersion;
- *  - POST /api/auth/token turns a password into a device token, once — only
- *    when the owner turned password sign-in on (off by default: device tokens);
+ *  - there is no password: the old password endpoints answer 410, a browser
+ *    signs in with a device token or a one-time link made on this computer;
  *  - CORS lets the desktop origin in and nobody else.
  */
 
@@ -74,122 +74,81 @@ describe('api contract', () => {
     expect(withSession.status).toBe(200);
   });
 
-  const passwordSignIn = (on: boolean) => writeFileSync(join(home, 'remote.json'), JSON.stringify({ passwordSignIn: on }));
-
-  it('password sign-in from another device is off by default: device tokens only', async () => {
+  it('the password endpoints are gone, from anywhere (ADR-050)', async () => {
     const { default: authRoutes } = await import('./api/auth.js');
-    const { username, password } = initWebAuth();
     const json = { 'Content-Type': 'application/json' };
-    const remote = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', { method: 'POST', headers: json, body: JSON.stringify({ username, password, deviceName: 'Phone' }) }, REMOTE);
-    expect(remote.status).toBe(403);
-    const body = await remote.json() as { error: string; code: string };
-    expect(body.code).toBe('password_sign_in_off');
-    expect(body.error).toContain('/server token');
-    // The browser sign-in from elsewhere too.
-    const form = new URLSearchParams({ username, password });
-    const browser = await authRoutes.request('http://127.0.0.1:6174/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: form }, REMOTE);
-    expect(browser.status).toBe(403);
-    expect(browser.headers.get('set-cookie')).toBeNull();
-    // On this computer the password still works.
-    const here = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', { method: 'POST', headers: json, body: JSON.stringify({ username, password, deviceName: 'Laptop' }) }, LOOPBACK);
-    expect(here.status).toBe(200);
-    // A device token made here opens the API from anywhere.
-    const { token } = createDevice('Phone', 'android');
-    let nextCalled = false;
-    await authGuard(makeContext('/api/chat/models', token, '10.0.0.7'), async () => { nextCalled = true; });
-    expect(nextCalled).toBe(true);
-    // Turned on by the owner, it asks for approval again.
-    passwordSignIn(true);
-    const asked = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', { method: 'POST', headers: json, body: JSON.stringify({ username, password, deviceName: 'Phone' }) }, REMOTE);
-    expect(asked.status).toBe(202);
+    for (const path of ['/api/auth/token', '/api/auth/token/pending', '/api/auth/password', '/api/auth/username']) {
+      for (const peer of [REMOTE, LOOPBACK]) {
+        const r = await authRoutes.request(`http://127.0.0.1:6174${path}`, { method: 'POST', headers: json, body: JSON.stringify({ username: 'mercury', password: 'Mercury@123', deviceName: 'Phone' }) }, peer);
+        expect(r.status).toBe(410);
+        expect(((await r.json()) as { code: string }).code).toBe('password_removed');
+      }
+    }
   });
 
-  it('POST /api/auth/token exchanges the password for a device token, then lists and revokes it', async () => {
-    const { default: authRoutes } = await import('./api/auth.js');
-    passwordSignIn(true);
-    const { username, password } = initWebAuth();
-    expect(password).not.toBe('');
+  /** What the sign-in page sends: JSON from its own origin. */
+  const SAME_SITE = { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1:6174', Host: '127.0.0.1:6174' };
 
-    const bad = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password: 'wrong', deviceName: 'Desktop' }),
-    }, REMOTE);
-    expect(bad.status).toBe(401);
-
-    // From another device the owner approves it first: 202 with a code…
-    const asked = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, deviceName: 'Desktop', platform: 'macos' }),
-    }, REMOTE);
-    expect(asked.status).toBe(202);
-    const pending = await asked.json() as { pending: boolean; pairingId: string; pollToken: string; code: string; token?: string };
-    expect(pending.pending).toBe(true);
-    expect(pending.token).toBeUndefined();
-    expect(pending.code).toMatch(/^[A-Z2-9]{5}$/);
-    const poll = () => authRoutes.request('http://127.0.0.1:6174/api/auth/token/pending', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pairingId: pending.pairingId, pollToken: pending.pollToken, waitMs: 10 }),
-    }, REMOTE);
-    expect(((await (await poll()).json()) as { status: string }).status).toBe('pending');
-    // A wrong poll token learns nothing.
-    const forged = await authRoutes.request('http://127.0.0.1:6174/api/auth/token/pending', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pairingId: pending.pairingId, pollToken: 'x'.repeat(32) }) }, REMOTE);
-    expect(forged.status).toBe(404);
-    // …the owner says yes (here: as the CLI would), and the next poll gets the token, once.
-    const { ownerApprovals } = await import('../security/owner-approvals.js');
-    expect(ownerApprovals().decide(pending.code, 'allow', 'cli')?.status).toBe('allowed');
-    const res = await poll();
-    expect(res.status).toBe(200);
-    const body = await res.json() as { token: string; device: { id: string; name: string }; apiVersion: number; features: string[] };
-    expect((await poll()).status).toBe(404);
-    expect(body.token).toMatch(/^mdt_/);
-    expect(body.device.name).toBe('Desktop');
-    expect(body.apiVersion).toBe(API_VERSION);
-    // On this computer there's no one to ask.
-    const here = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, deviceName: 'Laptop' }) }, LOOPBACK);
-    expect(here.status).toBe(200);
-    expect(((await here.json()) as { token: string }).token).toMatch(/^mdt_/);
-    expect(Array.isArray(body.features)).toBe(true);
-
-    const list = await authRoutes.request('http://127.0.0.1:6174/api/auth/devices', { headers: { Authorization: `Bearer ${body.token}` } }, REMOTE);
-    const listed = await list.json() as { devices: Array<{ id: string }>; current: string };
-    expect(listed.devices.map((d) => d.id)).toContain(body.device.id);
-    expect(listed.current).toBe(body.device.id);
-
-    const revoke = await authRoutes.request('http://127.0.0.1:6174/api/auth/token/revoke', { method: 'POST', headers: { Authorization: `Bearer ${body.token}` } }, REMOTE);
-    expect(revoke.status).toBe(200);
-    let nextCalled = false;
-    await authGuard(makeContext('/api/chat/models', body.token, '10.0.0.7'), async () => { nextCalled = true; });
-    expect(nextCalled).toBe(false);
+  it('refuses a sign-in posted from another site', async () => {
+    const app = await guarded();
+    const { token } = createDevice('Laptop browser', 'web');
+    const forged = await app.request('http://127.0.0.1:6174/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example', Host: '127.0.0.1:6174' }, body: JSON.stringify({ token }) }, REMOTE);
+    expect(forged.status).toBe(403);
   });
 
-  it('locks an address out after repeated failures', async () => {
+  /** The guard in front of one API route, as the real server mounts it. */
+  async function guarded() {
     const { default: authRoutes } = await import('./api/auth.js');
-    passwordSignIn(true);
-    const { username } = initWebAuth();
+    const app = new Hono();
+    app.use('*', authGuard);
+    app.route('/', authRoutes);
+    app.get('/api/x', (c) => c.text('ok'));
+    return app;
+  }
+
+  it('a browser signs in with a device token; revoking the device signs it out', async () => {
+    const app = await guarded();
+    const { token, device } = createDevice('Laptop browser', 'web');
+    const login = await app.request('http://127.0.0.1:6174/api/auth/login', { method: 'POST', headers: SAME_SITE, body: JSON.stringify({ token }) }, REMOTE);
+    expect(login.status).toBe(200);
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0];
+    expect(cookie).toBe(`mercury_device=${token}`);
+    expect((login.headers.get('set-cookie') ?? '').toLowerCase()).toContain('httponly');
+
+    expect((await app.request('http://127.0.0.1:6174/api/x', { headers: { Cookie: cookie } }, REMOTE)).status).toBe(200);
+    const { revokeDevice } = await import('./devices.js');
+    revokeDevice(device.id);
+    expect((await app.request('http://127.0.0.1:6174/api/x', { headers: { Cookie: cookie } }, REMOTE)).status).toBe(401);
+  });
+
+  it('wrong device tokens lock an address out; another address is unaffected', async () => {
+    const app = await guarded();
     const attacker = { incoming: { socket: { remoteAddress: '203.0.113.9' } } };
     let last = 0;
     for (let i = 0; i < 12; i++) {
-      const r = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password: `guess-${i}` }),
-      }, attacker);
+      const r = await app.request('http://127.0.0.1:6174/api/auth/login', { method: 'POST', headers: SAME_SITE, body: JSON.stringify({ token: `mdt_deadbeef_${'0'.repeat(63)}${i % 10}` }) }, attacker);
       last = r.status;
-      if (last === 429) {
-        expect(r.headers.get('Retry-After')).toBeTruthy();
-        break;
-      }
+      if (last === 429) { expect(r.headers.get('Retry-After')).toBeTruthy(); break; }
+      expect(last).toBe(401);
     }
     expect(last).toBe(429);
-    // Another address is unaffected.
-    const other = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password: 'guess' }),
-    }, REMOTE);
+    const other = await app.request('http://127.0.0.1:6174/api/auth/login', { method: 'POST', headers: SAME_SITE, body: JSON.stringify({ token: 'not-a-token' }) }, REMOTE);
     expect(other.status).toBe(401);
+  });
+
+  it('a one-time link signs in a browser on this computer, once, and never from elsewhere', async () => {
+    const app = await guarded();
+    const { browserLinks } = await import('../security/browser-links.js');
+    const { code } = browserLinks().create();
+    const remote = await app.request(`http://127.0.0.1:6174/login/once?c=${code}`, {}, REMOTE);
+    expect(remote.status).toBe(403);
+    const here = await app.request(`http://127.0.0.1:6174/login/once?c=${code}`, {}, LOOPBACK);
+    expect(here.status).toBe(302);
+    const cookie = (here.headers.get('set-cookie') ?? '').split(';')[0];
+    expect(cookie).toMatch(/^mercury_session=/);
+    expect((await app.request('http://127.0.0.1:6174/api/x', { headers: { Cookie: cookie } }, REMOTE)).status).toBe(200);
+    const again = await app.request(`http://127.0.0.1:6174/login/once?c=${code}`, {}, LOOPBACK);
+    expect(again.status).toBe(401);
   });
 
   it('CORS admits the desktop origins and configured extras, never a wildcard or a stranger', async () => {

@@ -26,13 +26,12 @@ The server binds to `127.0.0.1` only and is not exposed to the network. The web 
 
 ## Authentication
 
-The dashboard is protected by username/password authentication.
+Mercury has no password, so there is none to guess or leak.
 
-There is no default password. `mercury setup` asks you for one (at least 10 characters) or generates a strong one and shows it once. The username is `mercury`. Lost it? Run `mercury web-reset-password`.
+- **On the computer Mercury runs on:** run `mercury web`. It opens the dashboard signed in, with a link that works once, for 5 minutes, and only on this computer.
+- **From another device:** the sign-in page asks for a device token. Make one on the computer Mercury runs on with `/server token <name>`. Revoking that device signs the browser out.
 
-You will be redirected to `/login` for any unauthenticated request. After logging in, an HTTP-only session cookie is set. Sign out from **Settings → Account** or by closing the session in your browser.
-
-You can change your credentials from **Settings → Account**.
+Any request that isn't signed in goes to `/login`. Signing in sets an HTTP-only cookie.
 
 ## Install as a PWA
 
@@ -96,7 +95,6 @@ Mercury's memory and knowledge views — see the [Second Brain](../reference/sec
 Three sections:
 
 - **Defaults** — Default provider and daily token budget.
-- **Account** — Change your username or password.
 - **Appearance** — Light / Dark / System theme toggle.
 
 The agent personality is no longer editable from the web UI — modify it in `mercury.yaml` if you need to customise it.

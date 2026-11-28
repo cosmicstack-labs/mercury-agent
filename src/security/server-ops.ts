@@ -8,8 +8,10 @@ import { audit, readAudit } from './audit.js';
 import { closeStreams } from './live-streams.js';
 import { securityCheck, summarizeFindings } from './check.js';
 import { pairCodes, type PairOutcome } from './pair-codes.js';
-import { checkHereAnswers, choosePairAddress } from './tunnel.js';
-import type { PairStart, ServerOps, ServerStatus } from './server-menu.js';
+import { checkAddress, checkHereAnswers, choosePairAddress, configuredPublicUrl, reachesMercury, refreshTailscale } from './tunnel.js';
+import { getWebPort } from '../web/auth.js';
+import { updateConfig } from '../utils/config.js';
+import type { AddressResult, PairStart, PhoneAddress, ServerOps, ServerStatus } from './server-menu.js';
 
 export async function startPairing(address: string | undefined, by: string): Promise<PairStart> {
   const remote = readRemoteSettings();
@@ -18,11 +20,57 @@ export async function startPairing(address: string | undefined, by: string): Pro
   if (count >= remote.maxDevices) {
     return { ok: false, reason: 'limit', message: `This Mercury already has ${count} devices (the limit is ${remote.maxDevices}). Revoke one, or raise the limit with /server limit <n>.` };
   }
+  await refreshTailscale({ port: getWebPort() });
   const chosen = choosePairAddress(address);
   if (!chosen.ok) return chosen;
   const here = await checkHereAnswers(chosen);
   if (!here.ok) return here;
   return { ok: true, ...pairCodes().create(here.address, by) };
+}
+
+/** The address the QR code carries: the one the owner saved, else Tailscale Serve's. */
+export async function phoneAddressStatus(): Promise<PhoneAddress> {
+  await refreshTailscale({ port: getWebPort() });
+  const saved = configuredPublicUrl();
+  const chosen = choosePairAddress();
+  return chosen.ok
+    ? { saved, address: chosen.address, source: chosen.source === 'tailscale' ? 'tailscale' : 'saved', problem: null }
+    : { saved, address: null, source: null, problem: chosen.message };
+}
+
+const AUTOMATIC = new Set(['', 'auto', 'automatic', 'clear', 'off', 'none']);
+
+/**
+ * Save the address phones open Mercury at (web.publicUrl), after checking it:
+ * https (or plain http inside your own network), not this computer only, and,
+ * while Mercury runs, that it really leads back to this Mercury.
+ */
+export async function savePhoneAddress(input: string | null, opts: { live: boolean; by?: string }): Promise<AddressResult> {
+  const by = opts.by ?? 'this computer';
+  if (input === null || AUTOMATIC.has(input.trim().toLowerCase())) {
+    updateConfig((c) => { if (c.web) delete c.web.publicUrl; });
+    audit('remote.changed', { by, detail: 'phone address: automatic' });
+    return { ok: true, address: null, message: 'Phone address cleared. Mercury will use Tailscale Serve if it finds it.' };
+  }
+  const port = getWebPort();
+  const checked = checkAddress(input, 'given', port);
+  if (!checked.ok) return { ok: false, address: null, message: checked.message };
+  const here = await checkHereAnswers(checked);
+  if (!here.ok) return { ok: false, address: null, message: here.message };
+  const address = here.address;
+  let note = '';
+  if (opts.live) {
+    const reach = await reachesMercury(address);
+    if (reach === 'other') {
+      return { ok: false, address: null, message: `${address} answers, but not as this Mercury. Point the tunnel at http://127.0.0.1:${port} and try again.` };
+    }
+    if (reach === 'unreachable') note = ` Mercury couldn't open ${address} from this computer, so check that the tunnel is running; a phone may still reach it.`;
+  } else {
+    note = " Mercury isn't running, so the address wasn't tested.";
+  }
+  updateConfig((c) => { c.web = { ...(c.web ?? {}), publicUrl: address } as typeof c.web; });
+  audit('remote.changed', { by, detail: `phone address: ${address}` });
+  return { ok: true, address, message: `✓ Phone address saved: ${address}. Pairing QR codes use it.${note}` };
 }
 
 /**
@@ -33,6 +81,7 @@ export function localServerOps(opts: { cloudConnected?: () => boolean; by?: stri
   const by = opts.by ?? 'this computer';
   return {
     async status(): Promise<ServerStatus> {
+      const phone = await phoneAddressStatus();
       const findings = securityCheck({ lastRemote: lastRemoteRequest(), lastPlainHttp: lastPlainHttpRequest(), cloudConnected: opts.cloudConnected?.() ?? false });
       return {
         remote: readRemoteSettings(),
@@ -42,8 +91,10 @@ export function localServerOps(opts: { cloudConnected?: () => boolean; by?: stri
         approvalRoutes: approvalRoutes(),
         lastRemote: lastRemoteRequest(),
         check: { summary: summarizeFindings(findings), findings },
+        phone,
       };
     },
+    setAddress: (address) => savePhoneAddress(address, { live: !opts.offline, by }),
     async setRemote(patch: Partial<RemoteSettings>) {
       const before = readRemoteSettings();
       const next = writeRemoteSettings(patch);
@@ -120,5 +171,6 @@ export function httpServerOps(base: string, token: string): ServerOps {
       }
     },
     async cancelPair() { await call('/api/security/pair', { method: 'DELETE' }); },
+    setAddress: (address) => call<AddressResult>('/api/security/address', { method: 'PUT', body: JSON.stringify({ address, by: 'cli' }) }, [400]),
   };
 }

@@ -96,14 +96,19 @@ device when it can); the mic is never greyed out for want of a key. Live check:
 
 4. Mercury listens only on 127.0.0.1, so relay it to the network while you try the app:
    `node apps/ios/scripts/lan-relay.mjs` and connect the app to `http://<this-mac>.local:6175`.
-   The phone counts as a remote device: approve it with its code, as any other.
+   The phone counts as a remote device: pair it with `/server pair` (scan, or enter the code), or
+   paste a token from `/server token <name>`.
 
 The Snapshots renderer can't draw native text fields, plain buttons or spinners
 (they show as yellow boxes); on a phone they render normally.
 
 ## Screens
 
-1. Connect: sign in to your Mercury, then approve the phone with a 5-character code (ADR-035).
+1. Connect: **Scan to connect** reads the QR code `/server pair` shows (`mercury://pair?u=…&c=…`),
+   asks "Connect to <host>?", then trades the code for a device token (POST /api/auth/pair).
+   **Enter a code or token** takes the address and one field for either the pairing code or a
+   device token from `/server token <name>` (`mdt_…`, checked with GET /api/health); which one is
+   told from what's typed (`ConnectSecret` in `PairLink.swift`). There is no password sign-in.
    Last, a friendly name (the computer's name from GET /api/health's `host` as a first guess, as
    Mercury Desktop names a remote) and one of twelve playful Mercury logos (`MercuryLogo.swift`: the
    mark dressed up, all vector; the first Mercury gets the first, the next the second). Both are kept

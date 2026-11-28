@@ -20,13 +20,24 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>sh.mercuryagent.pair</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>mercury</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Mercury uses the camera to scan the pairing code shown in Mercury Desktop.</string>
+	<string>Mercury uses the camera to scan the pairing code your computer shows.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Mercury connects to the Mercury running on your computer.</string>
 	<key>NSMicrophoneUsageDescription</key>

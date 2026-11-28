@@ -165,6 +165,25 @@ final class ConversationModel {
     agent = t.runningStep != nil ? .working : streaming.isEmpty ? .thinking : .streaming
   }
 
+  /// Back in the foreground (app switched, screen locked): the stream may have died without an
+  /// error and the reply may have finished meanwhile. Reconnect, then re-read the chat.
+  func resume() async {
+    guard threadId != nil, loaded else { return }
+    listen()
+    await resync()
+  }
+
+  /// Re-read the chat and its running turn from the runtime: the messages (a reply that finished
+  /// while nobody watched), and whether a turn still runs or waits in line.
+  func resync() async {
+    guard let id = threadId, let t = try? await client.thread(id), threadId == id else { return }
+    setMessages(t.messages)
+    title = t.displayTitle
+    savedAt = t.savedAt
+    queued = nil
+    await catchUp(id)
+  }
+
   func listen() {
     guard let id = threadId else { return }
     listener?.cancel()
@@ -387,6 +406,8 @@ final class ConversationModel {
     if let s = data["sessionId"] as? String, let id = threadId, s != id { return }
     let now = Date.now
     switch event {
+    case ServerEvent.reconnected:
+      Task { await resync() }
     case "status":
       // The runtime's live status: Ask Me / Allow All changed anywhere (Desktop, a terminal, a phone).
       permissions.apply(status: data)

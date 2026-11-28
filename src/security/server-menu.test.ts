@@ -115,14 +115,13 @@ describe('/server', () => {
     expect(s.said.join('\n')).not.toMatch(/mdt_/);
   });
 
-  it('turns password sign-in for other devices on and off (off by default)', async () => {
+  it('/server password says there is no password any more', async () => {
     const s = screen();
-    expect(readRemoteSettings().passwordSignIn).toBe(false);
     await runServerCommand('password on', localServerOps(), s.ui);
-    expect(readRemoteSettings().passwordSignIn).toBe(true);
-    await runServerCommand('password off', localServerOps(), s.ui);
-    expect(readRemoteSettings().passwordSignIn).toBe(false);
+    expect(s.said.at(-1)).toContain('no password');
+    expect(readRemoteSettings()).not.toHaveProperty('passwordSignIn');
   });
+
 });
 
 describe('/server pair', () => {

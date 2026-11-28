@@ -1,3 +1,4 @@
+import { isLiveProbe } from '../../security/tunnel.js';
 import { Hono } from 'hono';
 import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -75,6 +76,9 @@ export function versionString(): string {
  * which the phone apps offer as a connection's friendly name.
  */
 status.get('/api/health', (c) => {
+  // Mercury checking that a phone address leads back to itself (/server address).
+  const probe = c.req.query('probe');
+  if (probe && isLiveProbe(probe)) return c.json({ probe });
   if (!isLoopbackRequest(c) && !authenticateRequest(c)) return c.json({ error: 'Not found' }, 404);
   const lag = getLoopLag();
   const plugins = peekPluginManager()?.health();

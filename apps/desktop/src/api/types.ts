@@ -20,25 +20,6 @@ export interface DeviceSummary {
   lastSeenAt: string | null;
 }
 
-export interface PairResponse {
-  token: string;
-  device: DeviceSummary;
-  apiVersion: number;
-  features: string[];
-}
-
-/** Pairing from another device: the runtime's owner approves it first. */
-export interface PendingPair {
-  pending: true;
-  pairingId: string;
-  pollToken: string;
-  /** Short code the owner sees ("approve K7Q2M"). */
-  code: string;
-  /** Where the owner approves it ("Telegram or this computer…"). */
-  where: string;
-  expiresAt: number;
-}
-
 /** A remote device asked for something sensitive: the owner approves it first. */
 export interface ApprovalNeeded {
   approvalRequired: true;
