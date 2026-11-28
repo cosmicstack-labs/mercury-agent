@@ -27,11 +27,17 @@ const mocks = vi.hoisted(() => ({
   waitForCloudRuntimeOnline: vi.fn(),
 }));
 
-vi.mock('../utils/config.js', () => ({
-  loadConfig: mocks.loadConfig,
-  saveConfig: mocks.saveConfig,
-  updateConfig: mocks.updateConfig,
-}));
+vi.mock('../utils/config.js', async (importOriginal) => {
+  // Keep the real isProviderConfigured so the disconnect path is exercised with
+  // the production rules; only the file/persistence helpers are faked.
+  const actual = (await importOriginal()) as { isProviderConfigured: (p: unknown) => boolean }
+  return {
+    loadConfig: mocks.loadConfig,
+    saveConfig: mocks.saveConfig,
+    updateConfig: mocks.updateConfig,
+    isProviderConfigured: actual.isProviderConfigured,
+  }
+});
 vi.mock('./pairing.js', () => ({
   PairingFailureError: class PairingFailureError extends Error {
     constructor(message: string, public readonly details: Record<string, unknown> = {}) {
