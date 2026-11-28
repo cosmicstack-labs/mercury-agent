@@ -159,10 +159,13 @@ object BrainWeb {
     return WebGraph(nodes, out)
   }
 
-  private val SPACES = Regex("(?U)\\s+")
+  // Spaces written out: Android's regex engine (ICU) refuses the (?U) flag and the app crashed
+  // at start (ICU's \s is Unicode already, the JVM's isn't, so name them for both).
+  private const val WS = "\\s\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000"
+  private val SPACES = Regex("[$WS]+")
   private val STOP = Regex("[.。]+$")
-  private val CLAUSE = Regex("(?U)^(.{12,}?)(?:[,;:]\\s|\\s[—–-]\\s|\\s\\()")
-  private val DANGLING = Regex("(?U)[\\s,;:.(—–-]+$")
+  private val CLAUSE = Regex("^(.{12,}?)(?:[,;:][$WS]|[$WS][—–-][$WS]|[$WS]\\()")
+  private val DANGLING = Regex("[$WS,;:.(—–-]+$")
 
   /** A note's label for the canvas: its first clause or first few words, never cut mid-word (the desktop's shortLabel). */
   fun shortLabel(text: String, max: Int = 32): String {
