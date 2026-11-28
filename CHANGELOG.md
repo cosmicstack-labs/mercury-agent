@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **Anthropic default model.** With `ANTHROPIC_MODEL` unset, the Anthropic provider used `claude-sonnet-4-20250514`, which Anthropic retired on 2026-06-15, so every request failed. The default is now `claude-sonnet-5-5`; `.env.example` and the provider table say the same.
+
 ## 1.5.5 — device-token sign-in, Mercury asks you for what only you can do, cheaper bots
 
 ### Security: devices sign in with a device token
