@@ -3,7 +3,7 @@ import { dirname, join, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import chalk from 'chalk';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { isStandaloneBinary, getDaemonStatus, tryAutoDaemonize } from './daemon.js';
@@ -28,6 +28,54 @@ const WIN_TASK_XML_FILE = 'MercuryAgent.task.xml';
  */
 export type WindowsServiceMode = 'task' | 'run-key';
 
+/** TASK_STATE values are numeric and independent of the Windows UI language.
+ * https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state */
+export type WindowsTaskState = 'unknown' | 'disabled' | 'queued' | 'ready' | 'running';
+export type WindowsTaskQuery = WindowsTaskState | 'missing';
+const WINDOWS_TASK_STATES: readonly WindowsTaskState[] = ['unknown', 'disabled', 'queued', 'ready', 'running'];
+// Only GetTask's HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) proves absence.
+// Connect/GetFolder failures, denied access, and missing PowerShell stay unknown.
+const WINDOWS_TASK_STATE_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  '$scheduler = New-Object -ComObject Schedule.Service',
+  '$scheduler.Connect()',
+  "$folder = $scheduler.GetFolder('\\')",
+  'try { $task = $folder.GetTask($env:MERCURY_STATUS_TASK_NAME) } catch {',
+  '$exception = $_.Exception',
+  'while ($exception.InnerException) { $exception = $exception.InnerException }',
+  "if ($exception.HResult -eq -2147024894) { [Console]::Out.Write('missing'); exit 0 }",
+  'throw',
+  '}',
+  '[Console]::Out.Write([int]$task.State)',
+].join('; ');
+
+export function parseWindowsTaskState(output: string): WindowsTaskQuery | null {
+  const value = output.trim();
+  if (value === 'missing') return 'missing';
+  return /^[0-4]$/.test(value) ? WINDOWS_TASK_STATES[Number(value)] : null;
+}
+
+/** Query one task without interpolating its name into a shell/script.
+ * null means unavailable, not absent or stopped. */
+export function getWindowsTaskState(taskName: string = WIN_TASK_NAME): WindowsTaskQuery | null {
+  try {
+    const output = execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_TASK_STATE_SCRIPT], {
+      encoding: 'utf8', windowsHide: true, timeout: 5000, maxBuffer: 4096,
+      env: { ...process.env, MERCURY_STATUS_TASK_NAME: taskName },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return parseWindowsTaskState(output);
+  } catch {
+    return null;
+  }
+}
+
+function requireWindowsTaskState(): WindowsTaskQuery {
+  const state = getWindowsTaskState();
+  if (state === null) throw new Error('Mercury Task Scheduler status is unavailable');
+  return state;
+}
+
 export function isServiceInstalled(): boolean {
   const platform = process.platform;
 
@@ -43,7 +91,14 @@ export function isServiceInstalled(): boolean {
   return false;
 }
 
+/** Throws when Windows cannot establish liveness; unavailable is not stopped. */
 export function isServiceRunning(): boolean {
+  if (process.platform === 'win32') {
+    const state = requireWindowsTaskState();
+    if (state === 'unknown') throw new Error('Mercury Task Scheduler state is unknown');
+    if (state === 'missing') return windowsRunKeyExists() && getDaemonStatus().running;
+    return state === 'running';
+  }
   if (!isServiceInstalled()) return false;
   // Termux:Boot only launches `mercury up` at boot; nothing supervises the
   // daemon afterwards, so there is no service process — callers check the
@@ -58,14 +113,6 @@ export function isServiceRunning(): boolean {
     if (process.platform === 'linux') {
       execSync('systemctl --user is-active --quiet mercury.service', { stdio: 'pipe' });
       return true;
-    }
-    if (process.platform === 'win32') {
-      if (getWindowsServiceMode() === 'run-key') {
-        // The Run entry only launches the daemon; its liveness is the pid file.
-        return getDaemonStatus().running;
-      }
-      const output = execSync(`schtasks /query /tn "${WIN_TASK_NAME}" /fo list /v`, { encoding: 'utf-8', shell: 'cmd.exe' });
-      return /^Status:\s+Running\s*$/im.test(output);
     }
   } catch {}
   return false;
@@ -413,6 +460,31 @@ export function restartService(): void {
 }
 
 export function stopService(): boolean {
+  if (process.platform === 'win32') {
+    try {
+      const state = requireWindowsTaskState();
+      if (state === 'unknown') return false;
+      if (state === 'missing') {
+        if (windowsRunKeyExists()) {
+          stopTrackedDaemonSync();
+          return !getDaemonStatus().running;
+        }
+        return true;
+      }
+      if (state === 'ready' || state === 'disabled') return true;
+      execFileSync('schtasks.exe', ['/end', '/tn', WIN_TASK_NAME], {
+        stdio: 'pipe', windowsHide: true, timeout: 5000,
+      });
+      return waitForServiceStop(() => {
+        const current = requireWindowsTaskState();
+        if (current === 'unknown') throw new Error('Mercury Task Scheduler state is unknown');
+        return current === 'missing' || current === 'ready' || current === 'disabled';
+      });
+    } catch {
+      // Neither a failed stop command nor an unavailable state proves a stop.
+      return false;
+    }
+  }
   if (!isServiceInstalled()) return true;
   // Termux: no service-owned process (see isServiceRunning).
   if (isTermux()) return true;
@@ -426,25 +498,17 @@ export function stopService(): boolean {
     execSync('systemctl --user stop mercury.service', { stdio: 'inherit' });
     return !isServiceRunning();
   }
-  if (process.platform === 'win32') {
-    if (getWindowsServiceMode() === 'run-key') {
-      stopTrackedDaemonSync();
-      return !isServiceRunning();
-    }
-    try { execSync(`schtasks /end /tn "${WIN_TASK_NAME}"`, { stdio: 'inherit', shell: 'cmd.exe' }); } catch {}
-    return waitForServiceStop();
-  }
   return true;
 }
 
-function waitForServiceStop(): boolean {
+function waitForServiceStop(hasStopped: () => boolean = () => !isServiceRunning()): boolean {
   const deadline = Date.now() + 5_000;
   const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
   while (Date.now() < deadline) {
-    if (!isServiceRunning()) return true;
+    if (hasStopped()) return true;
     Atomics.wait(waitBuffer, 0, 0, 100);
   }
-  return !isServiceRunning();
+  return hasStopped();
 }
 
 /**
@@ -1036,12 +1100,7 @@ function showLinuxStatus(): void {
 // ─── Windows ─────────────────────────────────────────────────────────────────
 
 function windowsTaskExists(): boolean {
-  try {
-    execSync(`schtasks /query /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe', shell: 'cmd.exe' });
-    return true;
-  } catch {
-    return false;
-  }
+  return requireWindowsTaskState() !== 'missing';
 }
 
 function windowsRunKeyExists(): boolean {
@@ -1196,22 +1255,20 @@ function uninstallWindows(): void {
 }
 
 function showWindowsStatus(): void {
-  const mode = getWindowsServiceMode();
-  if (mode === 'task') {
-    try {
-      const output = execSync(`schtasks /query /tn "${WIN_TASK_NAME}" /fo list`, {
-        encoding: 'utf-8',
-        shell: 'cmd.exe',
-      }).trim();
-      console.log(`  ${chalk.green('Autostart: Task Scheduler logon task')}`);
-      console.log(output);
-      console.log('');
-      return;
-    } catch {
-      // fall through to the generic message
-    }
+  const state = getWindowsTaskState();
+  if (state === null) {
+    console.log(chalk.yellow('  Mercury Task Scheduler status is unavailable.'));
+    console.log(chalk.dim('  Could not determine whether the service is installed or running.'));
+    console.log('');
+    return;
   }
-  if (mode === 'run-key') {
+  if (state !== 'missing') {
+    console.log(`  ${chalk.green('Autostart: Task Scheduler logon task')}`);
+    console.log(`  State: ${state === 'running' ? chalk.green(state) : chalk.yellow(state)}`);
+    console.log('');
+    return;
+  }
+  if (windowsRunKeyExists()) {
     const daemon = getDaemonStatus();
     console.log(`  ${chalk.green('Autostart: HKCU Run entry')} ${chalk.dim(`(${WIN_RUN_KEY}\\${WIN_RUN_VALUE})`)}`);
     console.log(`  Daemon: ${daemon.running ? chalk.green(`running (PID: ${daemon.pid})`) : chalk.yellow('not running')}`);

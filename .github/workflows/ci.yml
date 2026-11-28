@@ -80,6 +80,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+        env:
+          # Real Task Scheduler mutations are restricted to this disposable runner.
+          MERCURY_TEST_WINDOWS_TASK_SCHEDULER: ${{ runner.os == 'Windows' && '1' || '0' }}
 
   isolated-browser:
     name: Isolated browser (${{ matrix.os }})
