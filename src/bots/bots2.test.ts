@@ -170,6 +170,21 @@ describe('guards that survive a restart', () => {
     expect(second.manager.dailyUsage('spender').tokens).toBe(1234);
   });
 
+  it('a fleet budget used up today stays paused after a restart', async () => {
+    const first = makeManager({ fleetDailyTokenBudget: 1000 });
+    first.store.create({ id: 'spender', name: 'Spender' });
+    closesWith('bot_report', { summary: 'done' }, 1234);
+    first.manager.enqueue('spender', { trigger: 'api', prompt: 'go' });
+    await idle(first.manager, 'spender');
+    expect(first.manager.costReport().fleetPaused).toBe(true);
+    const second = makeManager({ fleetDailyTokenBudget: 1000 });
+    expect(second.manager.costReport().fleetPaused).toBe(true);
+    mockedGenerateText.mockClear();
+    second.manager.enqueue('spender', { trigger: 'api', prompt: 'again' });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockedGenerateText).not.toHaveBeenCalled();
+  });
+
   it('the 15-minute gap between routine runs survives a restart', async () => {
     const first = makeManager();
     first.store.create({ id: 'watch', name: 'Watch', manifest: { schedules: [{ name: 'poll', cron: '*/5 * * * *', prompt: 'check' }] } });
