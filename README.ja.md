@@ -247,6 +247,7 @@ Mercury はまずデフォルトのプロバイダーを試し、失敗した場
 | Anthropic | `claude-sonnet-4` | `ANTHROPIC_API_KEY` |
 | Grok (xAI) | `grok-4` | `GROK_API_KEY` |
 | Atlas Cloud | `qwen/qwen3.5-flash` | `ATLASCLOUD_API_KEY` |
+| Standard Compute | `StandardCompute` | `STANDARDCOMPUTE_API_KEY` |
 | AI/ML API | `anthropic/claude-sonnet-4.6` | `AIMLAPI_API_KEY` |
 | MiMo (Xiaomi) | `mimo-v2.5-pro` | `MIMO_API_KEY` |
 | Ollama Cloud | `gpt-oss:120b` | `OLLAMA_CLOUD_API_KEY` |

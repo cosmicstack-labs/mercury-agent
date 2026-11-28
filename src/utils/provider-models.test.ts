@@ -124,6 +124,20 @@ describe('buildModelCatalog', () => {
     expect(catalog.models).toContain('another-chat-model');
   });
 
+  it('prefers the routed Standard Compute model when available', () => {
+    const catalog = buildModelCatalog('standardcompute', [
+      'z-ai/glm-5.3',
+      'StandardCompute',
+      'anthropic/claude-sonnet-5.5',
+      'another-chat-model',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('StandardCompute');
+    expect(catalog.models[0]).toBe('anthropic/claude-sonnet-5.5');
+    expect(catalog.models).toContain('z-ai/glm-5.3');
+    expect(catalog.models).toContain('another-chat-model');
+  });
+
   it('falls back to the current Ollama Cloud model when no preferred default is available', () => {
     const catalog = buildModelCatalog(
       'ollamaCloud',
